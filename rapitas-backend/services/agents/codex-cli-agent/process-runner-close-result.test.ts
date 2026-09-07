@@ -25,6 +25,7 @@ function makeState(overrides: Partial<ProcessRunnerState> = {}): ProcessRunnerSt
     turnFailed: false,
     turnFailureMessage: null,
     activeCodexCommands: new Map(),
+    seenAgentMessageIds: new Set(),
     ...overrides,
   };
 }
