@@ -96,6 +96,15 @@ describe('processIdleThemes', () => {
     await internal(scheduler).processIdleThemes([makeState({ enabled: true, themeId: 7 })]);
 
     expect(mockStartAutoRun).not.toHaveBeenCalled();
+    expect(mockTaskCount).toHaveBeenCalledWith({
+      where: {
+        themeId: 7,
+        status: 'todo',
+        parentId: null,
+        workflowDisabled: false,
+        OR: [{ workflowStatus: null }, { workflowStatus: { not: 'awaiting_question' } }],
+      },
+    });
   });
 
   it('resumes on a fresh todo task WITHOUT even checking the backlog (short-circuit)', async () => {
@@ -232,6 +241,16 @@ describe('processIdleThemes — re-arm after an idle-stop (task 784)', () => {
     ]);
 
     expect(mockStartAutoRun).toHaveBeenCalledWith(7);
+    expect(mockTaskCount).toHaveBeenCalledWith({
+      where: {
+        themeId: 7,
+        status: 'todo',
+        parentId: null,
+        workflowDisabled: false,
+        OR: [{ workflowStatus: null }, { workflowStatus: { not: 'awaiting_question' } }],
+        autoCreatedFromBacklog: false,
+      },
+    });
   });
 
   it('self-refills IN PLACE while stopped without re-arming (learning loop kept separate)', async () => {

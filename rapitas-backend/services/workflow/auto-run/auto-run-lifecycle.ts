@@ -15,6 +15,7 @@ import { realtimeService } from '../../communication/realtime-service';
 import { hasPromotableBacklog, promoteBacklogForTheme } from './backlog-task-promoter';
 import { logCycleEvent } from '../../observability';
 import { getThemeActiveQueueItems, hasItemAwaitingApproval } from './auto-run-selection';
+import { eligibleTopLevelTodoWhere } from './auto-run-eligibility';
 import { recordTransition } from '../transition-recorder';
 import {
   resumeAutoRun,
@@ -93,13 +94,15 @@ async function processArmedIdleTheme(
   idleStopMinutes: number,
   now: Date,
 ): Promise<boolean> {
-  // Mirror selectNextTask's eligibility (parentId:null — the scheduler only
-  // drives TOP-LEVEL tasks; subtasks are run by AIOrchestra). Counting
-  // subtasks here let a stuck todo SUBTASK resume the theme, which then went
-  // straight back to all_done because selection skips it — a 12s idle⇄running
-  // flap that never made progress.
+  // Mirror selectNextTask's eligibility via eligibleTopLevelTodoWhere
+  // (parentId:null — the scheduler only drives TOP-LEVEL tasks; subtasks are
+  // run by AIOrchestra — plus workflowDisabled/awaiting_question exclusion).
+  // Counting a task selectNextTask would refuse (subtask, workflowDisabled,
+  // or awaiting_question) resumes the theme, which then goes straight back to
+  // idle/all_done because selection skips it — a 12s idle⇄running flap that
+  // never made progress (task 635, task 884).
   const todo = await prisma.task
-    .count({ where: { themeId: state.themeId, status: 'todo', parentId: null } })
+    .count({ where: eligibleTopLevelTodoWhere(state.themeId) })
     .catch(() => 0);
 
   if (!state.idleSince) {
@@ -185,15 +188,11 @@ async function processStoppedIdleTheme(
 ): Promise<void> {
   if (!state.idleStoppedAt) return; // user stop → stay stopped
 
+  // Same reason as processArmedIdleTheme (task 884): count only tasks
+  // selectNextTask would also accept, or a re-arm here just bounces straight
+  // back to idle once the auto-run loop rejects the same task.
   const manualTodo = await prisma.task
-    .count({
-      where: {
-        themeId: state.themeId,
-        status: 'todo',
-        parentId: null,
-        autoCreatedFromBacklog: false,
-      },
-    })
+    .count({ where: eligibleTopLevelTodoWhere(state.themeId, { autoCreatedFromBacklog: false }) })
     .catch(() => 0);
   if (manualTodo > 0) {
     await resumeIdleTheme(state.themeId, 'manual_task_rearm', manualTodo);
