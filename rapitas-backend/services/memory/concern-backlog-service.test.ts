@@ -600,9 +600,7 @@ describe('submitConcern — 応答のoutcome区別', () => {
   it('near-duplicate 抑制時は outcome:suppressed, reason:near-duplicate を返す', async () => {
     mockKnowledgeEntryFindMany
       .mockResolvedValueOnce([]) // findBlockingDuplicate: no blocking dup
-      .mockResolvedValueOnce([
-        { id: 42, title: 'テーマ飽和判定の誤爆確認用タイトル' },
-      ]); // findNearDuplicate: near-dup match
+      .mockResolvedValueOnce([{ id: 42, title: 'テーマ飽和判定の誤爆確認用タイトル' }]); // findNearDuplicate: near-dup match
 
     const result = await submitConcern({
       title: 'テーマ飽和判定の誤爆確認用タイトル',

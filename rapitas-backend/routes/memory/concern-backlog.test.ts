@@ -13,9 +13,9 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 const mockSubmitConcern = mock(() =>
   Promise.resolve({ id: 1, outcome: 'created' as const, reason: 'new' as const }),
 ) as ReturnType<typeof mock>;
-const mockListConcerns = mock(() =>
-  Promise.resolve({ concerns: [], total: 0 }),
-) as ReturnType<typeof mock>;
+const mockListConcerns = mock(() => Promise.resolve({ concerns: [], total: 0 })) as ReturnType<
+  typeof mock
+>;
 const mockSetConcernStatus = mock(() => Promise.resolve(true)) as ReturnType<typeof mock>;
 const mockDeleteConcern = mock(() => Promise.resolve(true)) as ReturnType<typeof mock>;
 const mockConvertConcernToTask = mock(() => Promise.resolve(100)) as ReturnType<typeof mock>;
@@ -79,12 +79,21 @@ describe('POST /concerns', () => {
     // 続く GET /concerns の一覧に新規行が増えないことは submitConcern 側の
     // 単体テスト(concern-backlog-service.test.ts)で保証している。本テストは
     // ルート層がその outcome/reason を応答へ正しく反映することのみを検証する。
-    mockSubmitConcern.mockResolvedValue({ id: 5, outcome: 'suppressed', reason: 'theme-saturation' });
+    mockSubmitConcern.mockResolvedValue({
+      id: 5,
+      outcome: 'suppressed',
+      reason: 'theme-saturation',
+    });
 
     const res = await postConcern({ title: 'タイトル', detail: '詳細' });
     const body = await res.json();
 
-    expect(body).toEqual({ success: true, id: 5, outcome: 'suppressed', reason: 'theme-saturation' });
+    expect(body).toEqual({
+      success: true,
+      id: 5,
+      outcome: 'suppressed',
+      reason: 'theme-saturation',
+    });
   });
 
   it('near-duplicate で抑制された場合、outcome:suppressed, reason:near-duplicate を返す', async () => {

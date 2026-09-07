@@ -135,9 +135,7 @@ const MOCK_ISSUE_ROW = {
 
 function resetMocks() {
   mockGetConcern.mockReset().mockResolvedValue(null);
-  mockSubmitConcern
-    .mockReset()
-    .mockResolvedValue({ id: 99, outcome: 'created', reason: 'new' });
+  mockSubmitConcern.mockReset().mockResolvedValue({ id: 99, outcome: 'created', reason: 'new' });
   mockIntegrationFindUnique.mockReset().mockResolvedValue(null);
   mockIssueFindFirst.mockReset().mockResolvedValue(null);
   mockIssueFindUnique.mockReset().mockResolvedValue(null);

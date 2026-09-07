@@ -272,9 +272,7 @@ export async function resolveFiling(
   const policy = opts.input.recurrencePolicy;
   if (!policy?.enabled) {
     const blockingId = await opts.findBlockingDuplicate(opts.hash);
-    return blockingId != null
-      ? { reuseId: blockingId, reuseReason: 'dedup-live-duplicate' }
-      : {};
+    return blockingId != null ? { reuseId: blockingId, reuseReason: 'dedup-live-duplicate' } : {};
   }
   const detectedAt = policy.detectedAt ?? Date.now();
   const resolution = await resolveRecurrence(
