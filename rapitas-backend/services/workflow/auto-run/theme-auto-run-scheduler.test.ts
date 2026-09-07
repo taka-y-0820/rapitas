@@ -116,6 +116,17 @@ describe('recoverOnStartup', () => {
     scheduler.stop();
   });
 
+  it('resumes when a paused_user or paused_approval ThemeAutoRun exists (task 883)', async () => {
+    const scheduler = ThemeAutoRunScheduler.getInstance();
+    mockFindByStatuses.mockResolvedValue([makeState({ status: 'paused_user' })]);
+    mockThemeAutoRunCount.mockResolvedValue(0);
+
+    await scheduler.recoverOnStartup();
+
+    expect(mockStartProcessing).toHaveBeenCalled();
+    scheduler.stop();
+  });
+
   it('resumes when an idle-but-armed (enabled:true) theme exists', async () => {
     const scheduler = ThemeAutoRunScheduler.getInstance();
     mockFindByStatuses.mockResolvedValue([]);
@@ -150,12 +161,20 @@ describe('onPlanApproved', () => {
   it.each([
     { desc: 'the theme has no auto-run state', state: null as ReturnType<typeof makeState> | null },
     {
-      desc: 'the theme is paused on a DIFFERENT task',
-      state: makeState({ status: 'paused', currentTaskId: 5 }),
+      desc: 'the theme is paused_approval on a DIFFERENT task',
+      state: makeState({ status: 'paused_approval', currentTaskId: 5 }),
     },
     {
       desc: 'the theme is running (not paused)',
       state: makeState({ status: 'running', currentTaskId: 99 }),
+    },
+    {
+      desc: 'the theme is paused_user, an explicit user pause (task 883)',
+      state: makeState({ status: 'paused_user', currentTaskId: 99 }),
+    },
+    {
+      desc: 'the theme is a reason-unknown legacy pause (bare "paused", task 883)',
+      state: makeState({ status: 'paused', currentTaskId: 99 }),
     },
   ])('no-ops when $desc', async ({ state }) => {
     const scheduler = ThemeAutoRunScheduler.getInstance();
@@ -167,10 +186,12 @@ describe('onPlanApproved', () => {
     expect(mockResumeAutoRun).not.toHaveBeenCalled();
   });
 
-  it('resumes the theme when paused on the just-approved task', async () => {
+  it('resumes the theme when paused_approval on the just-approved task', async () => {
     const scheduler = ThemeAutoRunScheduler.getInstance();
     mockResolveTaskThemeId.mockResolvedValue({ id: 99, themeId: 42 });
-    mockGetAutoRunState.mockResolvedValue(makeState({ status: 'paused', currentTaskId: 99 }));
+    mockGetAutoRunState.mockResolvedValue(
+      makeState({ status: 'paused_approval', currentTaskId: 99 }),
+    );
 
     await scheduler.onPlanApproved(99);
 
@@ -198,7 +219,14 @@ describe('tick (dispatch)', () => {
 
     await internal(scheduler).tick();
 
-    expect(mockFindByStatuses).toHaveBeenCalledWith(['stopping', 'running', 'paused', 'idle']);
+    expect(mockFindByStatuses).toHaveBeenCalledWith([
+      'stopping',
+      'running',
+      'paused',
+      'paused_user',
+      'paused_approval',
+      'idle',
+    ]);
     // Theme 4 is idle but disabled → processIdleThemes must skip it silently.
     expect(mockThemeAutoRunUpdateMany.mock.calls.some((c) => c[0]?.themeId === 4)).toBe(false);
   });

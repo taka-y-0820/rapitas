@@ -15,3 +15,4 @@ export * from './semaphore';
 export * from './shutdown-error';
 export * from './spec-array';
 export * from './type-guards';
+export * from './windows-shell-escape';
