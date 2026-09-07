@@ -77,8 +77,12 @@ mock.module('../../config/database', () => ({
 }));
 
 const { autoApproveEligibleProposals } = await import('./prompt-evolution-auto-approve');
-const { readComparisonRecord, recordComparisonRun, writeComparisonRecord } =
-  await import('./comparison/prompt-comparison-store');
+const {
+  initComparisonRecordForStaging,
+  readComparisonRecord,
+  recordComparisonRun,
+  writeComparisonRecord,
+} = await import('./comparison/prompt-comparison-store');
 const { COMPARISON_MIN_SAMPLE } = await import('./comparison/prompt-comparison-metrics');
 import type { ComparisonRun } from './comparison/prompt-comparison-types';
 
@@ -531,12 +535,16 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
     await autoApproveEligibleProposals();
     expect(evidenceOf(52).alphaLookJ).toBe(1);
 
+    const evaluatedAt = evidenceOf(52).comparisonEvaluatedAt;
+
     // 標本が増えていないまま日次ジョブが2回走っても j は進まない。
     await autoApproveEligibleProposals();
     await autoApproveEligibleProposals();
 
     expect(evidenceOf(52).alphaLookJ).toBe(1);
     expect(rows[0].status).toBe('staged');
+    // 予算を消費しないポーリングは「新しい評価」として記録されない。
+    expect(evidenceOf(52).comparisonEvaluatedAt).toBe(evaluatedAt);
   });
 
   test('staging時に候補ごとのアルファ予算とランダム化シードが固定される', async () => {
@@ -567,6 +575,37 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
     expect(evidenceOf(55).alphaLedgerRetries).toBe(1);
     // 破損台帳を空の新規台帳で上書きしない。
     expect(readFileSync(ledgerPath(), 'utf8')).toBe(before);
+  });
+
+  test('台帳導入前に staged になった候補も評価され、行き止まりにならない', async () => {
+    // 旧経路(台帳が無かった頃)で staged へ進んだ行を再現する。台帳エントリが
+    // 無いまま not_registered で保留し続けると、その候補は採用も撤回もされない
+    // 永久の行き止まりになる。
+    rows = [
+      {
+        ...proposedRow(60, '- 提出前にlintを実行する'),
+        status: 'staged',
+        evidenceJson: JSON.stringify({
+          stagedAt: '2026-09-01T00:00:00.000Z',
+          stagedSampleCount: 0,
+        }),
+      },
+    ];
+    initComparisonRecordForStaging({
+      promptEvolutionId: 60,
+      role: 'implementer',
+      createdAt: new Date(0).toISOString(),
+    });
+    fillArm(60, 'current', 0, COMPARISON_MIN_SAMPLE);
+    fillArm(60, 'candidate', COMPARISON_MIN_SAMPLE, COMPARISON_MIN_SAMPLE);
+
+    const result = await autoApproveEligibleProposals();
+
+    // 評価時に予算を採番して判定まで到達すること。
+    expect(evidenceOf(60).alphaBudgetK).toBe(1);
+    expect(evidenceOf(60).alphaLookJ).toBe(1);
+    expect(rows[0].status).toBe('approved');
+    expect(result.approved).toBe(1);
   });
 
   test('評価時に台帳が読めなくなったら unknown 扱いで保留する', async () => {

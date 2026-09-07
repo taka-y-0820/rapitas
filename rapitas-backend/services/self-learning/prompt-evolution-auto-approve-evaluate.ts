@@ -23,7 +23,10 @@
 import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
 import { passesSequentialSignificance } from './comparison/prompt-comparison-adoption-gate';
-import { resolveEvaluationBudget } from './comparison/prompt-comparison-alpha-ledger';
+import {
+  assignCandidateBudget,
+  resolveEvaluationBudget,
+} from './comparison/prompt-comparison-alpha-ledger';
 import { readComparisonRecordStatus } from './comparison/prompt-comparison-store';
 import {
   CANDIDATE_SELECT,
@@ -76,6 +79,11 @@ export async function evaluateStagedCandidates(result: AutoApproveResult): Promi
 
     const summary = comparison.summary;
     const verdict = summary?.verdict ?? 'insufficient_data';
+    // Kept so a look that turns out to spend no budget can put it back.
+    const previousEvaluatedAt =
+      typeof evidence.comparisonEvaluatedAt === 'string'
+        ? evidence.comparisonEvaluatedAt
+        : undefined;
     delete evidence.comparisonStatus;
     delete evidence.comparisonStatusKind;
     evidence.comparisonVerdict = verdict;
@@ -116,7 +124,28 @@ export async function evaluateStagedCandidates(result: AutoApproveResult): Promi
     // Reserve this look's slice of the candidate's budget. Done only once the
     // descriptive gate has passed, so looks are not burned on samples that
     // could not have led to adoption anyway.
-    const budget = resolveEvaluationBudget(candidate.id, summary.sampleSize);
+    //
+    // A candidate with no ledger entry is registered here rather than held:
+    // rows that reached `staged` before the ledger existed would otherwise
+    // return `not_registered` on every run forever, and could be neither
+    // adopted nor withdrawn — a dead end, not a safe hold. Registering late
+    // still assigns k by arrival order (its first look is its arrival), so the
+    // telescoping bound is unaffected.
+    let budget = resolveEvaluationBudget(candidate.id, summary.sampleSize);
+    if (budget.issue === 'not_registered') {
+      const assigned = assignCandidateBudget(candidate.id);
+      if (!assigned.issue) {
+        evidence.alphaBudgetK = assigned.k;
+        evidence.alphaK = assigned.alphaK;
+        budget = resolveEvaluationBudget(candidate.id, summary.sampleSize);
+        log.info(
+          { id: candidate.id, k: assigned.k },
+          '[prompt-evolution] Registered a pre-ledger staged candidate into the alpha budget',
+        );
+      } else {
+        budget = { issue: assigned.issue };
+      }
+    }
     if (budget.issue) {
       // A budget we cannot read is not a budget. Neither adopt nor withdraw.
       evidence.alphaLedgerStatus = 'unknown';
@@ -136,6 +165,13 @@ export async function evaluateStagedCandidates(result: AutoApproveResult): Promi
       // Same samples as the previous evaluation. Re-judging them would be a
       // free extra chance to clear the threshold, which is exactly the
       // repeated-testing inflation the ledger exists to prevent.
+      //
+      // The previous look's evaluation stamp is restored before writing, so a
+      // poll that spent no budget does not masquerade as a fresh evaluation in
+      // the audit trail. Everything else (a recovered ledger status, a late
+      // budget registration) still persists.
+      evidence.comparisonEvaluatedAt =
+        previousEvaluatedAt ?? (evidence.comparisonEvaluatedAt as string);
       await stampEvidence(candidate.id, evidence);
       result.withheld++;
       continue;
