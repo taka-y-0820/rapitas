@@ -1,5 +1,10 @@
 import type { Metadata, Viewport } from 'next';
-import { Geist, Geist_Mono } from 'next/font/google';
+// NOTE: self-hosted (geist package) instead of next/font/google — the desktop
+// app must not depend on fonts.googleapis.com at compile time: when that
+// fetch failed (2026-09-07) next/font silently fell back to system fonts and
+// every Latin glyph in the execution log rendered in a different, larger face.
+import { GeistSans } from 'geist/font/sans';
+import { GeistMono } from 'geist/font/mono';
 import './globals.css';
 import KeyboardShortcuts from '@/components/common/KeyboardShortcuts';
 import { ResumableExecutionsBanner } from '@/components/common/ResumableExecutionsBanner';
@@ -26,16 +31,6 @@ import UpdateBanner from '@/components/common/UpdateBanner';
 import GlobalErrorReporter from '@/components/common/GlobalErrorReporter';
 import SetupGate from '@/components/common/SetupGate';
 // import WindowResizeOptimizer from '@/components/common/WindowResizeOptimizer';
-
-const geistSans = Geist({
-  variable: '--font-geist-sans',
-  subsets: ['latin'],
-});
-
-const geistMono = Geist_Mono({
-  variable: '--font-geist-mono',
-  subsets: ['latin'],
-});
 
 export const metadata: Metadata = {
   title: 'Rapi+',
@@ -143,7 +138,7 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body className={`${geistSans.variable} ${geistMono.variable}`}>
+      <body className={`${GeistSans.variable} ${GeistMono.variable}`}>
         <IntlProvider>
           <AuthProvider>
             <PomodoroProvider>
