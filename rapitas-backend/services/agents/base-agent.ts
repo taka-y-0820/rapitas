@@ -21,6 +21,7 @@ export type AgentStatus =
   | 'paused'
   | 'completed'
   | 'failed'
+  | 'canceling'
   | 'cancelled'
   | 'waiting_for_input'
   // NOTE: investigationMode で codex が exit 0 した直後、research.md の slice 保存を待つ過渡状態

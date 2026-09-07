@@ -322,6 +322,8 @@ export class AgentOrchestrator {
       return false;
     }
 
+    // Establish cancellation intent before awaiting the CLI, including failed stops.
+    state.status = 'canceling';
     try {
       await agent.stop();
     } catch (error) {

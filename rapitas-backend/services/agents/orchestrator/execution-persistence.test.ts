@@ -569,3 +569,18 @@ describe('saveExecutionResult()', () => {
     expect(updateArg.data.peakRssKb).toBe(40000);
   });
 });
+
+test.each(['canceling', 'cancelled'] as const)(
+  'late success cannot overwrite %s or trigger a success event',
+  (status) => {
+    const state = makeState({ status });
+    const result = {
+      success: true,
+      waitingForInput: true,
+      failureType: undefined as string | undefined,
+    };
+    expect(determineExecutionStatus(result, makeFileLogger(), state)).toBe('cancelled');
+    expect(result).toEqual({ success: false, waitingForInput: false, failureType: 'cancelled' });
+    expect(state.status).toBe('cancelled');
+  },
+);

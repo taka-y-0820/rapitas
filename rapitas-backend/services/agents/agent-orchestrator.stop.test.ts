@@ -253,6 +253,7 @@ describe('stopExecution', () => {
     expect(result).toBe(false);
     expect(mockPrisma.agentExecution.update).not.toHaveBeenCalled();
     expect(internals(orchestrator).activeExecutions.has(3)).toBe(true);
+    expect(state.status).toBe('canceling');
     expect(removeAgentMock).not.toHaveBeenCalled();
   });
 

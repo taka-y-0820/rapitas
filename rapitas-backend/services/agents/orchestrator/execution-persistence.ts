@@ -60,6 +60,11 @@ export function determineExecutionStatus(
   state: ExecutionState,
   opts?: { investigationMode?: boolean },
 ): string {
+  if (state.status === 'canceling' || state.status === 'cancelled') {
+    result.success = false;
+    result.waitingForInput = false;
+    result.failureType = 'cancelled';
+  }
   if (result.waitingForInput) {
     state.status = 'waiting_for_input';
     fileLogger.logStatusChange('running', 'waiting_for_input', 'Question detected');
