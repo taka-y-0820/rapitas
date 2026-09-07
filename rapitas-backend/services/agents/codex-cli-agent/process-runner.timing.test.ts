@@ -83,6 +83,9 @@ function makeState(): ProcessRunnerState {
     codexSessionId: null,
     actualModel: null,
     status: 'running',
+    turnFailed: false,
+    turnFailureMessage: null,
+    activeCodexCommands: new Map(),
   };
 }
 
