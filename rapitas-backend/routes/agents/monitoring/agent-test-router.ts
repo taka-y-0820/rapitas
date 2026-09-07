@@ -284,9 +284,9 @@ export const agentTestRouter = new Elysia()
         };
       }
 
-      // Placeholder for future providers
+      // An unimplemented probe provides no evidence of a successful connection.
       return {
-        success: true,
+        success: false,
         agentType: agent.agentType,
         message: `${agent.agentType}の接続テストはまだ実装されていません`,
       };
