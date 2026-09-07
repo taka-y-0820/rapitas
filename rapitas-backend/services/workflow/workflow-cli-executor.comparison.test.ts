@@ -8,7 +8,7 @@
  * まで届かない）を検知するための回帰テスト。
  * Own file — mock.module is process-global.
  */
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -22,6 +22,28 @@ import type { RoleTransition, WorkflowAdvanceResult } from './workflow-types';
 import type { ComparisonAssignment } from '../self-learning/comparison/prompt-comparison-types';
 
 installWorkflowCliExecutorMocks();
+mock.module('../agents/execution-file-logger/attempt-metrics-reader', () => ({
+  readExecutionAttemptMetrics: async (id: number) => {
+    const rows = (await spies.agentExecutionFindMany()) as Array<{
+      id: number;
+      status: string;
+      costUsd?: number;
+      executionTimeMs?: number;
+      modelName?: string;
+    }>;
+    const e = rows.find((e) => e.id === id);
+    return e
+      ? [
+          {
+            success: e.status === 'completed',
+            costUsd: e.costUsd ?? null,
+            executionTimeMs: e.executionTimeMs ?? null,
+            modelName: e.modelName ?? null,
+          },
+        ]
+      : null;
+  },
+}));
 
 const { executeCLIAgent } = await import('./workflow-cli-executor');
 const { initComparisonRecordForStaging, readComparisonRecord } =

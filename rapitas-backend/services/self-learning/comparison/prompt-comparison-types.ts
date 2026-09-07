@@ -38,6 +38,7 @@ export interface ComparisonRun {
   /** All executions contributing to session cost/time, in newest-first order. */
   executionIds?: number[];
   executionModels?: string[];
+  attemptModels?: string[];
   success: boolean;
   costUsd: number;
   durationMs: number;

@@ -1,4 +1,4 @@
-import { trialExecutionTotals } from '../self-learning/comparison/prompt-comparison-execution-totals';
+import { measuredTrialExecutionTotals } from '../self-learning/comparison/prompt-comparison-measured-totals';
 /**
  * Workflow CLI Executor
  *
@@ -68,7 +68,7 @@ async function recordTrialRun(
         modelName: true,
       },
     });
-    const totals = trialExecutionTotals(executions);
+    const totals = await measuredTrialExecutionTotals(executions, sessionId);
     if (!totals) return;
     const execution = executions[0];
     const actualSuccess = success && execution.status === 'completed';

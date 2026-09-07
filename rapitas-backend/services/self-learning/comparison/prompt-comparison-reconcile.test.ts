@@ -12,6 +12,21 @@ mock.module('../../../config/database', () => ({
   ensureDatabaseConnection: async () => {},
   prisma: { agentSession: { findMany } },
 }));
+mock.module('../../agents/execution-file-logger/attempt-metrics-reader', () => ({
+  readExecutionAttemptMetrics: async (id: number) => {
+    const e = sessions.flatMap((s) => s.agentExecutions).find((e) => e.id === id);
+    return e
+      ? [
+          {
+            success: e.status === 'completed',
+            costUsd: e.costUsd == null ? null : Number(e.costUsd),
+            executionTimeMs: e.executionTimeMs,
+            modelName: e.modelName,
+          },
+        ]
+      : null;
+  },
+}));
 const { reconcileTrialOutcomes } = await import('./prompt-comparison-reconcile');
 const { initComparisonRecordForStaging, readComparisonRecord, recordComparisonRun } =
   await import('./prompt-comparison-store');

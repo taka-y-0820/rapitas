@@ -208,6 +208,7 @@ describe('saveExecutionResult()', () => {
         executionId: 1,
         sessionId: 2,
         attempts: result.attemptMetrics,
+        settled: true,
       });
       expect(prisma.agentExecution.update).toHaveBeenCalledWith(
         expect.objectContaining({

@@ -41,6 +41,14 @@ export function comparisonCohortIssue(
       if (run.role !== role) return 'role_mismatch';
       if (typeof run.modelName !== 'string' || !run.modelName.trim()) return 'actual_model_unknown';
       models.add(run.modelName.trim());
+      if (run.attemptModels !== undefined) {
+        if (!Array.isArray(run.attemptModels) || !run.attemptModels.length)
+          return 'actual_model_unknown';
+        for (const model of run.attemptModels) {
+          if (typeof model !== 'string' || !model.trim()) return 'actual_model_unknown';
+          models.add(model.trim());
+        }
+      }
       if (run.executionModels !== undefined) {
         if (
           !Array.isArray(run.executionModels) ||

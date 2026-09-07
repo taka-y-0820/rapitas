@@ -1,4 +1,4 @@
-import { trialExecutionTotals } from './prompt-comparison-execution-totals';
+import { measuredTrialExecutionTotals } from './prompt-comparison-measured-totals';
 /** Recover missed outcome appends from authoritative terminal sessions, never from assignment alone. */
 import { prisma } from '../../../config/database';
 import { classifyFailureCause } from './prompt-comparison-metrics';
@@ -85,7 +85,13 @@ export async function reconcileTrialOutcomes(
     result.issues.push({ assignmentId: '*', reason: 'session_read_failed' });
     return result;
   }
+  const settledNow = new Set(
+    readComparisonRecord(id)
+      ?.arms.flatMap((cell) => cell.runs)
+      .map((run) => run.assignmentId),
+  );
   for (const slot of missing) {
+    if (settledNow.has(slot.id)) continue;
     const fail = (reason: string) => result.issues.push({ assignmentId: slot.id, reason });
     const sid = slot.sessionIds[0];
     if (sid === undefined) {
@@ -125,7 +131,7 @@ export async function reconcileTrialOutcomes(
       fail('execution_missing');
       continue;
     }
-    const totals = trialExecutionTotals(session.agentExecutions);
+    const totals = await measuredTrialExecutionTotals(session.agentExecutions, sid);
     if (!totals) {
       fail('execution_metadata_incomplete');
       continue;

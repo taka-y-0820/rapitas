@@ -131,6 +131,21 @@ mock.module('../../config/database', () => ({
   },
 }));
 
+mock.module('../agents/execution-file-logger/attempt-metrics-reader', () => ({
+  readExecutionAttemptMetrics: async (id: number) => {
+    const e = replaySessions.flatMap((s) => s.agentExecutions).find((e) => e.id === id);
+    return e
+      ? [
+          {
+            success: e.status === 'completed',
+            costUsd: e.costUsd == null ? null : Number(e.costUsd),
+            executionTimeMs: e.executionTimeMs,
+            modelName: e.modelName,
+          },
+        ]
+      : null;
+  },
+}));
 const { autoApproveEligibleProposals } = await import('./prompt-evolution-auto-approve');
 const {
   initComparisonRecordForStaging,

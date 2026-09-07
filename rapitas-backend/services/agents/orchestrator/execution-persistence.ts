@@ -1,3 +1,4 @@
+import { executionAttemptMetrics } from './execution-attempt-metrics';
 /**
  * Execution Persistence
  *
@@ -162,12 +163,16 @@ export async function saveExecutionResult(
   },
   opts?: { investigationMode?: boolean },
 ): Promise<void> {
-  if (result.attemptMetrics)
+  try {
     fileLogger.log('INFO', 'recovery', 'execution_attempt_metrics', {
       executionId,
       sessionId,
-      attempts: result.attemptMetrics,
+      attempts: executionAttemptMetrics(result),
+      settled: !result.waitingForInput,
     });
+  } catch {
+    /* Unavailable measurement logs make the comparison collector withhold. */
+  }
   const executionStatus = determineExecutionStatus(result, fileLogger, state, opts);
 
   // Real-cost fields are only emitted on terminal states by the resolver, so

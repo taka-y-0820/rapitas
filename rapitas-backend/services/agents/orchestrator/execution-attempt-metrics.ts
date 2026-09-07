@@ -4,8 +4,11 @@ import type { AgentExecutionResult } from '../base-agent';
 const measured = (value: number | undefined): number | null =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 
-function attempts(
-  result: AgentExecutionResult,
+export function executionAttemptMetrics(
+  result: Pick<
+    AgentExecutionResult,
+    'success' | 'costUsd' | 'executionTimeMs' | 'modelName' | 'attemptMetrics'
+  >,
 ): NonNullable<AgentExecutionResult['attemptMetrics']> {
   return (
     result.attemptMetrics ?? [
@@ -24,7 +27,10 @@ export function mergeFallbackSegmentTime(
   primary: AgentExecutionResult,
   fallback: AgentExecutionResult,
 ): AgentExecutionResult {
-  const attemptMetrics = [...attempts(primary), ...attempts(fallback)];
+  const attemptMetrics = [
+    ...executionAttemptMetrics(primary),
+    ...executionAttemptMetrics(fallback),
+  ];
   const total = attemptMetrics.every((a) => a.costUsd !== null)
     ? attemptMetrics.reduce((sum, a) => sum + a.costUsd!, 0)
     : undefined;
