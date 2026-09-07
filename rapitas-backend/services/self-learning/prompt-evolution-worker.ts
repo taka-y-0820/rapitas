@@ -12,7 +12,7 @@
 import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
 import { sendAIMessage } from '../../utils/ai-client';
-import { readComparisonRecord, writeComparisonRecord } from './comparison/prompt-comparison-store';
+import { readComparisonRecord, updateComparisonScope } from './comparison/prompt-comparison-store';
 import {
   validateAddendumQuality,
   type AddendumQualityReason,
@@ -296,7 +296,9 @@ export async function reviewProposal(id: number, approved: boolean): Promise<boo
     // disagree about the rollout's scope.
     const comparison = readComparisonRecord(id);
     if (comparison && comparison.stagedTaskIds !== null) {
-      writeComparisonRecord({ ...comparison, stagedTaskIds: null });
+      if (!updateComparisonScope(comparison.promptEvolutionId, comparison.stagedTaskIds, null)) {
+        return false;
+      }
     }
   }
   // approvedAt anchors the post-approval measurement window

@@ -137,7 +137,7 @@ export const learningRoutes = new Elysia({ prefix: '/learning' })
         set.status = 400;
         return { error: 'id must be an integer' };
       }
-      const { readComparisonRecord, writeComparisonRecord } =
+      const { readComparisonRecord, updateComparisonScope } =
         await import('../../services/self-learning/comparison/prompt-comparison-store');
       const record = readComparisonRecord(id);
       if (!record) {
@@ -145,7 +145,10 @@ export const learningRoutes = new Elysia({ prefix: '/learning' })
         return { error: 'comparison_not_run' };
       }
       const taskIds = body.taskIds;
-      writeComparisonRecord({ ...record, stagedTaskIds: taskIds });
+      if (!updateComparisonScope(id, record.stagedTaskIds, taskIds)) {
+        set.status = 409;
+        return { error: 'comparison_update_conflict_or_write_failed' };
+      }
       return { status: 'staged', taskIds };
     },
     { body: t.Object({ taskIds: t.Array(t.Number()) }) },

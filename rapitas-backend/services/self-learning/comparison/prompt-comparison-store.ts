@@ -144,6 +144,22 @@ export function writeComparisonRecord(record: ComparisonRecord): boolean {
   }
 }
 
+/** Change only rollout scope under the same lock as measured outcome appends. */
+export function updateComparisonScope(
+  id: number,
+  expected: ComparisonRecord['stagedTaskIds'],
+  next: ComparisonRecord['stagedTaskIds'],
+): boolean {
+  return (
+    withAlphaLedgerLock(recordFile(id), () => {
+      const current = readComparisonRecord(id);
+      if (!current || JSON.stringify(current.stagedTaskIds) !== JSON.stringify(expected))
+        return false;
+      return writeComparisonRecord({ ...current, stagedTaskIds: next });
+    }) === true
+  );
+}
+
 /**
  * Acquire the per-candidate comparison lock. Fails (returns false) when a
  * comparison run for the SAME candidate is already in progress — different

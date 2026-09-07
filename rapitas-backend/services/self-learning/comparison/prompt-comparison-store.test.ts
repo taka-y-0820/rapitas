@@ -20,6 +20,7 @@ import {
   recordComparisonRun,
   releaseComparisonLock,
   writeComparisonRecord,
+  updateComparisonScope,
 } from './prompt-comparison-store';
 import type { ComparisonRecord, ComparisonRun } from './prompt-comparison-types';
 
@@ -278,5 +279,30 @@ describe('initComparisonRecordForStaging — 既存記録の保護', () => {
 
     expect(result.issue).toBeNull();
     expect(result.record?.arms[0]?.runs).toHaveLength(1);
+  });
+});
+
+describe('updateComparisonScope', () => {
+  it('preserves measurements appended after the caller read the record', () => {
+    stage(501);
+    const stale = readComparisonRecord(501)!;
+    expect(recordComparisonRun(501, 'current', trialRun())).toBe(true);
+    const measured = readComparisonRecord(501)!;
+    expect(updateComparisonScope(501, stale.stagedTaskIds, null)).toBe(true);
+    expect(readComparisonRecord(501)).toEqual({ ...measured, stagedTaskIds: null });
+  });
+  it('rejects conflicting scope changes and preserves the newer record', () => {
+    stage(502);
+    expect(updateComparisonScope(502, [], [9])).toBe(true);
+    const newer = readComparisonRecord(502);
+    expect(updateComparisonScope(502, [], null)).toBe(false);
+    expect(readComparisonRecord(502)).toEqual(newer);
+  });
+  it('does not replace incomplete or missing evidence', () => {
+    writeComparisonRecord(baseRecord(503, 'in_progress'));
+    expect(updateComparisonScope(503, null, [])).toBe(false);
+    expect(readComparisonRecordStatus(503).kind).toBe('in_progress');
+    expect(updateComparisonScope(504, null, [])).toBe(false);
+    expect(readComparisonRecordStatus(504).kind).toBe('not_found');
   });
 });

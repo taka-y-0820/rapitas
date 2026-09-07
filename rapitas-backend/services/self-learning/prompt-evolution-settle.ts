@@ -13,7 +13,7 @@
 import type { PrismaClient } from '../../generated/prisma-postgres';
 import { createLogger } from '../../config/logger';
 import { evaluateRole, type RoleEvaluation } from './prompt-evolution-runner';
-import { readComparisonRecord, writeComparisonRecord } from './comparison/prompt-comparison-store';
+import { readComparisonRecord, updateComparisonScope } from './comparison/prompt-comparison-store';
 
 const log = createLogger('self-learning:prompt-evolution-settle');
 
@@ -203,7 +203,9 @@ export async function settleApprovedEvolutions(
       comparison?.summary?.verdict === 'improved' &&
       isPureAddendum(row.afterPrompt)
     ) {
-      writeComparisonRecord({ ...comparison, stagedTaskIds: null });
+      if (!updateComparisonScope(comparison.promptEvolutionId, comparison.stagedTaskIds, null)) {
+        continue;
+      }
       log.info(
         { id: row.id, role },
         '[settle] Low-risk auto-promotion: staged candidate promoted to full rollout',
