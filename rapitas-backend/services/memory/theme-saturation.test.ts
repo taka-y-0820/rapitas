@@ -161,6 +161,46 @@ describe('findSaturatedTheme', () => {
   });
 });
 
+describe('findSaturatedTheme — minJaccardで無関係トピックの誤爆を防ぐ (#888)', () => {
+  test('短い共通語（Codex）だけを共有する無関係な懸念群は minJaccard 指定時は飽和と判定しない', async () => {
+    // #7336相当: salient=5のLCS一致だけでは「Codex」という技術用語のみを共有する
+    // 無関係な3件が theme-saturation の cap に達し、新規の全く別内容の懸念を誤って吸収した。
+    pool = [
+      { id: 201, title: 'Codex CLIのログイン状態確認手順について' },
+      { id: 202, title: 'Codex CLIの応答速度に関する計測結果メモ' },
+      { id: 203, title: 'Codex CLI利用時のネットワーク設定ガイド' },
+    ];
+
+    const anchor = await findSaturatedTheme('Codex 監督者による質問検出ロジックの構造化失敗調査', {
+      sourceType: 'concern',
+      cap: 3,
+      salient: 5,
+      openConcernOnly: true,
+      minJaccard: 0.2,
+    });
+
+    expect(anchor).toBeNull();
+  });
+
+  test('本文全体が重なる真の重複クラスタは minJaccard 指定時も引き続き飽和と判定する（回帰）', async () => {
+    pool = [
+      { id: 11, title: '[Bug] 境界値テスト自動生成が壊れる' },
+      { id: 12, title: '[Idea] 境界値テスト自動生成の改善' },
+      { id: 13, title: '[改善] 境界値テスト自動生成の整理' },
+    ];
+
+    const anchor = await findSaturatedTheme('[Bug] 境界値テスト自動生成をやり直す', {
+      sourceType: 'concern',
+      cap: 3,
+      salient: 5,
+      openConcernOnly: true,
+      minJaccard: 0.2,
+    });
+
+    expect(anchor).toBe(11);
+  });
+});
+
 describe('書式マーカーは同一テーマとみなさない', () => {
   test('角括弧のマーカーを除去する', () => {
     expect(stripTitleMarkers('[Bug] 登録ポイントが競合する')).toBe('登録ポイントが競合する');

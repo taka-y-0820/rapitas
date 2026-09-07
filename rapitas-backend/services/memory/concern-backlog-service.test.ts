@@ -423,26 +423,29 @@ describe('submitConcern — lifecycle-aware dedup', () => {
   it('blocks (no new row) when a live OPEN concern with the same key exists', async () => {
     mockKnowledgeEntryFindMany.mockResolvedValue([{ id: 5, sourceId: 'open' }]);
 
-    const id = await submitConcern({
+    const result = await submitConcern({
       title: 'CI赤の懸念タイトル',
       detail: '詳細',
       dedupKey: 'ci-red:1:Test',
     });
 
-    expect(id).toBe(5);
+    expect(result.id).toBe(5);
+    expect(result.outcome).toBe('reused');
+    expect(result.reason).toBe('dedup-live-duplicate');
     expect(mockKnowledgeEntryCreate).not.toHaveBeenCalled();
   });
 
   it('blocks when a dismissed concern with the same key exists (respects dismiss)', async () => {
     mockKnowledgeEntryFindMany.mockResolvedValue([{ id: 5, sourceId: 'dismissed' }]);
 
-    const id = await submitConcern({
+    const result = await submitConcern({
       title: 'CI赤の懸念タイトル',
       detail: '詳細',
       dedupKey: 'ci-red:1:Test',
     });
 
-    expect(id).toBe(5);
+    expect(result.id).toBe(5);
+    expect(result.outcome).toBe('reused');
     expect(mockKnowledgeEntryCreate).not.toHaveBeenCalled();
   });
 
@@ -450,13 +453,14 @@ describe('submitConcern — lifecycle-aware dedup', () => {
     mockKnowledgeEntryFindMany.mockResolvedValue([{ id: 5, sourceId: 'task_9' }]);
     mockTaskFindUnique.mockResolvedValue({ status: 'in-progress' });
 
-    const id = await submitConcern({
+    const result = await submitConcern({
       title: 'CI赤の懸念タイトル',
       detail: '詳細',
       dedupKey: 'ci-red:1:Test',
     });
 
-    expect(id).toBe(5);
+    expect(result.id).toBe(5);
+    expect(result.outcome).toBe('reused');
     expect(mockKnowledgeEntryCreate).not.toHaveBeenCalled();
   });
 
@@ -492,21 +496,25 @@ describe('submitConcern — recurrencePolicy aggregation', () => {
     ]);
     mockKnowledgeEntryCreate.mockResolvedValueOnce({ id: 11 });
 
-    const firstId = await submitConcern({
+    const first = await submitConcern({
       title: '状態不整合の懸念',
       detail: '1回目の詳細',
       dedupKey: 'self-incident:tristate-desync',
       recurrencePolicy: { enabled: true, instanceValue: 'taskId:100' },
     });
-    const secondId = await submitConcern({
+    const second = await submitConcern({
       title: '状態不整合の懸念',
       detail: '2回目の詳細',
       dedupKey: 'self-incident:tristate-desync',
       recurrencePolicy: { enabled: true, instanceValue: 'taskId:200' },
     });
 
-    expect(firstId).toBe(11);
-    expect(secondId).toBe(11);
+    expect(first.id).toBe(11);
+    expect(first.outcome).toBe('created');
+    expect(first.reason).toBe('new');
+    expect(second.id).toBe(11);
+    expect(second.outcome).toBe('reused');
+    expect(second.reason).toBe('recurrence-merged-open');
     expect(mockKnowledgeEntryCreate).toHaveBeenCalledTimes(1);
     expect(mockKnowledgeEntryUpdate).toHaveBeenCalledTimes(1);
     const updateCall = mockKnowledgeEntryUpdate.mock.calls[0][0] as {
@@ -529,7 +537,7 @@ describe('submitConcern — recurrencePolicy aggregation', () => {
     ]);
     mockTaskFindUnique.mockResolvedValue({ status: 'done', completedAt });
 
-    await submitConcern({
+    const result = await submitConcern({
       title: 'git command failed 懸念',
       detail: '新しい詳細',
       severity: 'medium',
@@ -546,6 +554,8 @@ describe('submitConcern — recurrencePolicy aggregation', () => {
     const tags = JSON.parse(call.data.tags) as string[];
     expect(tags).toContain('recurrenceOf:22');
     expect(tags).toContain('severity:high'); // medium escalated to high
+    expect(result.outcome).toBe('created');
+    expect(result.reason).toBe('recurrence-of-done');
   });
 
   it('files a plain new concern (no escalation) for a done-task recurrence outside the window', async () => {
@@ -561,7 +571,7 @@ describe('submitConcern — recurrencePolicy aggregation', () => {
     ]);
     mockTaskFindUnique.mockResolvedValue({ status: 'done', completedAt });
 
-    await submitConcern({
+    const result = await submitConcern({
       title: '状態不整合の懸念',
       detail: '新しい詳細',
       severity: 'medium',
@@ -577,6 +587,64 @@ describe('submitConcern — recurrencePolicy aggregation', () => {
     const tags = JSON.parse(call.data.tags) as string[];
     expect(tags).not.toContain('recurrenceOf:23');
     expect(tags).toContain('severity:medium'); // unchanged, no escalation
+    expect(result.outcome).toBe('created');
+    expect(result.reason).toBe('new');
+  });
+});
+
+// ─── submitConcern — 応答のoutcome区別 (#888) ───────────────────────────────────
+
+describe('submitConcern — 応答のoutcome区別', () => {
+  beforeEach(resetMocks);
+
+  it('near-duplicate 抑制時は outcome:suppressed, reason:near-duplicate を返す', async () => {
+    mockKnowledgeEntryFindMany
+      .mockResolvedValueOnce([]) // findBlockingDuplicate: no blocking dup
+      .mockResolvedValueOnce([
+        { id: 42, title: 'テーマ飽和判定の誤爆確認用タイトル' },
+      ]); // findNearDuplicate: near-dup match
+
+    const result = await submitConcern({
+      title: 'テーマ飽和判定の誤爆確認用タイトル',
+      detail: '詳細',
+    });
+
+    expect(result).toEqual({ id: 42, outcome: 'suppressed', reason: 'near-duplicate' });
+    expect(mockKnowledgeEntryCreate).not.toHaveBeenCalled();
+  });
+
+  it('theme-saturation 抑制時は outcome:suppressed, reason:theme-saturation を返す', async () => {
+    mockKnowledgeEntryFindMany
+      .mockResolvedValueOnce([]) // findBlockingDuplicate: no blocking dup
+      .mockResolvedValueOnce([]) // findNearDuplicate: no near-dup
+      .mockResolvedValueOnce([
+        { id: 51, title: '監督ループ自動修復システムの誤動作報告B' },
+        { id: 52, title: '監督ループ自動修復システムの誤動作報告C' },
+        { id: 53, title: '監督ループ自動修復システムの誤動作報告D' },
+      ]); // findSaturatedTheme: theme cap reached
+
+    const result = await submitConcern({
+      title: '監督ループ自動修復システムの誤動作報告A',
+      detail: '詳細',
+    });
+
+    expect(result).toEqual({ id: 51, outcome: 'suppressed', reason: 'theme-saturation' });
+    expect(mockKnowledgeEntryCreate).not.toHaveBeenCalled();
+  });
+
+  it('near-dup も飽和もない通常登録は outcome:created, reason:new を返す', async () => {
+    mockKnowledgeEntryFindMany
+      .mockResolvedValueOnce([]) // findBlockingDuplicate
+      .mockResolvedValueOnce([]) // findNearDuplicate
+      .mockResolvedValueOnce([]); // findSaturatedTheme
+    mockKnowledgeEntryCreate.mockResolvedValueOnce({ id: 7 });
+
+    const result = await submitConcern({
+      title: '新しい未分類の懸念タイトルです',
+      detail: '詳細',
+    });
+
+    expect(result).toEqual({ id: 7, outcome: 'created', reason: 'new' });
   });
 });
 
