@@ -650,3 +650,34 @@ it('a hang timeout stops execution but preserves uncommitted work for diagnosis 
   expect(mockRevertChanges).not.toHaveBeenCalled();
   expect(mockTaskUpdate).toHaveBeenCalledWith({ where: { id: 100 }, data: { status: 'blocked' } });
 });
+
+it('actual scheduler waits for a same-task lifecycle owner before reading the hang budget', async () => {
+  const { withTaskLifecycleLock } = await import('../task-lifecycle-lock');
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const answer = withTaskLifecycleLock(100, async () => {
+    await gate;
+  });
+  const tick = internal(scheduler).advanceTheme(
+    1,
+    100,
+    'priority',
+    1,
+    new Date(Date.now() - TEST_MAX_TASK_WALL_MS * 4).toISOString(),
+  );
+  try {
+    await withTaskLifecycleLock(101, async () => {});
+    expect(mockResumeTransition).not.toHaveBeenCalled();
+    expect(mockNotifyHangBackstop).not.toHaveBeenCalled();
+    // Model the committed answer visible when ownership is released.
+    mockResumeTransition.mockResolvedValue({ createdAt: new Date() });
+    mockGetThemeActiveQueueItems.mockResolvedValue([{ id: 1, taskId: 100, status: 'running' }]);
+  } finally {
+    release();
+    await Promise.all([answer, tick]);
+  }
+  expect(mockResumeTransition).toHaveBeenCalled();
+  expect(mockNotifyHangBackstop).not.toHaveBeenCalled();
+});
