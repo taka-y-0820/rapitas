@@ -1,3 +1,4 @@
+import { createPublicationCancellationGuard } from './publication-cancellation-guard';
 /**
  * Workflow Auto Commit and PR
  *
@@ -23,7 +24,8 @@ import {
   releasePrCreationLock,
 } from '../../services/github/pr-duplicate-guard';
 import { syncBaseIntoBranch, type BaseSyncResult } from '../../services/workflow/pre-pr-base-sync';
-import { runGitCommand } from '../../services/github/git-exec';
+import { countCommitsAhead } from './count-commits-ahead';
+export { countCommitsAhead } from './count-commits-ahead';
 
 const log = createLogger('routes:workflow:auto-commit');
 
@@ -63,26 +65,6 @@ export type AutoCommitPRResult = {
   verificationBlocked?: boolean;
   error?: string;
 };
-
-/**
- * Commits on HEAD that the remote base does not have.
- *
- * Fails OPEN: when git cannot answer (no remote-tracking ref, not a repo) the
- * caller proceeds to the PR attempt, which decides for itself.
- *
- * @param cwd - Worktree or checkout to inspect. / 対象の作業ツリー
- * @param baseBranch - PR base branch name (remote-tracking `origin/<base>` is compared). / ベースブランチ
- * @returns Number of commits ahead, or null when unknown. / 先行コミット数（不明なら null）
- */
-export async function countCommitsAhead(cwd: string, baseBranch: string): Promise<number | null> {
-  try {
-    const out = await runGitCommand(['rev-list', '--count', `origin/${baseBranch}..HEAD`], cwd);
-    const n = parseInt(out, 10);
-    return Number.isFinite(n) ? n : null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Classify whether a failed commit/PR outcome means "no change was needed"
@@ -181,21 +163,19 @@ export async function performAutoCommitAndPR(
     }
 
     const latestSession = task.developerModeConfig?.agentSessions?.[0];
+    const checkCancellation = await createPublicationCancellationGuard(
+      prisma,
+      taskId,
+      latestSession?.id,
+    );
     const branchName = latestSession?.branchName;
     const targetBranch =
       ((execConfig as Record<string, unknown> | null)?.targetBranch as string) ||
       task.theme?.defaultBranch ||
       'develop';
 
-    // CRITICAL: git commit / push / PR commands MUST run inside the
-    // per-task worktree, not the dev project root. Earlier code passed
-    // `workingDirectory` (project root) to all git commands, which:
-    //   - committed against whatever branch was checked out at the root
-    //   - never touched the agent's actual changes (those live in the
-    //     worktree on the task branch)
-    //   - silently produced "no diff" or no-op commits
-    // Fall back to `workingDirectory` only when no worktree exists, so
-    // callers that already work without isolation keep functioning.
+    // Prefer the task worktree so git operations cannot commit the main checkout.
+    // Legacy sessions without a worktree use the resolved working directory.
     const gitCwd = latestSession?.worktreePath || workingDirectory;
     if (latestSession?.worktreePath) {
       log.info(
@@ -225,6 +205,7 @@ export async function performAutoCommitAndPR(
       };
     }
 
+    await checkCancellation();
     const orchestrator = AgentOrchestrator.getInstance(prisma);
 
     // Process autoCommit
@@ -233,6 +214,7 @@ export async function performAutoCommitAndPR(
         if (branchName) {
           await orchestrator.createBranch(gitCwd, branchName);
         }
+        await checkCancellation();
         const commitResult = await orchestrator.createCommit(
           gitCwd,
           `feat(task-${taskId}): ${task.title}`,
@@ -371,6 +353,7 @@ export async function performAutoCommitAndPR(
             // what isNoChangeCompletion classifies, so the no-change path below
             // is unchanged; only the pointless gh call and its ERROR line go.
             const aheadOfBase = await countCommitsAhead(gitCwd, targetBranch);
+            await checkCancellation();
             const prResult =
               aheadOfBase === 0
                 ? {
@@ -476,6 +459,7 @@ export async function performAutoCommitAndPR(
       let removeError: string | undefined;
       try {
         const baseDir = dirname(dirname(worktreePath));
+        await checkCancellation();
         const removed = await orchestrator.removeWorktree(baseDir, worktreePath);
         if (!removed) removeError = 'removeWorktree refused or failed';
       } catch (cleanupError) {
@@ -496,6 +480,7 @@ export async function performAutoCommitAndPR(
       }
     }
   } catch (error) {
+    result.error = error instanceof Error ? error.message : String(error);
     log.error({ err: error }, `[Workflow] Auto-commit/PR process failed for task ${taskId}`);
   }
 

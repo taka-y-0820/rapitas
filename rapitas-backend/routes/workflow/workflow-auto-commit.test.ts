@@ -25,7 +25,9 @@ mock.module('../../config/logger', () => ({
   }),
 }));
 
+let publicationStatus = 'completed';
 const mockPrisma = {
+  agentExecution: { findMany: mock(async () => [{ id: 100, status: publicationStatus }]) },
   agentExecutionConfig: {
     findUnique: mock(() =>
       Promise.resolve({
@@ -61,8 +63,12 @@ mock.module('../../services/workflow/automation-policy', () => ({
     Promise.resolve({ autoCommit: true, autoCreatePR: true, autoMergePR: false }),
 }));
 
+let stopDuringVerification = false;
 mock.module('../../services/agents/verification/verification-gate', () => ({
-  runVerificationGate: () => Promise.resolve({ ok: true }),
+  runVerificationGate: async () => {
+    if (stopDuringVerification) publicationStatus = 'canceling';
+    return { ok: true };
+  },
 }));
 
 // One mutable fixture per test drives createPullRequest's outcome and the
@@ -77,15 +83,17 @@ mock.module('../../services/agents/agent-orchestrator', () => ({
   AgentOrchestrator: {
     getInstance: () => ({
       createBranch: () => Promise.resolve(),
-      createCommit: () =>
-        Promise.resolve({
+      createCommit: () => {
+        createCommitCalls++;
+        return Promise.resolve({
           hash: 'abc123',
           branch: 'feature/t687',
           filesChanged: filesChangedFixture,
           additions: 0,
           deletions: 0,
           alreadyCommitted: false,
-        }),
+        });
+      },
       createPullRequest: () => {
         createPullRequestCalls++;
         return Promise.resolve(prResultFixture);
@@ -123,6 +131,7 @@ mock.module('../../services/github/pr-duplicate-guard', () => ({
 // gh path; the no-change test sets it to '0'.
 let revListFixture = '1';
 let createPullRequestCalls = 0;
+let createCommitCalls = 0;
 mock.module('../../services/github/git-exec', () => ({
   runGitCommand: () => Promise.resolve(revListFixture),
 }));
@@ -276,4 +285,20 @@ describe('performAutoCommitAndPR — removeWorktree の戻り値を worktreeClea
       data: { worktreePath: null },
     });
   });
+});
+
+test('a stop during verification prevents commit and PR creation', async () => {
+  publicationStatus = 'completed';
+  stopDuringVerification = true;
+  createCommitCalls = 0;
+  createPullRequestCalls = 0;
+  try {
+    const result = await performAutoCommitAndPR(687, 'verified');
+    expect(result.error).toContain('Publication withheld');
+    expect(createCommitCalls).toBe(0);
+    expect(createPullRequestCalls).toBe(0);
+  } finally {
+    publicationStatus = 'completed';
+    stopDuringVerification = false;
+  }
 });
