@@ -74,6 +74,33 @@ describe('アルファ配分の数式（決定論的な予算上限）', () => {
 });
 
 describe('assignCandidateBudget', () => {
+  it.each([
+    { nextK: 2, entries: { '10': { k: 0, lastLookJ: 0, lastLookSampleSize: 0 } } },
+    { nextK: 2.5, entries: {} },
+    { nextK: 2, entries: [] },
+    { nextK: 2, entries: { '10': { k: 1, lastLookJ: -1, lastLookSampleSize: 0 } } },
+    { nextK: 2, entries: { '10': { k: 1, lastLookJ: 1, lastLookSampleSize: 0 } } },
+    { nextK: 1, entries: { '10': { k: 1, lastLookJ: 0, lastLookSampleSize: 0 } } },
+    {
+      nextK: 3,
+      entries: {
+        '10': { k: 1, lastLookJ: 0, lastLookSampleSize: 0 },
+        '11': { k: 1, lastLookJ: 0, lastLookSampleSize: 0 },
+      },
+    },
+  ])('不正な予算台帳を拒否して保存する: %j', (ledger) => {
+    const raw = JSON.stringify(ledger);
+    writeRawLedger(raw);
+    expect(assignCandidateBudget(10)).toEqual({ issue: 'corrupted' });
+    expect(readFileSync(ledgerPath(), 'utf8')).toBe(raw);
+  });
+
+  it('初期化後に台帳が消えても予算を再発行しない', () => {
+    assignCandidateBudget(10);
+    rmSync(ledgerPath());
+    expect(assignCandidateBudget(11)).toEqual({ issue: 'corrupted' });
+  });
+
   it('候補ごとに単調増加する k を割り当てる', () => {
     const first = assignCandidateBudget(10);
     const second = assignCandidateBudget(11);

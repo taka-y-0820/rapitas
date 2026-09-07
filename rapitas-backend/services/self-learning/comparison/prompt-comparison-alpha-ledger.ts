@@ -6,28 +6,20 @@
  * candidate, the order it entered a trial (`k`), how many looks it has spent
  * (`j`), and the sample size at the last look.
  *
- * Why a ledger rather than a constant threshold: `evaluateStagedCandidates`
- * re-judges every staged candidate on every daily run. Re-applying one fixed
- * threshold to a growing sample is repeated testing, and its family-wise
- * false-adoption rate climbs far above the nominal level — measured at 0.116
- * under a null where both arms are Binomial(10, 0.7). Splitting a single 5%
- * budget across candidates and looks bounds that rate instead.
- *
- *   alpha_k  = TOTAL_ALPHA / (k * (k + 1))      per candidate, k = 1, 2, ...
- *   alpha_kj = alpha_k     / (j * (j + 1))      per look,      j = 1, 2, ...
- *
- * Both series telescope: sum_{k=1..N} 1/(k(k+1)) = 1 - 1/(N+1) < 1, so the
- * total never exceeds TOTAL_ALPHA no matter how many candidates or looks
- * accumulate. This is the alpha-spending property that makes the monitoring
- * SCHEDULE irrelevant — only "a look costs budget, and re-reading the same
- * samples is not a look" has to hold.
+ * Each candidate k and evaluation j receives TOTAL_ALPHA/[k(k+1)j(j+1)].
+ * The series bounds total allocated budget. Valid inference additionally needs
+ * predeclared sample checkpoints (or an anytime-valid test); allocation alone
+ * does not make data-dependent monitoring valid. The supervisor's 0.116 figure
+ * was an exact single-look null probability for the former descriptive gate,
+ * not a measured repeated-look error rate.
  *
  * Not responsible for the test itself (prompt-comparison-adoption-gate) nor
  * for the comparison runs (prompt-comparison-store).
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, join } from 'path';
+import { join } from 'path';
+import { withAlphaLedgerLock, writeAlphaLedger } from './prompt-comparison-alpha-storage';
 
 /** Family-wise false-adoption budget shared by every candidate, ever. */
 export const TOTAL_ALPHA = 0.05;
@@ -84,12 +76,37 @@ function ledgerFile(): string {
 function isLedgerFile(value: unknown): value is LedgerFile {
   if (value === null || typeof value !== 'object') return false;
   const v = value as Partial<LedgerFile>;
-  return (
-    typeof v.nextK === 'number' &&
-    v.nextK >= 1 &&
-    v.entries !== null &&
-    typeof v.entries === 'object'
-  );
+  if (
+    !Number.isSafeInteger(v.nextK) ||
+    v.nextK! < 1 ||
+    !v.entries ||
+    typeof v.entries !== 'object' ||
+    Array.isArray(v.entries)
+  )
+    return false;
+  const indices = new Set<number>();
+  for (const [id, entry] of Object.entries(v.entries)) {
+    if (
+      !/^[1-9]\d*$/.test(id) ||
+      !Number.isSafeInteger(Number(id)) ||
+      !entry ||
+      typeof entry !== 'object' ||
+      !Number.isSafeInteger(entry.k) ||
+      entry.k < 1 ||
+      entry.k >= v.nextK! ||
+      !Number.isSafeInteger(entry.lastLookJ) ||
+      entry.lastLookJ < 0 ||
+      !Number.isSafeInteger(entry.lastLookSampleSize) ||
+      entry.lastLookSampleSize < 0 ||
+      (entry.lastLookJ === 0) !== (entry.lastLookSampleSize === 0) ||
+      entry.lastLookJ > entry.lastLookSampleSize ||
+      indices.has(entry.k)
+    )
+      return false;
+    indices.add(entry.k);
+  }
+  // Entries are never deleted: gaps mean historical budget was lost.
+  return indices.size === v.nextK! - 1;
 }
 
 type LedgerRead = { file: LedgerFile; issue: null } | { file: null; issue: LedgerIssue };
@@ -120,14 +137,7 @@ function readLedger(): LedgerRead {
 }
 
 function writeLedger(ledger: LedgerFile): boolean {
-  try {
-    const file = ledgerFile();
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify(ledger, null, 2));
-    return true;
-  } catch {
-    return false;
-  }
+  return writeAlphaLedger(ledgerFile(), ledger);
 }
 
 /**
@@ -137,7 +147,7 @@ function writeLedger(ledger: LedgerFile): boolean {
  * @returns alpha_k. / 候補あたりの総予算
  */
 export function alphaForCandidate(k: number): number {
-  return TOTAL_ALPHA / (k * (k + 1));
+  return Number.isSafeInteger(k) && k > 0 ? TOTAL_ALPHA / (k * (k + 1)) : 0;
 }
 
 /**
@@ -148,7 +158,13 @@ export function alphaForCandidate(k: number): number {
  * @returns alpha_kj. / この評価回の予算
  */
 export function alphaForLook(alphaK: number, j: number): number {
-  return alphaK / (j * (j + 1));
+  return Number.isFinite(alphaK) &&
+    alphaK > 0 &&
+    alphaK <= TOTAL_ALPHA &&
+    Number.isSafeInteger(j) &&
+    j > 0
+    ? alphaK / (j * (j + 1))
+    : 0;
 }
 
 /**
@@ -163,18 +179,26 @@ export function alphaForLook(alphaK: number, j: number): number {
  * @returns The candidate's k and alpha_k, or the reason the ledger is unusable. / 予算 or 失敗理由
  */
 export function assignCandidateBudget(promptEvolutionId: number): CandidateBudget | LedgerFailure {
-  const read = readLedger();
-  if (!read.file) return { issue: read.issue };
+  return withAlphaLedgerLock<CandidateBudget | LedgerFailure>(ledgerFile(), () => {
+    const read = readLedger();
+    if (!read.file) return { issue: read.issue };
 
-  const key = String(promptEvolutionId);
-  const existing = read.file.entries[key];
-  if (existing) return { k: existing.k, alphaK: alphaForCandidate(existing.k), issue: null };
+    const key = String(promptEvolutionId);
+    const existing = read.file.entries[key];
+    if (existing) return { k: existing.k, alphaK: alphaForCandidate(existing.k), issue: null };
 
-  const k = read.file.nextK;
-  read.file.entries[key] = { k, lastLookJ: 0, lastLookSampleSize: 0 };
-  read.file.nextK = k + 1;
-  if (!writeLedger(read.file)) return { issue: 'write_failed' };
-  return { k, alphaK: alphaForCandidate(k), issue: null };
+    if (
+      !Number.isSafeInteger(promptEvolutionId) ||
+      promptEvolutionId <= 0 ||
+      read.file.nextK >= Number.MAX_SAFE_INTEGER
+    )
+      return { issue: 'corrupted' as const };
+    const k = read.file.nextK;
+    read.file.entries[key] = { k, lastLookJ: 0, lastLookSampleSize: 0 };
+    read.file.nextK = k + 1;
+    if (!writeLedger(read.file)) return { issue: 'write_failed' };
+    return { k, alphaK: alphaForCandidate(k), issue: null };
+  });
 }
 
 /**
@@ -195,28 +219,32 @@ export function resolveEvaluationBudget(
   promptEvolutionId: number,
   currentSampleSize: number,
 ): EvaluationBudget | LedgerFailure {
-  const read = readLedger();
-  if (!read.file) return { issue: read.issue };
+  return withAlphaLedgerLock<EvaluationBudget | LedgerFailure>(ledgerFile(), () => {
+    const read = readLedger();
+    if (!read.file) return { issue: read.issue };
 
-  const key = String(promptEvolutionId);
-  const entry = read.file.entries[key];
-  // A candidate with no reserved k was never staged through this ledger; it
-  // has no budget to spend and must not borrow one.
-  if (!entry) return { issue: 'not_registered' };
+    if (!Number.isSafeInteger(currentSampleSize) || currentSampleSize < 0)
+      return { issue: 'corrupted' as const };
+    const key = String(promptEvolutionId);
+    const entry = read.file.entries[key];
+    // A candidate with no reserved k was never staged through this ledger; it
+    // has no budget to spend and must not borrow one.
+    if (!entry) return { issue: 'not_registered' };
 
-  const alphaK = alphaForCandidate(entry.k);
-  if (currentSampleSize <= entry.lastLookSampleSize) {
-    return {
-      isNewLook: false,
-      j: entry.lastLookJ,
-      alphaKj: alphaForLook(alphaK, Math.max(1, entry.lastLookJ)),
-      issue: null,
-    };
-  }
+    const alphaK = alphaForCandidate(entry.k);
+    if (currentSampleSize <= entry.lastLookSampleSize) {
+      return {
+        isNewLook: false,
+        j: entry.lastLookJ,
+        alphaKj: alphaForLook(alphaK, Math.max(1, entry.lastLookJ)),
+        issue: null,
+      };
+    }
 
-  const j = entry.lastLookJ + 1;
-  entry.lastLookJ = j;
-  entry.lastLookSampleSize = currentSampleSize;
-  if (!writeLedger(read.file)) return { issue: 'write_failed' };
-  return { isNewLook: true, j, alphaKj: alphaForLook(alphaK, j), issue: null };
+    const j = entry.lastLookJ + 1;
+    entry.lastLookJ = j;
+    entry.lastLookSampleSize = currentSampleSize;
+    if (!writeLedger(read.file)) return { issue: 'write_failed' };
+    return { isNewLook: true, j, alphaKj: alphaForLook(alphaK, j), issue: null };
+  });
 }

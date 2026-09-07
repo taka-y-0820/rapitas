@@ -10,7 +10,7 @@
  * 再実行のたびに結果が変わり、境界付近で偶発的に落ちるテストになる。
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync, unlinkSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { passesSequentialSignificance } from './prompt-comparison-adoption-gate';
@@ -35,17 +35,11 @@ function mulberry32(seed: number): () => number {
 let tmpDir: string;
 let savedDataDir: string | undefined;
 
-function ledgerPath(): string {
-  return join(tmpDir, '.prompt-comparisons', '_alpha-ledger.json');
-}
+let replication = 0;
 
-/** Start a fresh family: the next candidate registered becomes k=1 again. */
+/** Each simulated family has independent storage, like a separate deployment. */
 function resetLedger(): void {
-  try {
-    unlinkSync(ledgerPath());
-  } catch {
-    /* first replication has no ledger yet */
-  }
+  process.env.RAPITAS_DATA_DIR = join(tmpDir, `family-${++replication}`);
 }
 
 beforeEach(() => {
