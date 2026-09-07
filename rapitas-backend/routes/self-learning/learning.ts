@@ -107,6 +107,51 @@ export const learningRoutes = new Elysia({ prefix: '/learning' })
   })
 
   /**
+   * Current-vs-candidate comparison result for one PromptEvolution candidate
+   * (success-rate/cost/duration delta, failure-cause breakdown, verdict).
+   * Returns `{ comparison: null }` when no shadow-run comparison has been
+   * recorded yet — the approval UI shows a "comparison not run" warning
+   * rather than blocking approval.
+   */
+  .get('/prompt-evolution/:id/comparison', async ({ params, set }) => {
+    const id = parseInt((params as { id: string }).id, 10);
+    if (!Number.isInteger(id)) {
+      set.status = 400;
+      return { error: 'id must be an integer' };
+    }
+    const { readComparisonRecord } =
+      await import('../../services/self-learning/comparison/prompt-comparison-store');
+    return { comparison: readComparisonRecord(id) };
+  })
+
+  /**
+   * Limit an approved candidate's application to a small set of task ids
+   * (段階採用). Requires a comparison record to already exist — staging is
+   * part of the same human-approval flow that reviews the comparison result.
+   */
+  .post(
+    '/prompt-evolution/:id/stage',
+    async ({ params, body, set }) => {
+      const id = parseInt((params as { id: string }).id, 10);
+      if (!Number.isInteger(id)) {
+        set.status = 400;
+        return { error: 'id must be an integer' };
+      }
+      const { readComparisonRecord, writeComparisonRecord } =
+        await import('../../services/self-learning/comparison/prompt-comparison-store');
+      const record = readComparisonRecord(id);
+      if (!record) {
+        set.status = 404;
+        return { error: 'comparison_not_run' };
+      }
+      const taskIds = body.taskIds;
+      writeComparisonRecord({ ...record, stagedTaskIds: taskIds });
+      return { status: 'staged', taskIds };
+    },
+    { body: t.Object({ taskIds: t.Array(t.Number()) }) },
+  )
+
+  /**
    * Read-only summary of the PromptEvolution table, grouped by
    * basePromptKey/category: entry/pending/completed counts and performance
    * trend per group. Does not pick or promote a "winner" prompt.

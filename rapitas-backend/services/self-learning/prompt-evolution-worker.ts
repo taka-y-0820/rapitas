@@ -12,6 +12,7 @@
 import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
 import { sendAIMessage } from '../../utils/ai-client';
+import { readComparisonRecord } from './comparison/prompt-comparison-store';
 
 const log = createLogger('self-learning:prompt-evolution-worker');
 
@@ -122,20 +123,40 @@ ${trouble || '(記録なし)'}
  * Latest APPROVED addendum for a workflow role, for prompt injection.
  * Returns null when none — callers skip the section entirely.
  *
+ * When the addendum's comparison record carries a non-null `stagedTaskIds`
+ * (set via the `/stage` endpoint after a passing comparison), the addendum is
+ * a LIMITED-APPLICATION candidate: it is only returned for tasks in that
+ * list, so it can be measured on a handful of tasks before wider rollout. No
+ * comparison record, or `stagedTaskIds: null`, falls back to the original
+ * apply-to-every-task behavior.
+ *
  * @param role - Workflow role name. / ロール名
+ * @param taskId - Task about to run this role, for staged-scope filtering. / スコープ判定用タスクID
  * @returns The approved addendum text, or null. / 承認済み追記 or null
  */
-export async function getApprovedRoleAddendum(role: string): Promise<string | null> {
+export async function getApprovedRoleAddendum(
+  role: string,
+  taskId?: number,
+): Promise<string | null> {
   try {
     // 'completed' = settled and kept (prompt-evolution-settle.ts); it stays
     // injected. 'reverted' rows are excluded on purpose.
     const row = await prisma.promptEvolution.findFirst({
       where: { basePromptKey: `workflow_role_${role}`, status: { in: ['approved', 'completed'] } },
       orderBy: { id: 'desc' },
-      select: { afterPrompt: true },
+      select: { id: true, afterPrompt: true },
     });
     const text = row?.afterPrompt?.trim();
-    return text ? text.slice(0, MAX_ADDENDUM_CHARS) : null;
+    if (!text) return null;
+
+    if (row && taskId !== undefined) {
+      const comparison = readComparisonRecord(row.id);
+      const stagedTaskIds = comparison?.stagedTaskIds ?? null;
+      if (stagedTaskIds !== null && !stagedTaskIds.includes(taskId)) {
+        return null;
+      }
+    }
+    return text.slice(0, MAX_ADDENDUM_CHARS);
   } catch {
     return null;
   }

@@ -7,7 +7,7 @@ mock.module('../../config/logger', () => ({
 mock.module('../workflow/role-evidence', () => ({
   ROLE_TROUBLE_CAUSES: { implementer: ['verify_repair'] },
 }));
-const { runPromptEvolution } = await import('./prompt-evolution-runner');
+const { runPromptEvolution, evaluateRole } = await import('./prompt-evolution-runner');
 
 function fixture(statuses: string[], evidenceFails = false) {
   const create = mock(async (_args: unknown) => ({}));
@@ -69,5 +69,19 @@ describe('prompt evolution outcome eligibility', () => {
     const rows = await runPromptEvolution(f.db);
     expect(rows.some((row) => row.role === 'implementer')).toBe(false);
     expect(f.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('evaluateRole scopeTaskIds', () => {
+  test('passes a config.taskId filter through to agentSession.findMany when scopeTaskIds is given', async () => {
+    const f = fixture(['completed', 'completed']);
+    await evaluateRole(f.db, 'implementer', new Date(0), [810, 812]);
+    expect(f.findMany.mock.calls[0][0].where.config).toEqual({ taskId: { in: [810, 812] } });
+  });
+
+  test('omits the config filter when scopeTaskIds is undefined (unchanged behavior)', async () => {
+    const f = fixture(['completed', 'completed']);
+    await evaluateRole(f.db, 'implementer', new Date(0));
+    expect(f.findMany.mock.calls[0][0].where.config).toBeUndefined();
   });
 });

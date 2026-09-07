@@ -97,12 +97,17 @@ export async function evaluateRole(
   prisma: PrismaClient,
   role: string,
   since: Date,
+  scopeTaskIds?: number[],
 ): Promise<RoleEvaluation> {
   const sessions = await prisma.agentSession.findMany({
     where: {
       mode: `workflow-${role}`,
       createdAt: { gte: since },
       status: { in: ['completed', 'failed'] },
+      // Limits the post-approval measurement to a candidate's staged tasks
+      // (prompt-comparison / stagedTaskIds) instead of the whole role. When
+      // scopeTaskIds is undefined, the where clause is unchanged from before.
+      ...(scopeTaskIds ? { config: { taskId: { in: scopeTaskIds } } } : {}),
     },
     select: { status: true, config: { select: { taskId: true } } },
   });

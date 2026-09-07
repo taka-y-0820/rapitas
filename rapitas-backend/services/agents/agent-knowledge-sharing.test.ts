@@ -98,3 +98,44 @@ describe('gatherSharedKnowledge → findRelevantKnowledgeForAgent — mode guard
     expect((innerOr[1] as { content: StringFilter }).content).not.toHaveProperty('mode');
   });
 });
+
+describe('gatherSharedKnowledge — skipKnowledge toggle', () => {
+  beforeEach(() => {
+    mockKnowledgeEntryFindMany.mockReset();
+    mockKnowledgeEntryFindMany.mockResolvedValue([]);
+    mockTaskFindUnique.mockReset();
+    mockTaskFindUnique.mockResolvedValue({
+      id: 1,
+      title: 'Test task with keywords',
+      description: 'find relevant knowledge here',
+      themeId: null,
+      taskLabels: [],
+      theme: null,
+    });
+    mockLearningPatternFindMany.mockReset();
+    mockLearningPatternFindMany.mockResolvedValue([]);
+    mockPromptEvolutionFindMany.mockReset();
+    mockPromptEvolutionFindMany.mockResolvedValue([]);
+  });
+
+  it('skipKnowledge=true returns an empty result without querying the DB', async () => {
+    const result = await gatherSharedKnowledge(1, true);
+
+    expect(result).toEqual({
+      patterns: [],
+      relevantKnowledge: [],
+      promptEvolutions: [],
+      warnings: [],
+    });
+    expect(mockTaskFindUnique).not.toHaveBeenCalled();
+    expect(mockKnowledgeEntryFindMany).not.toHaveBeenCalled();
+    expect(mockLearningPatternFindMany).not.toHaveBeenCalled();
+    expect(mockPromptEvolutionFindMany).not.toHaveBeenCalled();
+  });
+
+  it('skipKnowledge omitted (default false) preserves existing lookup behavior', async () => {
+    await gatherSharedKnowledge(1);
+
+    expect(mockTaskFindUnique).toHaveBeenCalledTimes(1);
+  });
+});
