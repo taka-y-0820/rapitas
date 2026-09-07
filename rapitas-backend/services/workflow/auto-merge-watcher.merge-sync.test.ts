@@ -60,7 +60,11 @@ mock.module('../../utils/database/fail-closed-count', () => ({
 
 const mockUpdateMany = mock(() => Promise.resolve({ count: 1 }));
 const mockTaskUpdate = mock(() => Promise.resolve({}));
+let taskStatus = 'done';
+let stoppingExecution: { id: number } | null = null;
+const mockMerge = mock(async () => ({ success: true, mergeStrategy: 'squash' as const }));
 const mockPrisma = {
+  agentExecution: { findFirst: mock(async () => stoppingExecution) },
   workflowTransition: {
     count: mock(() => Promise.resolve(0)),
     findFirst: mock(() => Promise.resolve(null)),
@@ -73,7 +77,9 @@ const mockPrisma = {
     updateMany: mockUpdateMany,
   },
   task: {
-    findUnique: mock(() => Promise.resolve({ themeId: 1 })),
+    findUnique: mock(() =>
+      Promise.resolve({ themeId: 1, status: taskStatus, workflowStatus: 'verify_done' }),
+    ),
     update: mockTaskUpdate,
   },
 };
@@ -84,9 +90,7 @@ mock.module('../../config/database', () => ({ prisma: mockPrisma }));
 // registry entry — auto-merge-watcher.ts's real import went unmocked and its
 // mergePullRequest call reached the real implementation (2 fail).
 mock.module('../agents/orchestrator/git-operations/pr/branch-pr-ops', () => ({
-  mergePullRequest: mock(() =>
-    Promise.resolve({ success: true, mergeStrategy: 'squash' as const }),
-  ),
+  mergePullRequest: mockMerge,
 }));
 
 mock.module('../../config/logger', () => ({
@@ -126,6 +130,9 @@ const candidate = {
 };
 
 beforeEach(() => {
+  taskStatus = 'done';
+  stoppingExecution = null;
+  mockMerge.mockClear();
   mockResolveIntegrationId.mockClear();
   mockResolveIntegrationId.mockImplementation(() => Promise.resolve<number | null>(1));
   mockUpdateMany.mockClear();
@@ -157,3 +164,23 @@ describe('AutoMergeWatcher — post-merge local mirror sync', () => {
     expect(mockNotify).toHaveBeenCalledTimes(1); // auto_merge_success still sent
   });
 });
+
+test.each(['merge', 'pr'] as const)(
+  'a blocked task is not merged or completed in %s mode',
+  async (mode) => {
+    taskStatus = 'blocked';
+    await getProcess()({ ...candidate, mode }, new Set(['Lint Code']));
+    expect(mockMerge).not.toHaveBeenCalled();
+    expect(mockTaskUpdate).not.toHaveBeenCalled();
+  },
+);
+
+test.each(['merge', 'pr'] as const)(
+  'pending cancellation prevents %s finalization despite green CI',
+  async (mode) => {
+    stoppingExecution = { id: 100 };
+    await getProcess()({ ...candidate, mode }, new Set(['Lint Code']));
+    expect(mockMerge).not.toHaveBeenCalled();
+    expect(mockTaskUpdate).not.toHaveBeenCalled();
+  },
+);

@@ -169,7 +169,8 @@ export async function findCandidates(): Promise<Candidate[]> {
     const isCompleted = task.status === 'done' || task.status === 'completed';
     // Under staged completion the task is still in-progress at verify_done while
     // its PR's CI runs; pick those up so the watcher can complete them.
-    const isAwaitingCi = staged && task.workflowStatus === 'verify_done' && !isCompleted;
+    const isAwaitingCi =
+      staged && task.workflowStatus === 'verify_done' && task.status === 'in-progress';
     if (!isCompleted && !isAwaitingCi) continue;
 
     const policy = await resolveAutomationPolicy(prisma, taskId).catch(() => null);

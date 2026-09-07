@@ -1,3 +1,4 @@
+import { canFinalizeAutoMerge } from './auto-merge-cancellation';
 /**
  * Auto-Merge Watcher
  *
@@ -283,6 +284,7 @@ export class AutoMergeWatcher {
     }
 
     if (state === 'pass') {
+      if (!(await canFinalizeAutoMerge(prisma, c.taskId))) return;
       // PR mode: CI is green and we DO NOT merge — completion is reaching green.
       if (c.mode === 'pr') {
         await completeTaskRow(c.taskId);
