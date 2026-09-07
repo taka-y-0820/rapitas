@@ -342,12 +342,8 @@ export class AgentOrchestrator {
         },
       });
     } catch (error) {
-      // NOTE: The agent process is already stopped above; a DB write failure
-      // here must not abort the rest of this method, or the in-memory
-      // activeExecutions/activeAgents maps are left with a permanently
-      // stale entry for an execution whose agent no longer exists — the
-      // caller (e.g. stopAllForTasks) already treats stopExecution as
-      // best-effort via `.catch(() => {})`, so this mirrors that contract.
+      // The stop succeeded; DB failure must not retain a stale active owner.
+      // A stop failure returns earlier and preserves ownership for retry.
       logger.error({ err: error }, `[Orchestrator] Failed to persist cancellation for execution`);
     }
 
