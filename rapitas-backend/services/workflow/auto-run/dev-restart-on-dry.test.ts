@@ -11,7 +11,7 @@
  * process.exit(75) を含みモジュール変数を汚染するため検証しない。
  * 呼出し順序の検証は dev-restart-shutdown.test.ts が担当する。
  */
-import { describe, test, expect, mock, afterAll } from 'bun:test';
+import { describe, test, expect, mock, afterAll, beforeEach } from 'bun:test';
 
 // ── 可変スタブ値（各テストが書き換えてゲートを制御する） ─────────────────────────
 
@@ -19,6 +19,21 @@ let mockActiveCount = 0;
 let mockRunningPhases = 0;
 let mockRestartEnabled = false;
 let mockActiveAutoRun = 0;
+const executionCount = mock(async (_args: unknown) => 0);
+const phaseCount = mock(async () => mockRunningPhases);
+const settingsRead = mock(async () => ({
+  restartOnAutoRunDry: mockRestartEnabled,
+  id: 1,
+  userId: null,
+}));
+
+beforeEach(() => {
+  executionCount.mockReset();
+  executionCount.mockResolvedValue(0);
+  phaseCount.mockReset();
+  phaseCount.mockImplementation(async () => mockRunningPhases);
+  settingsRead.mockClear();
+});
 
 // ── Module-level mocks（import 前に宣言） ──────────────────────────────────────
 
@@ -39,15 +54,15 @@ mock.module('../../../config/database', () => ({
   // mock.module replaces the whole module — mirror ensureDatabaseConnection so config/index.ts re-export survives shuffled test order (else 'export not found').
   ensureDatabaseConnection: () => Promise.resolve(),
   prisma: {
+    agentExecution: { count: executionCount },
     workflowQueueItem: {
-      count: () => Promise.resolve(mockRunningPhases),
+      count: phaseCount,
     },
     themeAutoRun: {
       count: () => Promise.resolve(mockActiveAutoRun),
     },
     userSettings: {
-      findFirst: () =>
-        Promise.resolve({ restartOnAutoRunDry: mockRestartEnabled, id: 1, userId: null }),
+      findFirst: settingsRead,
     },
   },
 }));
@@ -102,6 +117,36 @@ afterAll(() => {
 // ── テスト ────────────────────────────────────────────────────────────────────
 
 describe('maybeRestartForUpdate() — gate 早期リターン', () => {
+  test('別workerの実行がDBに残る間はローカル実行ゼロでも再起動判定を進めない', async () => {
+    process.env.TAURI_BUILD = 'true';
+    executionCount.mockResolvedValue(1);
+    expect(await maybeRestartForUpdate(1)).toBe(false);
+    expect(executionCount).toHaveBeenCalledWith({
+      where: { status: { in: ['pending', 'running', 'waiting_for_input', 'canceling'] } },
+    });
+    expect(settingsRead).not.toHaveBeenCalled();
+  });
+
+  test('実行状態のDB照会失敗は実行ゼロとして扱わない', async () => {
+    process.env.TAURI_BUILD = 'true';
+    executionCount.mockRejectedValue(new Error('database unavailable'));
+    expect(await maybeRestartForUpdate(1)).toBe(false);
+    expect(settingsRead).not.toHaveBeenCalled();
+  });
+
+  test('キュー状態のDB照会失敗も再起動を保留する', async () => {
+    process.env.TAURI_BUILD = 'true';
+    phaseCount.mockRejectedValue(new Error('database unavailable'));
+    expect(await maybeRestartForUpdate(1)).toBe(false);
+    expect(settingsRead).not.toHaveBeenCalled();
+  });
+
+  test('永続実行とキューの両方がゼロなら設定の判定へ進む', async () => {
+    process.env.TAURI_BUILD = 'true';
+    expect(await maybeRestartForUpdate(1)).toBe(false);
+    expect(executionCount).toHaveBeenCalledTimes(1);
+    expect(settingsRead).toHaveBeenCalledTimes(1);
+  });
   test('gate2: TAURI_BUILD が "true" でないとき false を返す', async () => {
     delete process.env.TAURI_BUILD;
     expect(await maybeRestartForUpdate(1)).toBe(false);
