@@ -20,6 +20,9 @@ import {
   mockNotifyAwaitingUserAnswer,
   mockNotifyHangBackstop,
   mockTaskUpdate,
+  mockRevertChanges,
+  mockResolveTaskWorkingDirectory,
+  mockStopThemeAgents,
   mockTransitionCount,
   mockOnTaskFailed,
   mockOnTaskCompleted,
@@ -634,4 +637,16 @@ it('a resumed run still reaches the hard ceiling after its own budget expires', 
     new Date(Date.now() - TEST_MAX_TASK_WALL_MS * 4).toISOString(),
   );
   expect(mockNotifyHangBackstop).toHaveBeenCalled();
+});
+
+it('a hang timeout stops execution but preserves uncommitted work for diagnosis and retry', async () => {
+  mockResolveTaskWorkingDirectory.mockResolvedValue({
+    themeId: 1,
+    workingDirectory: '/repo/work',
+    theme: null,
+  });
+  await internal(scheduler).advanceTheme(1, 100, 'priority', 1, staleLastRunAt());
+  expect(mockStopThemeAgents).toHaveBeenCalledWith(1, 100, { errorMessage: 'Auto-run stopped' });
+  expect(mockRevertChanges).not.toHaveBeenCalled();
+  expect(mockTaskUpdate).toHaveBeenCalledWith({ where: { id: 100 }, data: { status: 'blocked' } });
 });

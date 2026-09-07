@@ -152,6 +152,7 @@ export async function advanceActiveTask(
       await notifyHangBackstop(themeId, currentTaskId, Math.round(MAX_TASK_WALL_MS / 60000));
       await stopThemeExecutionImpl(prisma, themeId, currentTaskId, {
         recordRevertTransition: false,
+        preserveChanges: true,
       });
       // Read the row BEFORE the blocked write so the transition below can
       // carry the pre-stop task.status (resolveTaskWorkflowState is the
