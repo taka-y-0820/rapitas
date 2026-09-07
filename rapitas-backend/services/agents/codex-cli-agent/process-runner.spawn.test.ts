@@ -25,14 +25,14 @@ describe('buildSpawnCommand', () => {
 
   test.each([
     [
-      'wraps in a chcp 65001 prefix and flattens args into one string',
+      'wraps in a chcp 65001 prefix, quotes the command name for real, and caret-escapes each arg',
       ['exec', '--cd', 'C:/work'],
-      'chcp 65001 >NUL 2>&1 && codex.cmd exec --cd C:/work',
+      'chcp 65001 >NUL 2>&1 && "codex.cmd" ^^^"exec^^^" ^^^"--cd^^^" ^^^"C:/work^^^"',
     ],
     [
-      'leaves simple args unquoted',
+      'unconditionally quotes even simple args (no "does it need quoting" branch)',
       ['exec', '--json'],
-      'chcp 65001 >NUL 2>&1 && codex.cmd exec --json',
+      'chcp 65001 >NUL 2>&1 && "codex.cmd" ^^^"exec^^^" ^^^"--json^^^"',
     ],
   ])('Windows: %s', (_desc, args, expectedCommand) => {
     const [command, finalArgs] = buildSpawnCommand('codex.cmd', args, true);
@@ -40,22 +40,27 @@ describe('buildSpawnCommand', () => {
     expect(finalArgs).toEqual([]);
   });
 
-  test('Windows: quotes the codex path when it contains a space', () => {
+  test('Windows: quotes the codex path for real (not caret-escaped) so a space stays part of the name', () => {
+    // Real quotes, not `escapeWindowsShellArg(..., true)`'s caret-quotes —
+    // cmd.exe's own command-boundary detection needs a literal `"` pair to
+    // treat the embedded space as part of the name, not a separator (see
+    // process-runner-args.cmd-roundtrip.test.ts).
     const [command] = buildSpawnCommand('C:/Program Files/codex.cmd', ['exec'], true);
     expect(command).toContain('"C:/Program Files/codex.cmd"');
+    expect(command).not.toContain('^"C:/Program Files/codex.cmd^"');
   });
 
-  test('Windows: quotes args containing spaces, &, |, or newlines and escapes embedded quotes', () => {
+  test('Windows: caret-escapes args containing spaces, &, |, quotes, or newlines (double pass for the .cmd shim)', () => {
     const [command] = buildSpawnCommand(
       'codex.cmd',
       ['has space', 'a&b', 'a|b', 'a\nb', 'say "hi"'],
       true,
     );
-    expect(command).toContain('"has space"');
-    expect(command).toContain('"a&b"');
-    expect(command).toContain('"a|b"');
-    expect(command).toContain('"a\nb"');
-    expect(command).toContain('"say \\"hi\\""');
+    expect(command).toContain('^^^"has space^^^"');
+    expect(command).toContain('^^^"a^^^&b^^^"');
+    expect(command).toContain('^^^"a^^^|b^^^"');
+    expect(command).toContain('^^^"a\nb^^^"');
+    expect(command).toContain('^^^"say \\^^^"hi\\^^^"^^^"');
   });
 });
 
