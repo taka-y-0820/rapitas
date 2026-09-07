@@ -39,45 +39,73 @@ const statusMatches = (status: string, where: StatusWhere): boolean =>
 
 // NOTE: mock.module はプロセスグローバル。config/index.ts が再エクスポートする
 // ensureDatabaseConnection まで含めて実モジュールの全exportをミラーする。
+const fakePrisma = {
+  agentSession: {
+    findMany: mock((args: { where: { id: { in: number[] } } }) =>
+      Promise.resolve(replaySessions.filter((s) => args.where.id.in.includes(s.id))),
+    ),
+  },
+  promptEvolution: {
+    create: mock(async (args: { data: Omit<EvoRow, 'id' | 'createdAt'> }) => {
+      const row = {
+        ...args.data,
+        id: Math.max(0, ...rows.map((r) => r.id)) + 1,
+        createdAt: new Date(),
+      };
+      rows.push(row);
+      return row;
+    }),
+    findMany: mock((args: { where?: { status?: StatusWhere }; take?: number }) => {
+      const filtered = rows.filter((r) => statusMatches(r.status, args?.where?.status));
+      return Promise.resolve(args?.take ? filtered.slice(0, args.take) : filtered);
+    }),
+    findUnique: mock((args: { where: { id: number } }) =>
+      Promise.resolve(rows.find((r) => r.id === args.where.id) ?? null),
+    ),
+    update: mock((args: { where: { id: number }; data: Partial<EvoRow> }) => {
+      const row = rows.find((r) => r.id === args.where.id);
+      if (row) Object.assign(row, args.data);
+      return Promise.resolve(row);
+    }),
+    updateMany: mock(
+      (args: {
+        where: {
+          id?: number;
+          evidenceJson?: string | null;
+          basePromptKey?: string;
+          status?: StatusWhere;
+        };
+        data: Partial<EvoRow>;
+      }) => {
+        let count = 0;
+        for (const r of rows) {
+          if (
+            (args.where.id === undefined || r.id === args.where.id) &&
+            (args.where.evidenceJson === undefined || r.evidenceJson === args.where.evidenceJson) &&
+            (!args.where.basePromptKey || r.basePromptKey === args.where.basePromptKey) &&
+            statusMatches(r.status, args.where.status)
+          ) {
+            Object.assign(r, args.data);
+            count++;
+          }
+        }
+        return Promise.resolve({ count });
+      },
+    ),
+  },
+};
 mock.module('../../config/database', () => ({
   ensureDatabaseConnection: mock(async () => {}),
   prisma: {
-    agentSession: {
-      findMany: mock((args: { where: { id: { in: number[] } } }) =>
-        Promise.resolve(replaySessions.filter((s) => args.where.id.in.includes(s.id))),
-      ),
-    },
-    promptEvolution: {
-      findMany: mock((args: { where?: { status?: StatusWhere }; take?: number }) => {
-        const filtered = rows.filter((r) => statusMatches(r.status, args?.where?.status));
-        return Promise.resolve(args?.take ? filtered.slice(0, args.take) : filtered);
-      }),
-      findUnique: mock((args: { where: { id: number } }) =>
-        Promise.resolve(rows.find((r) => r.id === args.where.id) ?? null),
-      ),
-      update: mock((args: { where: { id: number }; data: Partial<EvoRow> }) => {
-        const row = rows.find((r) => r.id === args.where.id);
-        if (row) Object.assign(row, args.data);
-        return Promise.resolve(row);
-      }),
-      updateMany: mock(
-        (args: {
-          where: { basePromptKey?: string; status?: StatusWhere };
-          data: Partial<EvoRow>;
-        }) => {
-          let count = 0;
-          for (const r of rows) {
-            if (
-              (!args.where.basePromptKey || r.basePromptKey === args.where.basePromptKey) &&
-              statusMatches(r.status, args.where.status)
-            ) {
-              Object.assign(r, args.data);
-              count++;
-            }
-          }
-          return Promise.resolve({ count });
-        },
-      ),
+    ...fakePrisma,
+    $transaction: async (action: (tx: typeof fakePrisma) => Promise<unknown>) => {
+      const before = structuredClone(rows);
+      try {
+        return await action(fakePrisma);
+      } catch (error) {
+        rows = before;
+        throw error;
+      }
     },
   },
 }));
@@ -817,4 +845,37 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
     expect(second.approved).toBe(0);
     expect(rows.filter((r) => r.status === 'approved')).toHaveLength(1);
   });
+});
+
+test('evaluation retires an old orphan prospectively and retains its original manifest', async () => {
+  rows.push(
+    proposedRow(910, 'Before editing, inspect existing tests and preserve cancellation guards.'),
+  );
+  await autoApproveEligibleProposals();
+  const slot = reserveTrialSlot(
+    {
+      promptEvolutionId: 910,
+      role: 'implementer',
+      candidateVersion: 'old-version',
+      controlVersion: null,
+      seed: 'old-seed',
+    },
+    999,
+    () => true,
+  );
+  expect(slot.issue).toBeNull();
+  const manifest = readTrialManifest(910)!;
+  manifest.slots[0].createdAt = '2026-01-01T00:00:00Z';
+  const path = join(process.env.RAPITAS_DATA_DIR!, '.prompt-comparisons', '910.trial.json');
+  writeFileSync(path, JSON.stringify(manifest));
+  const original = readFileSync(path, 'utf8');
+  const evidence = JSON.parse(rows[0].evidenceJson!);
+  rows[0].evidenceJson = JSON.stringify({ ...evidence, stagedAt: '2026-01-01T00:00:00Z' });
+  const result = await autoApproveEligibleProposals();
+  expect(result.rejected).toBe(1);
+  expect(rows[0].status).toBe('rejected');
+  expect(rows[1].status).toBe('proposed');
+  expect(evidenceOf(rows[1].id).retryOfId).toBe(910);
+  expect(evidenceOf(rows[1].id).alphaBudgetK).toBeUndefined();
+  expect(readFileSync(path, 'utf8')).toBe(original);
 });

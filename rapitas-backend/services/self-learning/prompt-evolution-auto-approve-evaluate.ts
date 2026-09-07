@@ -22,6 +22,7 @@
  */
 import { readTrialManifest, trialPrefix } from './comparison/prompt-comparison-trial-manifest';
 import { reconcileTrialOutcomes } from './comparison/prompt-comparison-reconcile';
+import { restartUnusableTrial, staleTrialIssue } from './prompt-evolution-trial-retry';
 import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
 import { passesSequentialSignificance } from './comparison/prompt-comparison-adoption-gate';
@@ -83,6 +84,24 @@ export async function evaluateStagedCandidates(result: AutoApproveResult): Promi
         { id: candidate.id, kind: status.kind },
         '[prompt-evolution] Comparison record unusable — candidate held under trial (unknown)',
       );
+      continue;
+    }
+    const unusable = staleTrialIssue(candidate, recovery, new Date());
+    if (unusable) {
+      try {
+        const retired = await restartUnusableTrial(candidate.id, candidate.evidenceJson, unusable);
+        if (retired.retired) {
+          result.rejected++;
+          continue;
+        }
+      } catch (error) {
+        log.warn(
+          { id: candidate.id, error },
+          '[prompt-evolution] Trial retry deferred after transaction failure',
+        );
+      }
+      // A concurrent writer changed this candidate; evaluate its next snapshot next cycle.
+      result.withheld++;
       continue;
     }
     delete evidence.comparisonStatus;

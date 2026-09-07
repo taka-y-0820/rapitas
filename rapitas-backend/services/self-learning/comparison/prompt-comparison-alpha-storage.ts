@@ -57,7 +57,24 @@ export function writeAlphaLedger(file: string, value: unknown): boolean {
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
-    renameSync(temporary, file);
+    // Windows readers can temporarily deny replacement even while writers hold
+    // the SQLite mutex. Keep the flushed temporary file and retry the atomic
+    // rename; never unlink the old ledger or fall back to truncating it.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        renameSync(temporary, file);
+        break;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (
+          process.platform !== 'win32' ||
+          attempt >= 10 ||
+          !['EPERM', 'EACCES', 'EBUSY'].includes(code ?? '')
+        )
+          throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+    }
     return true;
   } catch {
     return false;

@@ -28,6 +28,7 @@ export type Evidence = Record<string, unknown>;
 /** The PromptEvolution columns both steps read. */
 export interface CandidateRow {
   id: number;
+  createdAt: Date;
   basePromptKey: string | null;
   afterPrompt: string | null;
   evidenceJson: string | null;
@@ -36,6 +37,7 @@ export interface CandidateRow {
 /** Prisma `select` matching CandidateRow, shared so the two steps cannot drift. */
 export const CANDIDATE_SELECT = {
   id: true,
+  createdAt: true,
   basePromptKey: true,
   afterPrompt: true,
   evidenceJson: true,
