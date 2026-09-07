@@ -114,6 +114,27 @@ async function restartEnabled(): Promise<boolean> {
   return s?.restartOnAutoRunDry === true;
 }
 
+/** Check all workers through shared state; unavailable state cannot establish idleness. */
+async function persistedWorkIsIdle(): Promise<boolean> {
+  try {
+    const [executions, phases] = await Promise.all([
+      prisma.agentExecution.count({
+        where: { status: { in: ['pending', 'running', 'waiting_for_input', 'canceling'] } },
+      }),
+      prisma.workflowQueueItem.count({ where: { status: 'running' } }),
+    ]);
+    if (executions > 0 || phases > 0) {
+      diag('persisted-work-running', { executions, phases });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    diag('activity-unavailable');
+    log.warn({ err }, '[dev-restart] Cannot establish global idleness — restart deferred');
+    return false;
+  }
+}
+
 /**
  * Gracefully restart when all gates pass: enabled + new commits since boot + no
  * live agents anywhere + not rate-limited. Returns true when a restart was kicked
@@ -154,13 +175,9 @@ export async function maybeRestartForUpdate(themeId: number): Promise<boolean> {
   // kills the phase and strands the work (worktree lost -> empty output -> block).
   // 'queued' is intentionally EXCLUDED so a full backlog never blocks deploys —
   // only an actively-running workflow does (a genuine task boundary has none).
-  const runningPhases = await prisma.workflowQueueItem
-    .count({ where: { status: 'running' } })
-    .catch(() => 0);
-  if (runningPhases > 0) {
-    diag('phase-running', { runningPhases });
-    return false;
-  }
+  // Worker processes own separate orchestrator instances. The parent can see
+  // zero local executions while a worker is still researching (task 871).
+  if (!(await persistedWorkIsIdle())) return false;
   // A verify run's shell children inherit the listen socket; restarting while
   // one is alive strands the dead backend's :3001 LISTEN (ghost socket —
   // observed three times 2026-08-30/31). Helper children include agent CLIs.
@@ -211,6 +228,8 @@ export async function maybeRestartForUpdate(themeId: number): Promise<boolean> {
     return false;
   }
 
+  // Git/settings reads above yield; a worker may have started in that interval.
+  if (!(await persistedWorkIsIdle())) return false;
   restarting = true;
   lastRestartAt = now;
   persistLastRestartAt(now);
