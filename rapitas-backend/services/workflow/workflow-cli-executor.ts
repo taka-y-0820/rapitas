@@ -44,7 +44,6 @@ export { canReuseWorktree } from '../agents/orchestrator/git-operations/worktree
  * @param sessionId - Session opened for this phase. / このフェーズのセッションID
  * @param success - Whether the phase succeeded. / フェーズが成功したか
  * @param phaseStartedAt - When the phase began, for the duration fallback. / フェーズ開始時刻
- * @param modelName - Model the phase ran on, recorded for audit only. / 実行モデル（監査用）
  */
 async function recordTrialRun(
   assignment: ComparisonAssignment | null,
@@ -67,7 +66,12 @@ async function recordTrialRun(
         modelName: true,
       },
     });
-    if (!execution) return;
+    if (
+      !execution ||
+      !['completed', 'failed', 'cancelled', 'interrupted'].includes(execution.status)
+    )
+      return;
+    const actualSuccess = success && execution.status === 'completed';
     const { classifyFailureCause } =
       await import('../self-learning/comparison/prompt-comparison-metrics');
     const { recordComparisonRun } =
@@ -75,16 +79,18 @@ async function recordTrialRun(
     recordComparisonRun(assignment.promptEvolutionId, assignment.arm, {
       taskId,
       executionId: execution.id,
-      success,
+      success: actualSuccess,
       // costUsd is a Prisma Decimal — Number() is the documented conversion.
       costUsd: Number(execution.costUsd ?? 0),
       durationMs: execution.executionTimeMs ?? Date.now() - phaseStartedAt.getTime(),
-      failureCause: success
+      failureCause: actualSuccess
         ? null
         : classifyFailureCause({ status: execution.status, errorMessage: execution.errorMessage }),
       role: assignment.role,
       injected: assignment.injected,
       injectedVersion: assignment.injectedVersion,
+      assignmentId: assignment.assignmentId,
+      controlVersion: assignment.controlVersion,
       // Arm assignment does not stratify by model, so a reader comparing the
       // two arms needs this to rule out a routing difference.
       modelName: execution.modelName ?? null,
@@ -174,6 +180,15 @@ export async function executeCLIAgent(
   // returns or throws, so the original result/exception propagates unchanged.
   let sessionSucceeded = false;
   try {
+    if (comparisonAssignment?.assignmentId) {
+      const { bindTrialSession } =
+        await import('../self-learning/comparison/prompt-comparison-trial-manifest');
+      bindTrialSession(
+        comparisonAssignment.promptEvolutionId,
+        comparisonAssignment.assignmentId,
+        session.id,
+      );
+    }
     const result = await orchestrator.executeTask(
       {
         id: taskId,

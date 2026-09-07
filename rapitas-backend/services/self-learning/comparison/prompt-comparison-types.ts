@@ -29,6 +29,8 @@ export type ComparisonVerdict = 'improved' | 'regressed' | 'inconclusive' | 'ins
 
 /** One shadow run's outcome within an arm/knowledge cell. */
 export interface ComparisonRun {
+  assignmentId?: string;
+  controlVersion?: string | null;
   taskId: number;
   executionId: number;
   success: boolean;
@@ -63,6 +65,8 @@ export interface ComparisonRun {
  * ran under.
  */
 export interface ComparisonAssignment {
+  assignmentId?: string;
+  controlVersion?: string | null;
   /** PromptEvolution candidate under trial. */
   promptEvolutionId: number;
   /** Workflow role the candidate targets. */

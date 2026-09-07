@@ -20,6 +20,8 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from '
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { createLogger } from '../../../config/logger';
+import { withAlphaLedgerLock, writeAlphaLedger } from './prompt-comparison-alpha-storage';
+import { readTrialManifest } from './prompt-comparison-trial-manifest';
 import { buildComparisonSummary } from './prompt-comparison-metrics';
 import type { ComparisonArm, ComparisonRecord, ComparisonRun } from './prompt-comparison-types';
 
@@ -136,8 +138,7 @@ export function writeComparisonRecord(record: ComparisonRecord): boolean {
   try {
     const file = recordFile(record.promptEvolutionId);
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify(record, null, 2));
-    return true;
+    return writeAlphaLedger(file, record);
   } catch {
     return false;
   }
@@ -259,11 +260,22 @@ export function initComparisonRecordForStaging(seed: {
  * @param run - The completed run. / 完了した実行
  * @returns True when the run was appended and persisted. / 追記・保存できたら true
  */
-export function recordComparisonRun(
+function appendComparisonRun(
   promptEvolutionId: number,
   arm: ComparisonArm,
   run: ComparisonRun,
 ): boolean {
+  const manifest = readTrialManifest(promptEvolutionId);
+  if (manifest || run.assignmentId) {
+    const slot = manifest?.slots.find((s) => s.id === run.assignmentId);
+    if (
+      !slot ||
+      slot.taskId !== run.taskId ||
+      slot.arm !== arm ||
+      run.controlVersion !== manifest?.controlVersion
+    )
+      return false;
+  }
   if (arm === 'candidate' && run.injected !== true) {
     log.warn(
       { promptEvolutionId, executionId: run.executionId },
@@ -280,7 +292,11 @@ export function recordComparisonRun(
     return false;
   }
   const already = record.arms.some((cell) =>
-    cell.runs.some((r) => r.executionId === run.executionId),
+    cell.runs.some(
+      (r) =>
+        r.executionId === run.executionId ||
+        (!!run.assignmentId && r.assignmentId === run.assignmentId),
+    ),
   );
   if (already) return false;
 
@@ -300,4 +316,9 @@ export function recordComparisonRun(
   }
   record.summary = buildComparisonSummary(record.arms);
   return writeComparisonRecord(record);
+}
+
+/** Serialize all live outcome appends; a retry can never overwrite another result. */
+export function recordComparisonRun(id: number, arm: ComparisonArm, run: ComparisonRun): boolean {
+  return withAlphaLedgerLock(recordFile(id), () => appendComparisonRun(id, arm, run)) === true;
 }

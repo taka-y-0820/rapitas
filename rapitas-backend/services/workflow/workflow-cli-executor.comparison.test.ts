@@ -26,6 +26,8 @@ installWorkflowCliExecutorMocks();
 const { executeCLIAgent } = await import('./workflow-cli-executor');
 const { initComparisonRecordForStaging, readComparisonRecord } =
   await import('../self-learning/comparison/prompt-comparison-store');
+const { reserveTrialSlot, readTrialManifest } =
+  await import('../self-learning/comparison/prompt-comparison-trial-manifest');
 
 const getOrCreateDevConfig = (): Promise<{ id: number }> => Promise.resolve({ id: 42 });
 const task = { title: 'Finish the thing', description: 'desc' };
@@ -96,6 +98,56 @@ afterEach(() => {
 });
 
 describe('executeCLIAgent — 限定試行の比較サンプル記録', () => {
+  test('the actual execution preserves its prospective assignment and control version', async () => {
+    const reservation = reserveTrialSlot(
+      {
+        promptEvolutionId: 55,
+        role: 'implementer',
+        candidateVersion: 'abc123def456',
+        controlVersion: 'baseline',
+        seed: 'test-seed',
+      },
+      1,
+      () => true,
+    );
+    if (reservation.issue !== null) throw new Error(reservation.issue);
+    const { slot } = reservation;
+    wf.executeTaskImpl = async () => {
+      expect(readTrialManifest(55)!.slots[0].sessionIds).toHaveLength(1);
+      return { success: true, output: 'done' };
+    };
+    await run(
+      assignment({
+        assignmentId: slot.id,
+        arm: slot.arm,
+        controlVersion: 'baseline',
+        injected: slot.arm === 'candidate',
+        injectedVersion: slot.arm === 'candidate' ? 'abc123def456' : null,
+      }),
+    );
+    const runs = readComparisonRecord(55)!.arms.flatMap((c) => c.runs);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      assignmentId: slot.id,
+      controlVersion: 'baseline',
+      executionId: 7788,
+    });
+    expect(readTrialManifest(55)!.slots[0].sessionIds).toHaveLength(1);
+  });
+  test('a still-running execution never becomes a completed comparison sample', async () => {
+    spies.agentExecutionFindFirst.mockImplementation(() =>
+      Promise.resolve({
+        id: 7788,
+        status: 'running',
+        modelName: 'reported-model',
+        costUsd: 0,
+        executionTimeMs: 10,
+      }),
+    );
+    await run(assignment());
+    expect(readComparisonRecord(55)!.arms).toEqual([]);
+  });
+
   test('割当を受け取ったフェーズは実行ID・コスト・注入版を比較記録に残す', async () => {
     await run(assignment());
 

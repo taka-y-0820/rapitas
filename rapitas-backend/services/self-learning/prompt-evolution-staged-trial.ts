@@ -21,11 +21,14 @@
  * (getApprovedRoleAddendum in prompt-evolution-worker), which stays untouched
  * so an approved rollout is never mixed with a trial.
  */
-import { createHash } from 'crypto';
+import { randomBytes } from 'crypto';
 import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
-import { addendumVersionHash } from './comparison/prompt-comparison-store';
-import type { ComparisonArm, ComparisonAssignment } from './comparison/prompt-comparison-types';
+import { addendumVersionHash, readComparisonRecord } from './comparison/prompt-comparison-store';
+import { reserveTrialSlot } from './comparison/prompt-comparison-trial-manifest';
+import { resolveEvaluationBudget } from './comparison/prompt-comparison-alpha-ledger';
+export { assignArm } from './comparison/prompt-comparison-randomization';
+import type { ComparisonAssignment } from './comparison/prompt-comparison-types';
 import { MAX_ADDENDUM_CHARS } from './prompt-evolution-worker';
 
 const log = createLogger('self-learning:prompt-evolution-staged-trial');
@@ -35,32 +38,6 @@ export const STAGED_SAMPLE_COUNT_KEY = 'stagedSampleCount';
 
 /** evidenceJson key holding the per-candidate randomisation seed (issued at staging). */
 export const TRIAL_RANDOM_SEED_KEY = 'trialRandomSeed';
-
-/** Assignments per permuted block. Two keeps the arms balanced at every pair. */
-const BLOCK_SIZE = 2;
-
-/**
- * Which arm the `count`-th assignment of a candidate falls into, using
- * permuted blocks of two driven by the candidate's own seed.
- *
- * Deterministic given (seed, count) so a restart replays the same sequence and
- * tests can pin it, yet unpredictable from the task or its position because
- * the seed is drawn from a CSPRNG at staging time.
- *
- * @param seed - Per-candidate randomisation seed. / 候補ごとのシード
- * @param count - Assignments already made for this candidate. / 既存の割当数
- * @returns The arm for this assignment. / このフェーズのアーム
- */
-export function assignArm(seed: string, count: number): ComparisonArm {
-  const blockIndex = Math.floor(count / BLOCK_SIZE);
-  const positionInBlock = count % BLOCK_SIZE;
-  const digest = createHash('sha256').update(`${seed}:${blockIndex}`).digest();
-  // One bit per block decides the order of that block's two slots. Both arms
-  // still appear exactly once per block, so balance never depends on the draw.
-  const candidateFirst = (digest[digest.length - 1] & 1) === 1;
-  const candidateSlot = candidateFirst ? 0 : 1;
-  return positionInBlock === candidateSlot ? 'candidate' : 'current';
-}
 
 /** One phase's arm assignment plus the text to inject when it is the candidate arm. */
 export interface StagedTrialAssignment {
@@ -90,20 +67,21 @@ function parseEvidence(raw: string | null): Record<string, unknown> {
  * Assign the next phase of `role` to a comparison arm for the role's staged
  * candidate, if one exists.
  *
- * The block sequence is driven by a PERSISTED counter plus the candidate's
- * persisted seed rather than a fresh random draw per call, so the assignment
- * is reproducible in tests and survives a restart (both live in
- * PromptEvolution.evidenceJson, not in memory). Only the newest staged
+ * The manifest serializes prospective slots and preserves their seed and both
+ * prompt versions. Repeated tasks reuse their slot. The old evidenceJson
+ * counter is not authoritative and is never reset or overwritten here. Only the newest staged
  * candidate per role is used, so two candidates can never be mixed into the
  * same role's prompt.
  *
  * @param role - Workflow role about to run. / 実行直前のロール
  * @param taskId - Task the phase belongs to. / 対象タスクID
+ * @param controlVersion - Version of the approved text this task would receive. / 対照の版
  * @returns Arm assignment and the text to inject, or null when nothing is staged. / 割当と注入文 or null
  */
 export async function getStagedRoleAddendumForTrial(
   role: string,
   taskId: number,
+  controlVersion: string | null = null,
 ): Promise<StagedTrialAssignment | null> {
   try {
     const row = await prisma.promptEvolution.findFirst({
@@ -115,22 +93,32 @@ export async function getStagedRoleAddendumForTrial(
     if (!row || !text) return null;
 
     const evidence = parseEvidence(row.evidenceJson);
-    const previous =
-      typeof evidence[STAGED_SAMPLE_COUNT_KEY] === 'number'
-        ? (evidence[STAGED_SAMPLE_COUNT_KEY] as number)
-        : 0;
-    const seed =
-      typeof evidence[TRIAL_RANDOM_SEED_KEY] === 'string'
-        ? (evidence[TRIAL_RANDOM_SEED_KEY] as string)
-        : String(row.id);
-    const arm = assignArm(seed, previous);
-
-    await prisma.promptEvolution.update({
-      where: { id: row.id },
-      data: {
-        evidenceJson: JSON.stringify({ ...evidence, [STAGED_SAMPLE_COUNT_KEY]: previous + 1 }),
+    if (resolveEvaluationBudget(row.id, 0).issue) return null;
+    const reservation = reserveTrialSlot(
+      {
+        promptEvolutionId: row.id,
+        role,
+        candidateVersion: addendumVersionHash(text),
+        controlVersion,
+        seed:
+          typeof evidence[TRIAL_RANDOM_SEED_KEY] === 'string'
+            ? (evidence[TRIAL_RANDOM_SEED_KEY] as string)
+            : randomBytes(16).toString('hex'),
       },
-    });
+      taskId,
+      () => {
+        const record = readComparisonRecord(row.id);
+        return !!record && record.arms.every((cell) => cell.runs.length === 0);
+      },
+    );
+    if (reservation.issue !== null) {
+      log.warn(
+        { id: row.id, issue: reservation.issue },
+        '[prompt-evolution] Trial assignment held',
+      );
+      return null;
+    }
+    const { arm } = reservation.slot;
 
     const version = arm === 'candidate' ? addendumVersionHash(text) : null;
     log.info(
@@ -140,6 +128,8 @@ export async function getStagedRoleAddendumForTrial(
     return {
       assignment: {
         promptEvolutionId: row.id,
+        assignmentId: reservation.slot.id,
+        controlVersion,
         role,
         arm,
         injected: false,

@@ -85,6 +85,7 @@ const {
   addendumVersionHash,
 } = await import('./comparison/prompt-comparison-store');
 const { COMPARISON_MIN_SAMPLE } = await import('./comparison/prompt-comparison-metrics');
+import { readTrialManifest, reserveTrialSlot } from './comparison/prompt-comparison-trial-manifest';
 import type { ComparisonRun } from './comparison/prompt-comparison-types';
 
 function proposedRow(id: number, afterPrompt: string): EvoRow {
@@ -107,8 +108,35 @@ let execSeq = 1000;
 /** Push `n` runs into one arm so the comparison summary can reach a verdict. */
 function fillArm(id: number, arm: 'current' | 'candidate', successes: number, total: number): void {
   for (let i = 0; i < total; i++) {
+    const row = rows.find((r) => r.id === id)!;
+    const recorded = new Set(
+      readComparisonRecord(id)!
+        .arms.flatMap((c) => c.runs)
+        .map((r) => r.assignmentId),
+    );
+    let slot = readTrialManifest(id)?.slots.find((s) => s.arm === arm && !recorded.has(s.id));
+    while (!slot) {
+      const index = readTrialManifest(id)?.slots.length ?? 0;
+      const reservation = reserveTrialSlot(
+        {
+          promptEvolutionId: id,
+          role: 'implementer',
+          candidateVersion: addendumVersionHash(row.afterPrompt.trim()),
+          controlVersion: rows.find((r) => r.status === 'approved')
+            ? addendumVersionHash(rows.find((r) => r.status === 'approved')!.afterPrompt.trim())
+            : null,
+          seed: `auto-test-${id}`,
+        },
+        900000 + id * 1000 + index,
+        () => readComparisonRecord(id)!.arms.every((c) => c.runs.length === 0),
+      );
+      if (reservation.issue !== null) throw new Error(reservation.issue);
+      if (reservation.slot.arm === arm) slot = reservation.slot;
+    }
     const run: ComparisonRun = {
-      taskId: 500 + i,
+      taskId: slot.taskId,
+      assignmentId: slot.id,
+      controlVersion: readTrialManifest(id)!.controlVersion,
       executionId: execSeq++,
       success: i < successes,
       costUsd: 0.1,
@@ -347,6 +375,26 @@ describe('autoApproveEligibleProposals — 既存比較記録の保護', () => {
 });
 
 describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () => {
+  test('later successes cannot promote until the earlier assigned outcome is recorded', async () => {
+    rows = [proposedRow(64, '- 提出前にlintを実行する')];
+    await autoApproveEligibleProposals();
+    fillArm(64, 'current', 0, 6);
+    fillArm(64, 'candidate', 6, 6);
+    const record = readComparisonRecord(64)!;
+    const first = readTrialManifest(64)!.slots[0];
+    const cell = record.arms.find((c) => c.arm === first.arm)!;
+    const delayed = cell.runs.find((r) => r.assignmentId === first.id)!;
+    cell.runs = cell.runs.filter((r) => r.assignmentId !== first.id);
+    writeComparisonRecord(record);
+    await autoApproveEligibleProposals();
+    expect(rows[0].status).toBe('staged');
+    expect(evidenceOf(64).comparisonSampleSize).toBe(0);
+    expect(evidenceOf(64).alphaLookJ).toBeUndefined();
+    expect(recordComparisonRun(64, first.arm, delayed)).toBe(true);
+    await autoApproveEligibleProposals();
+    expect(rows[0].status).toBe('approved');
+    expect(evidenceOf(64).comparisonSampleSize).toBe(5);
+  });
   test('a favorable cohort with a different reported model is withheld intact', async () => {
     rows = [proposedRow(62, '- 提出前にlintを実行する')];
     await autoApproveEligibleProposals();

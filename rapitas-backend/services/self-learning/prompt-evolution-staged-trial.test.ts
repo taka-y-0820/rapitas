@@ -7,7 +7,13 @@
  * こと、割当時点では injected=false であること。
  * Own file — mock.module is process-global.
  */
-import { describe, it, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { assignCandidateBudget } from './comparison/prompt-comparison-alpha-ledger';
+import { readTrialManifest, reserveTrialSlot } from './comparison/prompt-comparison-trial-manifest';
 
 const noopLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
 mock.module('../../config/logger', () => ({
@@ -52,6 +58,11 @@ mock.module('../../config/database', () => ({
 const { assignArm, getStagedRoleAddendumForTrial } =
   await import('./prompt-evolution-staged-trial');
 
+const { initComparisonRecordForStaging, addendumVersionHash } =
+  await import('./comparison/prompt-comparison-store');
+let tmpDir: string;
+let previousDataDir: string | undefined;
+
 /** 決定論的にブロック順序が反転する2つのシードを実測で選ぶ。 */
 function seedWhereCandidateIsFirst(): string {
   for (let i = 0; i < 1000; i++) {
@@ -68,24 +79,55 @@ function seedWhereCurrentIsFirst(): string {
 }
 
 function stagedRow(id: number, evidenceJson: string | null = '{}'): EvoRow {
-  return {
+  const row = {
     id,
     basePromptKey: 'workflow_role_implementer',
     afterPrompt: '- 提出前にlintを実行する',
     evidenceJson,
     status: 'staged',
   };
+  assignCandidateBudget(id);
+  initComparisonRecordForStaging({
+    promptEvolutionId: id,
+    role: 'implementer',
+    createdAt: new Date(0).toISOString(),
+  });
+  let evidence: Record<string, unknown> = {};
+  try {
+    evidence = JSON.parse(evidenceJson ?? '{}');
+  } catch {}
+  for (let i = 0; i < Number(evidence.stagedSampleCount ?? 0); i++) {
+    reserveTrialSlot(
+      {
+        promptEvolutionId: id,
+        role: 'implementer',
+        candidateVersion: addendumVersionHash(row.afterPrompt),
+        controlVersion: null,
+        seed: String(evidence.trialRandomSeed ?? 'seed'),
+      },
+      i + 1,
+      () => true,
+    );
+  }
+  return row;
 }
 
 function counterOf(id: number): unknown {
-  return (
-    JSON.parse(rows.find((r) => r.id === id)?.evidenceJson ?? '{}') as Record<string, unknown>
-  ).stagedSampleCount;
+  return readTrialManifest(id)?.slots.length ?? 0;
 }
 
 beforeEach(() => {
+  previousDataDir = process.env.RAPITAS_DATA_DIR;
+  tmpDir = mkdtempSync(join(tmpdir(), 'rapitas-staged-manifest-'));
+  process.env.RAPITAS_DATA_DIR = tmpDir;
   rows = [];
   findFirstArgs = null;
+});
+
+afterEach(() => {
+  if (previousDataDir === undefined) delete process.env.RAPITAS_DATA_DIR;
+  else process.env.RAPITAS_DATA_DIR = previousDataDir;
+  rmSync(tmpDir, { recursive: true, force: true });
 });
 
 describe('getStagedRoleAddendumForTrial', () => {
@@ -144,7 +186,7 @@ describe('getStagedRoleAddendumForTrial', () => {
     expect(second).toEqual(first);
   });
 
-  test('カウンタはDBに永続化され、再起動後も系列の続きから配分する', async () => {
+  test('割当台帳は永続化され、再起動後も系列の続きから配分する', async () => {
     const seed = seedWhereCandidateIsFirst();
     // 3回分の割当済み状態から再開 = ブロック1(count=3)の続き。
     rows = [stagedRow(1, JSON.stringify({ stagedSampleCount: 3, trialRandomSeed: seed }))];

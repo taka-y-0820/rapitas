@@ -77,7 +77,13 @@ export async function buildExecutionContext(
   try {
     const { getStagedRoleAddendumForTrial } =
       await import('../self-learning/prompt-evolution-staged-trial');
-    const trial = await getStagedRoleAddendumForTrial(transition.role, taskId);
+    const { addendumVersionHash } =
+      await import('../self-learning/comparison/prompt-comparison-store');
+    const trial = await getStagedRoleAddendumForTrial(
+      transition.role,
+      taskId,
+      approved ? addendumVersionHash(approved.text) : null,
+    );
     if (trial) {
       comparisonAssignment = trial.assignment;
       if (trial.addendum) {

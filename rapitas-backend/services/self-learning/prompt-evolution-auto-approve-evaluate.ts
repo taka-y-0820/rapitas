@@ -20,6 +20,7 @@
  * removing a candidate that looks harmful is the safe direction, and demanding
  * statistical proof first would keep it injected longer.
  */
+import { readTrialManifest, trialPrefix } from './comparison/prompt-comparison-trial-manifest';
 import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
 import { passesSequentialSignificance } from './comparison/prompt-comparison-adoption-gate';
@@ -79,6 +80,8 @@ export async function evaluateStagedCandidates(result: AutoApproveResult): Promi
       );
       continue;
     }
+    delete evidence.comparisonStatus;
+    delete evidence.comparisonStatusKind;
     const comparison = status.record;
 
     const cohortIssue = comparisonCohortIssue(
@@ -94,7 +97,17 @@ export async function evaluateStagedCandidates(result: AutoApproveResult): Promi
     }
     delete evidence.comparisonCohortIssue;
 
-    const summary = buildCheckpointSummary(comparison.arms);
+    const manifest = readTrialManifest(candidate.id);
+    const prefix = manifest ? trialPrefix(manifest, comparison) : { issue: 'manifest_missing' };
+    if (prefix.issue !== null) {
+      evidence.comparisonCohortIssue = prefix.issue;
+      evidence.comparisonVerdict = 'insufficient_data';
+      await stampEvidence(candidate.id, evidence);
+      result.withheld++;
+      continue;
+    }
+    evidence.comparisonUnassessedSlots = manifest!.slots.length - prefix.completeSlots;
+    const summary = buildCheckpointSummary(prefix.cells);
     const verdict = summary?.verdict ?? 'insufficient_data';
     // Kept so a look that turns out to spend no budget can put it back.
     const previousEvaluatedAt =
