@@ -14,6 +14,7 @@ const mainStopMock = mock((_id: number) => Promise.resolve(true));
 const stopAllForTasksMock = mock((_taskIds: Set<number>) => Promise.resolve([] as number[]));
 
 const mockPrisma = {
+  workflowQueueItem: { updateMany: mock(() => Promise.resolve({ count: 0 })) },
   agentExecution: {
     findMany: mock(() => Promise.resolve([] as { id: number }[])),
     update: mock(() => Promise.resolve({})),
@@ -44,7 +45,7 @@ mock.module('./agent-orchestrator', () => ({
   },
 }));
 
-const { stopTaskAgents, stopThemeAgents } = await import('./stop-task-agents');
+const { stopTaskAgents, stopThemeAgents, stopTaskTreeAgents } = await import('./stop-task-agents');
 const { acquireTaskExecutionLock, isTaskExecutionLocked } = await import('./task-execution-lock');
 
 function resetMocks() {
@@ -138,4 +139,24 @@ describe('stopThemeAgents', () => {
     expect(result.stoppedCount).toBe(0);
     expect(mockPrisma.task.findMany).toHaveBeenCalled();
   });
+});
+
+test('timeout scopes queue and agent cancellation to the complete descendant tree', async () => {
+  resetMocks();
+  mockPrisma.task.findMany
+    .mockResolvedValueOnce([{ id: 2 }])
+    .mockResolvedValueOnce([{ id: 3 }])
+    .mockResolvedValueOnce([]);
+  mockPrisma.agentExecution.findMany.mockResolvedValue([]);
+  await stopTaskTreeAgents(1);
+  expect(stopAllForTasksMock).toHaveBeenCalledWith(new Set([1, 2, 3]));
+  expect(mockPrisma.workflowQueueItem.updateMany).toHaveBeenCalledWith({
+    where: { taskId: { in: [1, 2, 3] }, status: { in: ['queued', 'running', 'waiting_approval'] } },
+    data: { status: 'cancelled', completedAt: expect.any(Date), errorMessage: 'Task timed out' },
+  });
+  expect(mockPrisma.task.findMany).toHaveBeenCalledWith({
+    where: { parentId: { in: [3] } },
+    select: { id: true },
+  });
+  expect(mockPrisma.agentExecutionLog.deleteMany).not.toHaveBeenCalled();
 });
