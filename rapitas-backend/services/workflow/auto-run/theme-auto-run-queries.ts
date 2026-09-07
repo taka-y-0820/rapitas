@@ -7,7 +7,13 @@
  * state transitions — see theme-auto-run-mutations.ts.
  */
 import { prisma } from '../../../config';
-import { mapToState, type AutoRunStatus, type ThemeAutoRunState } from './theme-auto-run-types';
+import {
+  mapToState,
+  isPausedAutoRunStatus,
+  narrowAutoRunStatus,
+  type AutoRunStatus,
+  type ThemeAutoRunState,
+} from './theme-auto-run-types';
 
 /**
  * Return or create the ThemeAutoRun record for a theme.
@@ -51,7 +57,9 @@ export function isAutoRunHandlingTask(state: ThemeAutoRunState | null, taskId: n
   if (!state) return false;
   return (
     state.currentTaskId === taskId &&
-    (state.status === 'running' || state.status === 'paused' || state.status === 'stopping')
+    (state.status === 'running' ||
+      isPausedAutoRunStatus(state.status) ||
+      state.status === 'stopping')
   );
 }
 
@@ -68,7 +76,10 @@ export async function isThemeAutoRunActive(themeId: number | null | undefined): 
     where: { themeId },
     select: { status: true },
   });
-  return record?.status === 'running' || record?.status === 'paused';
+  return (
+    record != null &&
+    (record.status === 'running' || isPausedAutoRunStatus(narrowAutoRunStatus(record.status)))
+  );
 }
 
 /**

@@ -122,9 +122,33 @@ export const mockFinalizeStop = mock(() => Promise.resolve());
 export const mockGetAutoRunState = mock(() => Promise.resolve(null as ThemeAutoRunState | null));
 export const mockStartAutoRun = mock(() => Promise.resolve({} as ThemeAutoRunState));
 
+const PAUSED_AUTO_RUN_STATUSES_TEST = ['paused', 'paused_user', 'paused_approval'];
+
 mock.module('./theme-auto-run-service', () => ({
-  AUTO_RUN_STATUSES: ['idle', 'running', 'paused', 'stopping'],
+  AUTO_RUN_STATUSES: ['idle', 'running', 'paused', 'paused_user', 'paused_approval', 'stopping'],
+  PAUSED_AUTO_RUN_STATUSES: PAUSED_AUTO_RUN_STATUSES_TEST,
   narrowAutoRunStatus: (s: string | null | undefined) => s ?? 'idle',
+  isPausedAutoRunStatus: (status: string) => PAUSED_AUTO_RUN_STATUSES_TEST.includes(status),
+  isAutoResumablePauseStatus: (status: string) => status === 'paused_approval',
+  toPauseReason: (status: string) =>
+    status === 'paused_user'
+      ? 'user'
+      : status === 'paused_approval'
+        ? 'awaiting_approval'
+        : status === 'paused'
+          ? 'unknown'
+          : null,
+  toPublicAutoRunState: (state: ThemeAutoRunState) => {
+    const reason =
+      state.status === 'paused_user'
+        ? 'user'
+        : state.status === 'paused_approval'
+          ? 'awaiting_approval'
+          : state.status === 'paused'
+            ? 'unknown'
+            : null;
+    return { ...state, status: reason !== null ? 'paused' : state.status, pauseReason: reason };
+  },
   isAutoRunHandlingTask: () => false,
   getOrCreateAutoRun: mock(() => Promise.resolve({})),
   getAutoRunState: mockGetAutoRunState,

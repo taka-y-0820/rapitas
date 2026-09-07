@@ -161,7 +161,7 @@ describe('spawnCodexProcess — argument construction', () => {
     const command = spawnCalls[0].command;
     expect(command).toContain('exec');
     expect(command).toContain('--json');
-    expect(command).toContain('--cd C:/work');
+    expect(command).toContain('^^^"--cd^^^" ^^^"C:/work^^^"');
     expect(command).toContain('--full-auto');
     expect(command).toContain('implement the feature');
     spawnedChildren[0].emit('close', 0);
@@ -180,7 +180,7 @@ describe('spawnCodexProcess — argument construction', () => {
       noCommits,
     );
     await flush();
-    expect(spawnCalls[0].command).toContain('-m gpt-5.5');
+    expect(spawnCalls[0].command).toContain('^^^"-m^^^" ^^^"gpt-5.5^^^"');
     spawnedChildren[0].emit('close', 0);
   });
 
@@ -215,8 +215,8 @@ describe('spawnCodexProcess — argument construction', () => {
       noCommits,
     );
     await flush();
-    expect(spawnCalls[0].command).toContain('--sandbox workspace-write');
-    expect(spawnCalls[0].command).toContain('--output-last-message C:/tmp/out.txt');
+    expect(spawnCalls[0].command).toContain('^^^"--sandbox^^^" ^^^"workspace-write^^^"');
+    expect(spawnCalls[0].command).toContain('^^^"--output-last-message^^^" ^^^"C:/tmp/out.txt^^^"');
     expect(spawnCalls[0].command).not.toContain('--full-auto');
     spawnedChildren[0].emit('close', 0);
   });
@@ -237,7 +237,7 @@ describe('spawnCodexProcess — argument construction', () => {
     await flush();
     const command = spawnCalls[0].command;
     expect(command).not.toContain('--json');
-    expect(command).toContain('--sandbox read-only');
+    expect(command).toContain('^^^"--sandbox^^^" ^^^"read-only^^^"');
     expect(command).toContain('--skip-git-repo-check');
     expect(command).toContain('調査レポート');
     // The actual task prompt is written to stdin, not passed positionally.
@@ -283,7 +283,7 @@ describe('spawnCodexProcess — argument construction', () => {
       noCommits,
     );
     await flush();
-    expect(spawnCalls[0].command).toContain('resume sess-abc-123');
+    expect(spawnCalls[0].command).toContain('^^^"resume^^^" ^^^"sess-abc-123^^^"');
     spawnedChildren[0].emit('close', 0);
   });
 });
