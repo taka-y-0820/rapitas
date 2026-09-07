@@ -23,6 +23,7 @@ import { triageTestFailures } from './test-triage';
 import { buildTriagedTestCheck } from './test-triage-report';
 import { parsePlanFiles, evaluateScopeCheck } from './scope-check';
 import { evaluateAcceptanceSelfCheck } from './acceptance-self-check';
+import { schemaChangeGateCheck } from './schema-change-gate';
 import { runProjectChecks, spawnQuiet } from './quiet-verification';
 import { assertSafeGitRef } from '../../../utils/common/branch-name-generator';
 
@@ -50,7 +51,8 @@ export interface VerificationCheck {
     | 'coverage'
     | 'runtime'
     | 'tamper'
-    | 'acceptance';
+    | 'acceptance'
+    | 'schema-change';
   /** Whether the check was applicable and actually executed. */
   ran: boolean;
   /** True when the check passed (no new failures in the changed files). */
@@ -897,12 +899,25 @@ export async function runAutomatedVerification(
   const allow = options.tamperAllowlist ?? [];
   const tamperPlan = allow.length ? [...(planFiles ?? []), ...allow] : planFiles;
   const tamper = tamperCheck(allChanged, tamperPlan);
+  // HARD gate (task 892): unlike tamper/scope, planFiles itself (not the
+  // tamper-allowlist-augmented tamperPlan) decides "planned" — a schema
+  // change is a different threat model than gate/CI tampering.
+  const schemaGate = schemaChangeGateCheck(allChanged, planFiles);
 
-  if (changedFiles.length === 0 && (!scopeCheck || scopeCheck.ok) && (!tamper || tamper.ok)) {
+  if (
+    changedFiles.length === 0 &&
+    (!scopeCheck || scopeCheck.ok) &&
+    (!tamper || tamper.ok) &&
+    (!schemaGate || schemaGate.ok)
+  ) {
     return {
       ok: true,
       changedFiles: [],
-      checks: [...(scopeCheck ? [scopeCheck] : []), ...(tamper ? [tamper] : [])],
+      checks: [
+        ...(scopeCheck ? [scopeCheck] : []),
+        ...(tamper ? [tamper] : []),
+        ...(schemaGate ? [schemaGate] : []),
+      ],
       summary: '自動検証: 対象のコード変更なし',
       unverifiable: false,
     };
@@ -949,6 +964,7 @@ export async function runAutomatedVerification(
     ...(generatedSync ? [generatedSync] : []),
     ...(scopeCheck ? [scopeCheck] : []),
     ...(tamper ? [tamper] : []),
+    ...(schemaGate ? [schemaGate] : []),
     ...(coverage ? [coverage] : []),
     ...(acceptance ? [acceptance] : []),
   ];

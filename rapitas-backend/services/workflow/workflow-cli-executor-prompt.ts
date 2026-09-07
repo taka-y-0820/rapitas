@@ -8,11 +8,12 @@
  * systemPrompt / context / process.env.PORT, with no side effects.
  */
 import type { RoleTransition } from './workflow-types';
+import { buildAgentsMdSection, type AgentsMdReadResult } from './workflow-agents-md-context';
 
 /**
  * Build the full prompt for a CLI agent phase run.
  *
- * @param params - Prompt inputs (taskId, language, systemPrompt, context, transition) / プロンプト入力一式
+ * @param params - Prompt inputs (taskId, language, systemPrompt, context, transition, agentsMd) / プロンプト入力一式
  * @returns The assembled full prompt string / 組み立て済みプロンプト
  */
 export function buildCliAgentPrompt(params: {
@@ -21,6 +22,8 @@ export function buildCliAgentPrompt(params: {
   systemPrompt: string;
   context: string;
   transition: RoleTransition;
+  /** Target repository's own AGENTS.md read result (task 892); omitted = no injection. */
+  agentsMd?: AgentsMdReadResult;
 }): string {
   const { taskId, language, systemPrompt, context, transition } = params;
   // NOTE: Derived from transition.role here (not passed as booleans) so the
@@ -114,6 +117,13 @@ Always include an "Existing-feature check" section in the research / plan output
 `;
   fullPrompt += existingFeatureGate;
   fullPrompt += context;
+  fullPrompt += buildAgentsMdSection(
+    params.agentsMd ?? { content: null, truncated: false, readError: null },
+    {
+      isInvestigationPhase,
+      language,
+    },
+  );
 
   if (isInvestigationPhase && transition.outputFile) {
     // Strict research-only contract. No curl, no implementation, no test exec.
