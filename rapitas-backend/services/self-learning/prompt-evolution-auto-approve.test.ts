@@ -344,7 +344,7 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
   test('比較記録が読めない場合は unknown を記録し状態を変えない', async () => {
     rows = [proposedRow(21, '- 提出前にlintを実行する')];
     await autoApproveEligibleProposals();
-    // 記録を in_progress にする = readComparisonRecord は null を返す（取得失敗）。
+    // 記録を in_progress にする = 使用不可（取得失敗）。
     const record = readComparisonRecord(21)!;
     writeComparisonRecord({ ...record, status: 'in_progress' });
 
@@ -354,6 +354,41 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
     expect(result.approved).toBe(0);
     expect(result.rejected).toBe(0);
     expect(evidenceOf(21).comparisonStatus).toBe('unknown');
+    // 粗い unknown フラグに加え、診断できるよう具体的な種別も残す。
+    expect(evidenceOf(21).comparisonStatusKind).toBe('in_progress');
+  });
+
+  test('取得失敗の種別(破損/未作成)を区別して記録する', async () => {
+    rows = [proposedRow(26, '- 提出前にlintを実行する'), proposedRow(27, '- 型チェックを通す')];
+    await autoApproveEligibleProposals();
+    expect(rows.every((r) => r.status === 'staged')).toBe(true);
+
+    // 26 は破損、27 は記録そのものを失う。
+    writeRawRecord(26, '{ broken json');
+    rmSync(recordPath(27));
+
+    await autoApproveEligibleProposals();
+
+    expect(evidenceOf(26).comparisonStatusKind).toBe('corrupted');
+    expect(evidenceOf(27).comparisonStatusKind).toBe('not_found');
+    // いずれも採用も撤回もしない。
+    expect(rows.every((r) => r.status === 'staged')).toBe(true);
+  });
+
+  test('記録が回復すれば unknown スタンプは片付けられる', async () => {
+    rows = [proposedRow(30, '- 提出前にlintを実行する')];
+    await autoApproveEligibleProposals();
+    const record = readComparisonRecord(30)!;
+    writeComparisonRecord({ ...record, status: 'in_progress' });
+    await autoApproveEligibleProposals();
+    expect(evidenceOf(30).comparisonStatus).toBe('unknown');
+
+    writeComparisonRecord({ ...record, status: 'done' });
+    await autoApproveEligibleProposals();
+
+    expect(evidenceOf(30).comparisonStatus).toBeUndefined();
+    expect(evidenceOf(30).comparisonStatusKind).toBeUndefined();
+    expect(evidenceOf(30).comparisonVerdict).toBe('insufficient_data');
   });
 
   test('悪化を検出した候補は撤回(rejected)される', async () => {

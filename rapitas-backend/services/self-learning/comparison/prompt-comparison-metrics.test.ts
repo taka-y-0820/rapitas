@@ -150,6 +150,24 @@ describe('decideComparisonVerdict', () => {
     ).toBe('inconclusive');
   });
 
+  it('does NOT adopt 4/5 vs 5/5 at equal cost and duration', () => {
+    // 監督が明示した基準例。delta=0.2 に対し SE≈0.179 → 1.28*SE≈0.229。
+    // 「両群5件以上かつ差>=0.05」だけを見る判定はこれを improved にしていた。
+    expect(
+      decideComparisonVerdict({
+        successRateDelta: 0.2,
+        costDelta: 0,
+        durationDeltaMs: 0,
+        sampleSize: 5,
+        ...baseline,
+        currentSuccessRate: 0.8,
+        currentSampleSize: 5,
+        candidateSuccessRate: 1,
+        candidateSampleSize: 5,
+      }),
+    ).toBe('inconclusive');
+  });
+
   it('returns improved when the gain clears both the 0.05 floor and the significance floor', () => {
     // current 0.5(n=10) vs candidate 0.8(n=10) → SE≈0.201、1.28*SE≈0.257 < 0.3。
     expect(

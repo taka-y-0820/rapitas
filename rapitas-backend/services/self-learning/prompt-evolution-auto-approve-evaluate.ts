@@ -10,7 +10,7 @@
  */
 import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
-import { readComparisonRecord } from './comparison/prompt-comparison-store';
+import { readComparisonRecordStatus } from './comparison/prompt-comparison-store';
 import {
   CANDIDATE_SELECT,
   parseEvidence,
@@ -40,23 +40,30 @@ export async function evaluateStagedCandidates(result: AutoApproveResult): Promi
 
   for (const candidate of staged) {
     const evidence = parseEvidence(candidate.evidenceJson);
-    const comparison = readComparisonRecord(candidate.id);
-    if (!comparison) {
+    const status = readComparisonRecordStatus(candidate.id);
+    if (status.kind !== 'ok') {
       // Evidence we cannot READ is not evidence of anything. The candidate
-      // keeps its trial: neither adopted nor withdrawn on a missing record.
+      // keeps its trial: neither adopted nor withdrawn on a record we could
+      // not use. `comparisonStatus` stays the coarse 'unknown' flag; the
+      // specific kind is stamped alongside it because "the file is gone",
+      // "the JSON is corrupt" and "the disk refused the read" need different
+      // operator responses, and collapsing them leaves nothing to act on.
       evidence.comparisonStatus = 'unknown';
+      evidence.comparisonStatusKind = status.kind;
       await stampEvidence(candidate.id, evidence);
       result.withheld++;
       log.warn(
-        { id: candidate.id },
-        '[prompt-evolution] Comparison record unreadable — candidate held under trial (unknown)',
+        { id: candidate.id, kind: status.kind },
+        '[prompt-evolution] Comparison record unusable — candidate held under trial (unknown)',
       );
       continue;
     }
+    const comparison = status.record;
 
     const summary = comparison.summary;
     const verdict = summary?.verdict ?? 'insufficient_data';
     delete evidence.comparisonStatus;
+    delete evidence.comparisonStatusKind;
     evidence.comparisonVerdict = verdict;
     evidence.comparisonSampleSize = summary?.sampleSize ?? 0;
     evidence.comparisonSuccessRateDelta = summary?.successRateDelta ?? 0;
