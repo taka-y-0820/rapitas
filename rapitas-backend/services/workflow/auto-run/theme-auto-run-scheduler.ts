@@ -29,6 +29,8 @@ import {
   findByStatuses,
   resumeAutoRun,
   getAutoRunState,
+  isPausedAutoRunStatus,
+  PAUSED_AUTO_RUN_STATUSES,
   type ThemeAutoRunState,
 } from './theme-auto-run-service';
 import {
@@ -114,7 +116,7 @@ export class ThemeAutoRunScheduler {
       data: { status: 'idle', enabled: false, currentTaskId: null },
     });
 
-    const running = await findByStatuses(['running', 'paused']);
+    const running = await findByStatuses(['running', ...PAUSED_AUTO_RUN_STATUSES]);
     const armed = await prisma.themeAutoRun
       .count({ where: { enabled: true, status: 'idle' } })
       .catch(() => 0);
@@ -137,7 +139,7 @@ export class ThemeAutoRunScheduler {
     if (!task?.themeId) return;
 
     const state = await getAutoRunState(task.themeId);
-    if (state?.status === 'paused' && state.currentTaskId === taskId) {
+    if (state?.status === 'paused_approval' && state.currentTaskId === taskId) {
       await resumeAutoRun(task.themeId);
       log.info(
         `[ThemeAutoRunScheduler] Theme ${task.themeId} resumed after plan approval for task ${taskId}`,
@@ -154,12 +156,17 @@ export class ThemeAutoRunScheduler {
     if (!this.running) return;
     try {
       // NOTE: Single query for all statuses; split in JS to avoid 4 DB roundtrips per tick.
-      const allStates = await findByStatuses(['stopping', 'running', 'paused', 'idle']);
+      const allStates = await findByStatuses([
+        'stopping',
+        'running',
+        ...PAUSED_AUTO_RUN_STATUSES,
+        'idle',
+      ]);
       const byStatus = (s: string) => allStates.filter((r) => r.status === s);
 
       await this.processStoppingThemes(byStatus('stopping'));
       await this.processRunningThemes(byStatus('running'));
-      await this.processPausedThemes(byStatus('paused'));
+      await this.processPausedThemes(allStates.filter((r) => isPausedAutoRunStatus(r.status)));
       const idleTimedOut = await this.processIdleThemes(byStatus('idle'));
 
       // Apply committed fixes during the brief 0-agent gap BETWEEN tasks. The
