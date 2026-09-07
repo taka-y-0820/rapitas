@@ -134,7 +134,8 @@ describe('checkNeedsFallback — 既存判定の維持', () => {
     classifyCallCount = 0;
     const result = createResult({
       success: true,
-      output: 'done. but stderr said: resource_exhausted (429)',
+      output: 'partial result',
+      errorMessage: 'resource_exhausted (429)',
     });
 
     const decision = await checkNeedsFallback(result, 'claude-code', false, 1);
@@ -157,4 +158,15 @@ describe('checkNeedsFallback — 既存判定の維持', () => {
     const decision = await checkNeedsFallback(result, 'claude-code');
     expect(decision.needsFallback).toBe(false);
   });
+});
+
+test('successful plan discussing HTTP429 never triggers provider fallback', async () => {
+  classifyCallCount = 0;
+  const result = createResult({
+    success: true,
+    output:
+      '# Plan\nConcurrent verification requests return HTTP429. Test resource_exhausted handling.',
+  });
+  expect((await checkNeedsFallback(result, 'claude-code')).needsFallback).toBe(false);
+  expect(classifyCallCount).toBe(0);
 });
