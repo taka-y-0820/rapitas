@@ -7,7 +7,8 @@
  * file-system housekeeping (see log-file-manager).
  */
 
-import { writeFile, mkdir } from 'fs/promises';
+import { mkdir } from 'fs/promises';
+import { writeAtomicTextFile } from '../../../utils/common/atomic-text-file';
 import { existsSync } from 'fs';
 import path from 'path';
 import { createLogger } from '../../../config/logger';
@@ -48,6 +49,7 @@ export class ExecutionFileLogger {
   private lastError?: string;
   private logFilePath: string;
   private initialized = false;
+  private flushTail: Promise<string | null> = Promise.resolve(null);
 
   constructor(
     executionId: number,
@@ -340,6 +342,12 @@ export class ExecutionFileLogger {
    * @returns Absolute path to the written log file, or null on failure / 書き込まれたログファイルの絶対パス（失敗時はnull）
    */
   async flush(): Promise<string | null> {
+    const next = this.flushTail.then(() => this.flushNow());
+    this.flushTail = next.catch(() => null);
+    return next;
+  }
+
+  private async flushNow(): Promise<string | null> {
     if (this.entries.length === 0) return null;
 
     try {
@@ -368,7 +376,7 @@ export class ExecutionFileLogger {
 
       const logContent = buildLogFileContent(summary, this.entries);
 
-      await writeFile(this.logFilePath, logContent, 'utf-8');
+      await writeAtomicTextFile(this.logFilePath, logContent);
 
       await cleanupOldLogs(this.config.logDir, this.config.maxLogFiles);
 
