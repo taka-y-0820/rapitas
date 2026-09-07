@@ -1,12 +1,13 @@
 /**
  * prompt-evolution-staged-trial テスト
  *
- * 限定試行のアーム割当を検証する。対照/介入が決定的に交互配分されること、
- * カウンタが永続化され再起動後も継続すること、同一ロールに複数の staged 候補が
- * あっても最新1件のみが使われること、割当時点では injected=false であること。
+ * 限定試行のアーム割当を検証する。ブロックサイズ2の並べ替えブロック法で
+ * バランスを保ちつつ順序がシード依存になること、カウンタが永続化され再起動後も
+ * 継続すること、同一ロールに複数の staged 候補があっても最新1件のみが使われる
+ * こと、割当時点では injected=false であること。
  * Own file — mock.module is process-global.
  */
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, test, expect, mock, beforeEach } from 'bun:test';
 
 const noopLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
 mock.module('../../config/logger', () => ({
@@ -48,7 +49,23 @@ mock.module('../../config/database', () => ({
   },
 }));
 
-const { getStagedRoleAddendumForTrial } = await import('./prompt-evolution-staged-trial');
+const { assignArm, getStagedRoleAddendumForTrial } =
+  await import('./prompt-evolution-staged-trial');
+
+/** 決定論的にブロック順序が反転する2つのシードを実測で選ぶ。 */
+function seedWhereCandidateIsFirst(): string {
+  for (let i = 0; i < 1000; i++) {
+    if (assignArm(`s${i}`, 0) === 'candidate') return `s${i}`;
+  }
+  throw new Error('no seed found');
+}
+
+function seedWhereCurrentIsFirst(): string {
+  for (let i = 0; i < 1000; i++) {
+    if (assignArm(`s${i}`, 0) === 'current') return `s${i}`;
+  }
+  throw new Error('no seed found');
+}
 
 function stagedRow(id: number, evidenceJson: string | null = '{}'): EvoRow {
   return {
@@ -78,29 +95,68 @@ describe('getStagedRoleAddendumForTrial', () => {
     expect(findFirstArgs).toMatchObject({ where: { status: 'staged' } });
   });
 
-  test('カウンタの偶奇で current/candidate を交互に配分する', async () => {
-    rows = [stagedRow(1)];
+  test('ブロックサイズ2で必ず各アーム1件ずつになる(バランスは保たれる)', async () => {
+    rows = [stagedRow(1, JSON.stringify({ trialRandomSeed: seedWhereCandidateIsFirst() }))];
     const arms: string[] = [];
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 6; i++) {
       const trial = await getStagedRoleAddendumForTrial('implementer', 100 + i);
       arms.push(trial!.assignment.arm);
     }
-    expect(arms).toEqual(['current', 'candidate', 'current', 'candidate']);
-    expect(counterOf(1)).toBe(4);
+
+    // 各ブロック(2件)に current と candidate が1件ずつ入る。
+    for (let b = 0; b < 3; b++) {
+      expect(new Set(arms.slice(b * 2, b * 2 + 2))).toEqual(new Set(['current', 'candidate']));
+    }
+    expect(arms.filter((a) => a === 'candidate')).toHaveLength(3);
+    expect(counterOf(1)).toBe(6);
   });
 
-  test('カウンタはDBに永続化され、再起動後も同じ列を継続する', async () => {
-    // 3回分の割当済み状態から再開 = 次は candidate。
-    rows = [stagedRow(1, '{"stagedSampleCount":3}')];
+  test('ブロック内の順序はシード依存で、単純な偶奇一致ではない', async () => {
+    // 同じ位置(count=0)でもシードが違えばアームが変わる = 位置の関数ではない。
+    const candidateFirst = seedWhereCandidateIsFirst();
+    const currentFirst = seedWhereCurrentIsFirst();
+
+    rows = [stagedRow(1, JSON.stringify({ trialRandomSeed: candidateFirst }))];
+    const a = await getStagedRoleAddendumForTrial('implementer', 100);
+
+    rows = [stagedRow(2, JSON.stringify({ trialRandomSeed: currentFirst }))];
+    const b = await getStagedRoleAddendumForTrial('implementer', 100);
+
+    expect(a?.assignment.arm).toBe('candidate');
+    expect(b?.assignment.arm).toBe('current');
+  });
+
+  test('同じシードなら再起動後も同じ割当系列を再現する', async () => {
+    const seed = seedWhereCandidateIsFirst();
+    const first: string[] = [];
+    rows = [stagedRow(1, JSON.stringify({ trialRandomSeed: seed }))];
+    for (let i = 0; i < 6; i++) {
+      first.push((await getStagedRoleAddendumForTrial('implementer', 100 + i))!.assignment.arm);
+    }
+
+    // 再起動を模して同じシードでカウンタ0からやり直す。
+    const second: string[] = [];
+    rows = [stagedRow(1, JSON.stringify({ trialRandomSeed: seed }))];
+    for (let i = 0; i < 6; i++) {
+      second.push((await getStagedRoleAddendumForTrial('implementer', 100 + i))!.assignment.arm);
+    }
+
+    expect(second).toEqual(first);
+  });
+
+  test('カウンタはDBに永続化され、再起動後も系列の続きから配分する', async () => {
+    const seed = seedWhereCandidateIsFirst();
+    // 3回分の割当済み状態から再開 = ブロック1(count=3)の続き。
+    rows = [stagedRow(1, JSON.stringify({ stagedSampleCount: 3, trialRandomSeed: seed }))];
 
     const trial = await getStagedRoleAddendumForTrial('implementer', 200);
 
-    expect(trial?.assignment.arm).toBe('candidate');
+    expect(trial?.assignment.arm).toBe(assignArm(seed, 3));
     expect(counterOf(1)).toBe(4);
   });
 
   test('介入アームは追記文と版を返し、割当時点では injected=false のまま', async () => {
-    rows = [stagedRow(1, '{"stagedSampleCount":1}')];
+    rows = [stagedRow(1, JSON.stringify({ trialRandomSeed: seedWhereCandidateIsFirst() }))];
 
     const trial = await getStagedRoleAddendumForTrial('implementer', 300);
 
@@ -112,7 +168,7 @@ describe('getStagedRoleAddendumForTrial', () => {
   });
 
   test('対照アームは追記文も版も返さない', async () => {
-    rows = [stagedRow(1, '{"stagedSampleCount":0}')];
+    rows = [stagedRow(1, JSON.stringify({ trialRandomSeed: seedWhereCurrentIsFirst() }))];
 
     const trial = await getStagedRoleAddendumForTrial('implementer', 400);
 
@@ -122,7 +178,11 @@ describe('getStagedRoleAddendumForTrial', () => {
   });
 
   test('同一ロールに複数staged候補があっても最新1件のみを対象にする', async () => {
-    rows = [stagedRow(1, '{"stagedSampleCount":1}'), stagedRow(9, '{"stagedSampleCount":1}')];
+    const seed = seedWhereCandidateIsFirst();
+    rows = [
+      stagedRow(1, JSON.stringify({ stagedSampleCount: 1, trialRandomSeed: seed })),
+      stagedRow(9, JSON.stringify({ stagedSampleCount: 1, trialRandomSeed: seed })),
+    ];
 
     const trial = await getStagedRoleAddendumForTrial('implementer', 500);
 
@@ -135,5 +195,27 @@ describe('getStagedRoleAddendumForTrial', () => {
   test('追記文が空の候補は割当を作らない', async () => {
     rows = [{ ...stagedRow(1), afterPrompt: '   ' }];
     expect(await getStagedRoleAddendumForTrial('implementer', 600)).toBeNull();
+  });
+});
+
+describe('assignArm', () => {
+  it('keeps every block balanced regardless of the seed', () => {
+    for (let i = 0; i < 50; i++) {
+      const seed = `seed-${i}`;
+      for (let block = 0; block < 5; block++) {
+        const pair = [assignArm(seed, block * 2), assignArm(seed, block * 2 + 1)];
+        expect(new Set(pair)).toEqual(new Set(['current', 'candidate']));
+      }
+    }
+  });
+
+  it('does not reduce to a fixed function of position', () => {
+    // 位置0のアームがシードによって両方現れる = 偶奇固定ではない。
+    const armsAtZero = new Set(Array.from({ length: 50 }, (_, i) => assignArm(`seed-${i}`, 0)));
+    expect(armsAtZero.size).toBe(2);
+  });
+
+  it('is stable for the same (seed, count)', () => {
+    expect(assignArm('abc', 7)).toBe(assignArm('abc', 7));
   });
 });

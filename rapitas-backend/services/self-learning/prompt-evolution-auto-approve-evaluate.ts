@@ -3,13 +3,27 @@
  *
  * Step 2 of the unattended gate: judge every candidate under limited trial on
  * its MEASURED comparison record — adopt role-wide, withdraw, or keep
- * collecting. The judgement itself (minimum sample, significance floor,
- * baseline-relative cost/duration tolerance) belongs to
- * comparison/prompt-comparison-metrics; this module only applies its verdict
- * to the candidate row and records why.
+ * collecting.
+ *
+ * Adoption requires BOTH gates to agree:
+ *
+ * 1. prompt-comparison-metrics' descriptive verdict is `improved` (minimum
+ *    sample, cost and duration within their baseline-relative tolerances), and
+ * 2. prompt-comparison-adoption-gate's Fisher exact test clears the budget
+ *    prompt-comparison-alpha-ledger allocated to THIS look.
+ *
+ * Gate 1 alone is not evidence: it is re-evaluated every day against a growing
+ * sample, and a fixed threshold applied repeatedly drifts the family-wise
+ * false-adoption rate well past its nominal level. Gate 2 is what bounds it.
+ *
+ * Withdrawal deliberately requires only the regression side of gate 1 —
+ * removing a candidate that looks harmful is the safe direction, and demanding
+ * statistical proof first would keep it injected longer.
  */
 import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
+import { passesSequentialSignificance } from './comparison/prompt-comparison-adoption-gate';
+import { resolveEvaluationBudget } from './comparison/prompt-comparison-alpha-ledger';
 import { readComparisonRecordStatus } from './comparison/prompt-comparison-store';
 import {
   CANDIDATE_SELECT,
@@ -86,9 +100,61 @@ export async function evaluateStagedCandidates(result: AutoApproveResult): Promi
 
     // insufficient_data / inconclusive: keep measuring rather than guess. A
     // deletion signal that appeared after staging likewise holds the trial.
-    if (verdict !== 'improved' || !isPureAddendum(candidate.afterPrompt?.trim() ?? '')) {
+    // (`summary` is non-null whenever the verdict is 'improved' — an absent
+    // summary degrades to 'insufficient_data' above — but the null check keeps
+    // that invariant enforced by the compiler rather than by reading.)
+    if (
+      verdict !== 'improved' ||
+      !summary ||
+      !isPureAddendum(candidate.afterPrompt?.trim() ?? '')
+    ) {
       await stampEvidence(candidate.id, evidence);
       result.withheld++;
+      continue;
+    }
+
+    // Reserve this look's slice of the candidate's budget. Done only once the
+    // descriptive gate has passed, so looks are not burned on samples that
+    // could not have led to adoption anyway.
+    const budget = resolveEvaluationBudget(candidate.id, summary.sampleSize);
+    if (budget.issue) {
+      // A budget we cannot read is not a budget. Neither adopt nor withdraw.
+      evidence.alphaLedgerStatus = 'unknown';
+      evidence.alphaLedgerIssueKind = budget.issue;
+      await stampEvidence(candidate.id, evidence);
+      result.withheld++;
+      log.warn(
+        { id: candidate.id, kind: budget.issue },
+        '[prompt-evolution] Alpha ledger unusable — candidate held under trial (unknown)',
+      );
+      continue;
+    }
+    delete evidence.alphaLedgerStatus;
+    delete evidence.alphaLedgerIssueKind;
+
+    if (!budget.isNewLook) {
+      // Same samples as the previous evaluation. Re-judging them would be a
+      // free extra chance to clear the threshold, which is exactly the
+      // repeated-testing inflation the ledger exists to prevent.
+      await stampEvidence(candidate.id, evidence);
+      result.withheld++;
+      continue;
+    }
+
+    evidence.alphaLookJ = budget.j;
+    evidence.alphaKj = budget.alphaKj;
+    const significant = passesSequentialSignificance(summary, budget.alphaKj);
+    evidence.adoptionTestPassed = significant;
+    if (!significant) {
+      // The gap is real enough to look promising but not to rule out chance at
+      // this look's budget. Keep collecting; a later look with more samples can
+      // still adopt it.
+      await stampEvidence(candidate.id, evidence);
+      result.withheld++;
+      log.info(
+        { id: candidate.id, j: budget.j, alphaKj: budget.alphaKj, sampleSize: summary.sampleSize },
+        '[prompt-evolution] Trial promising but not significant at this look — collecting',
+      );
       continue;
     }
 
@@ -117,8 +183,11 @@ export async function evaluateStagedCandidates(result: AutoApproveResult): Promi
         {
           id: candidate.id,
           role: candidate.basePromptKey,
-          sampleSize: summary?.sampleSize,
-          uncertainty: summary?.uncertainty,
+          sampleSize: summary.sampleSize,
+          uncertainty: summary.uncertainty,
+          k: evidence.alphaBudgetK,
+          j: budget.j,
+          alphaKj: budget.alphaKj,
         },
         '[prompt-evolution] Adopted role-wide on measured comparison evidence',
       );

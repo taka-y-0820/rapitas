@@ -8,9 +8,15 @@
  * Passing this step is never a claim that the candidate is an improvement —
  * that judgement belongs to prompt-evolution-auto-approve-evaluate, on the
  * comparison record this step prepares.
+ *
+ * Staging also reserves the candidate's pre-registered share of the global
+ * false-adoption budget (prompt-comparison-alpha-ledger) and its randomisation
+ * seed, so both are fixed before a single sample exists.
  */
+import { randomBytes } from 'crypto';
 import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
+import { assignCandidateBudget } from './comparison/prompt-comparison-alpha-ledger';
 import { initComparisonRecordForStaging } from './comparison/prompt-comparison-store';
 import { validateAddendumQuality } from './prompt-evolution-addendum-quality';
 import {
@@ -141,18 +147,48 @@ export async function stageProposedCandidates(
         continue;
       }
 
+      // Reserve this candidate's permanent share of the global false-adoption
+      // budget BEFORE it can accrue any samples. Doing it at staging (rather
+      // than at the first evaluation) is what makes the allocation
+      // pre-registered: k depends only on arrival order, never on how the
+      // candidate's results turn out.
+      const budget = assignCandidateBudget(proposal.id);
+      if (budget.issue) {
+        const retries =
+          typeof evidence.alphaLedgerRetries === 'number' ? evidence.alphaLedgerRetries : 0;
+        evidence.alphaLedgerIssue = budget.issue;
+        evidence.alphaLedgerRetries = retries + 1;
+        await stampEvidence(proposal.id, evidence);
+        result.withheld++;
+        log.warn(
+          { id: proposal.id, issue: budget.issue, retries: retries + 1 },
+          '[prompt-evolution] Alpha ledger unusable — staging held, no budget issued',
+        );
+        continue;
+      }
+
       evidence.stagedAt = new Date().toISOString();
       evidence.stagedSampleCount = 0;
+      evidence.alphaBudgetK = budget.k;
+      evidence.alphaK = budget.alphaK;
+      // Per-candidate seed for the block randomisation of arm assignment.
+      // Issued once so the sequence is reproducible across restarts, and drawn
+      // from a CSPRNG so it is not predictable from the task id.
+      if (typeof evidence.trialRandomSeed !== 'string') {
+        evidence.trialRandomSeed = randomBytes(16).toString('hex');
+      }
       delete evidence.autoApproveQualityRetries;
       delete evidence.comparisonRecordIssue;
       delete evidence.comparisonInitRetries;
+      delete evidence.alphaLedgerIssue;
+      delete evidence.alphaLedgerRetries;
       await prisma.promptEvolution.update({
         where: { id: proposal.id },
         data: { status: 'staged', evidenceJson: JSON.stringify(evidence) },
       });
       result.staged++;
       log.info(
-        { id: proposal.id, role: proposal.basePromptKey },
+        { id: proposal.id, role: proposal.basePromptKey, k: budget.k, alphaK: budget.alphaK },
         '[prompt-evolution] Staged for a limited trial — adoption now needs measured evidence',
       );
     } catch (err) {

@@ -4,8 +4,9 @@
  * 2段ゲート（proposed→staged→approved）を検証する。テキストガードは限定試行を
  * 開始させるだけで全体採用しないこと、全体採用/撤回は比較記録の実測判定にのみ
  * 従うこと、記録取得失敗は unknown 扱いで状態を変えないこと、恒久不合格の先頭
- * 候補が後続を止め続けないこと、そして破損・未完了の比較記録を空の新規記録で
- * 上書きせず staging を保留することを確認する。
+ * 候補が後続を止め続けないこと、破損・未完了の比較記録を空の新規記録で上書き
+ * せず staging を保留すること、そして事前登録アルファ予算による逐次検定が
+ * 繰り返し評価での誤採用を防ぐことを確認する。
  * Own file — mock.module is process-global.
  */
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
@@ -250,6 +251,16 @@ function writeRawRecord(id: number, contents: string): void {
   writeFileSync(recordPath(id), contents);
 }
 
+/** Absolute path of the shared alpha ledger inside the test data dir. */
+function ledgerPath(): string {
+  return join(tmpDir, '.prompt-comparisons', '_alpha-ledger.json');
+}
+
+function writeRawLedger(contents: string): void {
+  mkdirSync(join(tmpDir, '.prompt-comparisons'), { recursive: true });
+  writeFileSync(ledgerPath(), contents);
+}
+
 describe('autoApproveEligibleProposals — 既存比較記録の保護', () => {
   test('破損した比較記録を空の新規記録で上書きせず、staging を保留する', async () => {
     rows = [proposedRow(40, '- 提出前にlintを実行する')];
@@ -409,7 +420,7 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
     process.env.RAPITAS_PROMPT_AUTO_PROMOTE = 'true';
     rows = [proposedRow(23, '- 提出前にlintを実行する')];
     await autoApproveEligibleProposals();
-    fillArm(23, 'current', 1, COMPARISON_MIN_SAMPLE);
+    fillArm(23, 'current', 0, COMPARISON_MIN_SAMPLE);
     fillArm(23, 'candidate', COMPARISON_MIN_SAMPLE, COMPARISON_MIN_SAMPLE);
 
     const result = await autoApproveEligibleProposals();
@@ -428,7 +439,7 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
     process.env.RAPITAS_PROMPT_AUTO_PROMOTE = 'false';
     rows = [proposedRow(24, '- 提出前にlintを実行する')];
     await autoApproveEligibleProposals();
-    fillArm(24, 'current', 1, COMPARISON_MIN_SAMPLE);
+    fillArm(24, 'current', 0, COMPARISON_MIN_SAMPLE);
     fillArm(24, 'candidate', COMPARISON_MIN_SAMPLE, COMPARISON_MIN_SAMPLE);
 
     const result = await autoApproveEligibleProposals();
@@ -445,7 +456,7 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
     // 環境変数を一切設定しない運用で採用まで到達することを固定する。
     rows = [proposedRow(28, '- 提出前にlintを実行する')];
     await autoApproveEligibleProposals();
-    fillArm(28, 'current', 1, COMPARISON_MIN_SAMPLE);
+    fillArm(28, 'current', 0, COMPARISON_MIN_SAMPLE);
     fillArm(28, 'candidate', COMPARISON_MIN_SAMPLE, COMPARISON_MIN_SAMPLE);
 
     const result = await autoApproveEligibleProposals();
@@ -470,6 +481,110 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
     expect(evidenceOf(29).comparisonVerdict).toBe('inconclusive');
   });
 
+  test('効果が本物らしくても最初のlookで有意水準に届かなければ採用しない', async () => {
+    // candidate 5/5 vs current 1/5 → Fisher片側 p=6/252≈0.0238。
+    // 候補1件目・評価1回目の予算 alpha_11=0.0125 に届かないため保留。
+    rows = [proposedRow(50, '- 提出前にlintを実行する')];
+    await autoApproveEligibleProposals();
+    fillArm(50, 'current', 1, COMPARISON_MIN_SAMPLE);
+    fillArm(50, 'candidate', COMPARISON_MIN_SAMPLE, COMPARISON_MIN_SAMPLE);
+
+    const result = await autoApproveEligibleProposals();
+
+    expect(rows[0].status).toBe('staged');
+    expect(result.approved).toBe(0);
+    // 記述的な verdict は improved でも、採用ゲートは通っていない。
+    expect(evidenceOf(50).comparisonVerdict).toBe('improved');
+    expect(evidenceOf(50).adoptionTestPassed).toBe(false);
+    expect(evidenceOf(50).alphaLookJ).toBe(1);
+  });
+
+  test('標本が増えたlook2で有意水準を満たせば採用に到達する', async () => {
+    rows = [proposedRow(51, '- 提出前にlintを実行する')];
+    await autoApproveEligibleProposals();
+    fillArm(51, 'current', 1, COMPARISON_MIN_SAMPLE);
+    fillArm(51, 'candidate', COMPARISON_MIN_SAMPLE, COMPARISON_MIN_SAMPLE);
+
+    // look1: p=0.0238 > alpha_11=0.0125 → 保留。
+    await autoApproveEligibleProposals();
+    expect(rows[0].status).toBe('staged');
+
+    // 各アームに2件追加 → candidate 7/7 vs current 1/7、p≈0.002331。
+    // look2 の予算 alpha_12≈0.004167 を下回るので採用。
+    fillArm(51, 'current', 0, 2);
+    fillArm(51, 'candidate', 2, 2);
+
+    const result = await autoApproveEligibleProposals();
+
+    expect(rows[0].status).toBe('approved');
+    expect(result.approved).toBe(1);
+    expect(evidenceOf(51).alphaLookJ).toBe(2);
+    expect(evidenceOf(51).adoptionTestPassed).toBe(true);
+  });
+
+  test('同じ標本集合の再評価はlookを消費せず状態も変えない', async () => {
+    rows = [proposedRow(52, '- 提出前にlintを実行する')];
+    await autoApproveEligibleProposals();
+    fillArm(52, 'current', 1, COMPARISON_MIN_SAMPLE);
+    fillArm(52, 'candidate', COMPARISON_MIN_SAMPLE, COMPARISON_MIN_SAMPLE);
+
+    await autoApproveEligibleProposals();
+    expect(evidenceOf(52).alphaLookJ).toBe(1);
+
+    // 標本が増えていないまま日次ジョブが2回走っても j は進まない。
+    await autoApproveEligibleProposals();
+    await autoApproveEligibleProposals();
+
+    expect(evidenceOf(52).alphaLookJ).toBe(1);
+    expect(rows[0].status).toBe('staged');
+  });
+
+  test('staging時に候補ごとのアルファ予算とランダム化シードが固定される', async () => {
+    rows = [proposedRow(53, '- 提出前にlintを実行する'), proposedRow(54, '- 型チェックを通す')];
+
+    await autoApproveEligibleProposals();
+
+    // 登録順に k=1,2 が割り当てられ、alpha_k = 0.05/(k(k+1))。
+    expect(evidenceOf(53).alphaBudgetK).toBe(1);
+    expect(evidenceOf(53).alphaK).toBeCloseTo(0.025, 12);
+    expect(evidenceOf(54).alphaBudgetK).toBe(2);
+    expect(evidenceOf(54).alphaK).toBeCloseTo(0.05 / 6, 12);
+    // アーム割当のシードは staging 時に1度だけ発行される。
+    expect(evidenceOf(53).trialRandomSeed).toBeString();
+    expect(evidenceOf(53).trialRandomSeed).not.toBe(evidenceOf(54).trialRandomSeed);
+  });
+
+  test('アルファ台帳が破損していれば staging を保留し予算を発行しない', async () => {
+    rows = [proposedRow(55, '- 提出前にlintを実行する')];
+    writeRawLedger('{ broken ledger');
+    const before = readFileSync(ledgerPath(), 'utf8');
+
+    const result = await autoApproveEligibleProposals();
+
+    expect(rows[0].status).toBe('proposed');
+    expect(result.staged).toBe(0);
+    expect(evidenceOf(55).alphaLedgerIssue).toBe('corrupted');
+    expect(evidenceOf(55).alphaLedgerRetries).toBe(1);
+    // 破損台帳を空の新規台帳で上書きしない。
+    expect(readFileSync(ledgerPath(), 'utf8')).toBe(before);
+  });
+
+  test('評価時に台帳が読めなくなったら unknown 扱いで保留する', async () => {
+    rows = [proposedRow(56, '- 提出前にlintを実行する')];
+    await autoApproveEligibleProposals();
+    fillArm(56, 'current', 0, COMPARISON_MIN_SAMPLE);
+    fillArm(56, 'candidate', COMPARISON_MIN_SAMPLE, COMPARISON_MIN_SAMPLE);
+    writeRawLedger('{ broken ledger');
+
+    const result = await autoApproveEligibleProposals();
+
+    expect(rows[0].status).toBe('staged');
+    expect(result.approved).toBe(0);
+    expect(result.rejected).toBe(0);
+    expect(evidenceOf(56).alphaLedgerStatus).toBe('unknown');
+    expect(evidenceOf(56).alphaLedgerIssueKind).toBe('corrupted');
+  });
+
   test('全体採用時は同ロールの旧承認をsupersededにする(追記は常に1件)', async () => {
     process.env.RAPITAS_PROMPT_AUTO_PROMOTE = 'true';
     rows = [
@@ -477,7 +592,7 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
       proposedRow(26, '- 提出前にlintを実行する'),
     ];
     await autoApproveEligibleProposals();
-    fillArm(26, 'current', 1, COMPARISON_MIN_SAMPLE);
+    fillArm(26, 'current', 0, COMPARISON_MIN_SAMPLE);
     fillArm(26, 'candidate', COMPARISON_MIN_SAMPLE, COMPARISON_MIN_SAMPLE);
 
     await autoApproveEligibleProposals();
@@ -490,7 +605,7 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
     process.env.RAPITAS_PROMPT_AUTO_PROMOTE = 'true';
     rows = [proposedRow(27, '- 提出前にlintを実行する')];
     await autoApproveEligibleProposals();
-    fillArm(27, 'current', 1, COMPARISON_MIN_SAMPLE);
+    fillArm(27, 'current', 0, COMPARISON_MIN_SAMPLE);
     fillArm(27, 'candidate', COMPARISON_MIN_SAMPLE, COMPARISON_MIN_SAMPLE);
 
     const first = await autoApproveEligibleProposals();

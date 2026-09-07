@@ -19,10 +19,17 @@ const log = createLogger('workflow-orchestrator');
  * Builds the role context and appends the approved / trial / experimental
  * addenda.
  *
- * At most ONE prompt-evolution addendum is appended: an approved rollout wins,
- * and only when there is none does a `staged` candidate get its limited-trial
- * assignment. Stacking both would make the resulting run unattributable to
- * either.
+ * Exactly one prompt-evolution addendum is appended, chosen by whether a
+ * limited trial is running for this role:
+ *
+ * | Trial running | Arm       | Injected text                    |
+ * | ------------- | --------- | -------------------------------- |
+ * | no            | —         | the approved addendum, if any     |
+ * | yes           | current   | the approved addendum, if any     |
+ * | yes           | candidate | the staged candidate's addendum   |
+ *
+ * The control arm deliberately carries the approved text: the trial compares
+ * the candidate against what production runs TODAY, not against a bare prompt.
  *
  * @param taskId - The task whose workflow should advance. / ワークフローを進めるタスクID
  * @param transition - Transition about to execute. / 実行予定の遷移
@@ -41,67 +48,99 @@ export async function buildExecutionContext(
   let context = await buildRoleContext(taskId, transition.role, task, language, workflowMode);
   let comparisonAssignment: ComparisonAssignment | null = null;
 
-  // Human-approved (or trial-adopted) prompt-evolution addendum for this role.
-  // Appended at the single orchestration call site so every workflow role gets
-  // it without touching each buildRoleContext case. Best-effort.
+  // The role's currently-approved (or trial-adopted) addendum — what production
+  // actually runs today. Resolved first because it is BOTH the default
+  // injection and the control arm's content once a trial is running.
+  // Best-effort.
   let approved: { promptEvolutionId: number; text: string } | null = null;
   try {
     const { getApprovedRoleAddendumDetail } =
       await import('../self-learning/prompt-evolution-worker');
     approved = await getApprovedRoleAddendumDetail(transition.role, taskId);
-    if (approved) {
-      context += `\n\n## 承認済みの改善ガイダンス(プロンプト進化)\n\n${approved.text}`;
-      // Observability: the candidate id and text checksum make the injection
-      // attributable to an exact version — logging taskId/role alone left no
-      // way to tell WHICH addendum a run actually saw.
+  } catch {
+    // Addendum lookup must never block the run.
+  }
+
+  // Limited trial for a `staged` candidate. Resolved BEFORE the approved
+  // addendum is injected, and regardless of whether one exists.
+  //
+  // NOTE: this used to run only when the role had no approved addendum, which
+  // starved every role that already had one — the trial could never collect a
+  // sample, so its candidate could never be adopted or withdrawn, forever. The
+  // control arm therefore injects the approved text (what production runs
+  // today) rather than nothing: comparing a candidate against a bare prompt
+  // would measure the wrong difference.
+  //
+  // `injected` still means only "the CANDIDATE's new text reached the prompt",
+  // so a control-arm run that carries the approved text stays `injected:false`.
+  let trialAddendum: { heading: string; text: string } | null = null;
+  try {
+    const { getStagedRoleAddendumForTrial } =
+      await import('../self-learning/prompt-evolution-staged-trial');
+    const trial = await getStagedRoleAddendumForTrial(transition.role, taskId);
+    if (trial) {
+      comparisonAssignment = trial.assignment;
+      if (trial.addendum) {
+        trialAddendum = {
+          heading: '## 限定試行中の改善ガイダンス(効果測定中)',
+          text: trial.addendum,
+        };
+        comparisonAssignment.injected = true;
+        comparisonAssignment.injectedVersion = trial.version;
+      } else if (approved) {
+        // Control arm on a role that already ships an addendum.
+        trialAddendum = {
+          heading: '## 承認済みの改善ガイダンス(プロンプト進化)',
+          text: approved.text,
+        };
+      }
       const { addendumVersionHash } =
         await import('../self-learning/comparison/prompt-comparison-store');
       log.info(
         {
           taskId,
           role: transition.role,
-          promptEvolutionId: approved.promptEvolutionId,
-          version: addendumVersionHash(approved.text),
-          arm: 'approved',
+          promptEvolutionId: comparisonAssignment.promptEvolutionId,
+          arm: comparisonAssignment.arm,
+          injected: comparisonAssignment.injected,
+          version: comparisonAssignment.injectedVersion,
+          // Which text the CONTROL arm actually ran under, so a control run is
+          // attributable to a specific approved version too.
+          controlPromptEvolutionId: comparisonAssignment.injected
+            ? null
+            : (approved?.promptEvolutionId ?? null),
+          controlVersion:
+            !comparisonAssignment.injected && approved ? addendumVersionHash(approved.text) : null,
         },
-        '[prompt-evolution] Approved addendum injected into role context',
+        '[prompt-evolution] Limited-trial arm resolved for this phase',
       );
     }
   } catch {
-    // Addendum injection must never block the run.
+    // A failed trial assignment costs one sample, never the run.
   }
 
-  // Limited trial for a `staged` candidate — only when no approved addendum
-  // occupies this role. The arm is decided here, but `injected` is only set
-  // after the text is actually appended: an assignment alone is not evidence
-  // that the intervention reached the prompt.
-  if (!approved) {
-    try {
-      const { getStagedRoleAddendumForTrial } =
-        await import('../self-learning/prompt-evolution-staged-trial');
-      const trial = await getStagedRoleAddendumForTrial(transition.role, taskId);
-      if (trial) {
-        comparisonAssignment = trial.assignment;
-        if (trial.addendum) {
-          context += `\n\n## 限定試行中の改善ガイダンス(効果測定中)\n\n${trial.addendum}`;
-          comparisonAssignment.injected = true;
-          comparisonAssignment.injectedVersion = trial.version;
-        }
-        log.info(
-          {
-            taskId,
-            role: transition.role,
-            promptEvolutionId: comparisonAssignment.promptEvolutionId,
-            arm: comparisonAssignment.arm,
-            injected: comparisonAssignment.injected,
-            version: comparisonAssignment.injectedVersion,
-          },
-          '[prompt-evolution] Limited-trial arm resolved for this phase',
-        );
-      }
-    } catch {
-      // A failed trial assignment costs one sample, never the run.
+  if (comparisonAssignment) {
+    if (trialAddendum) {
+      context += `\n\n${trialAddendum.heading}\n\n${trialAddendum.text}`;
     }
+  } else if (approved) {
+    // No trial running: the approved addendum applies to every phase as before.
+    context += `\n\n## 承認済みの改善ガイダンス(プロンプト進化)\n\n${approved.text}`;
+    // Observability: the candidate id and text checksum make the injection
+    // attributable to an exact version — logging taskId/role alone left no
+    // way to tell WHICH addendum a run actually saw.
+    const { addendumVersionHash } =
+      await import('../self-learning/comparison/prompt-comparison-store');
+    log.info(
+      {
+        taskId,
+        role: transition.role,
+        promptEvolutionId: approved.promptEvolutionId,
+        version: addendumVersionHash(approved.text),
+        arm: 'approved',
+      },
+      '[prompt-evolution] Approved addendum injected into role context',
+    );
   }
 
   // Active-experiment intervention (hypothesis-driven self-experiment loop).
@@ -109,13 +148,18 @@ export async function buildExecutionContext(
   // unapproved and under a different measurement, so it carries its own
   // heading and never touches getApprovedRoleAddendum's status semantics.
   //
-  // Skipped whenever this phase already carries either a rollout or a
-  // comparison-arm assignment. A phase assigned to the control arm that also
-  // received unapproved experiment text is not a control run at all, and one
-  // assigned to the intervention arm can no longer attribute its outcome to
-  // the candidate — either way the comparison record would accumulate runs
-  // whose result has a second, unrecorded cause. Best-effort.
-  if (!approved && !comparisonAssignment) {
+  // Skipped whenever this phase carries a comparison-arm assignment. A phase
+  // assigned to the control arm that also received unapproved experiment text
+  // is not a control run at all, and one assigned to the intervention arm can
+  // no longer attribute its outcome to the candidate — either way the
+  // comparison record would accumulate runs with a second, unrecorded cause.
+  //
+  // The approved addendum is no longer part of this condition: it is now the
+  // control arm's content while a trial runs, so a trial assignment is the
+  // only thing that makes the experiment path unsafe. An approved addendum on
+  // its own is constant across the experiment's own treatment and control
+  // windows, so it does not confound that measurement. Best-effort.
+  if (!comparisonAssignment) {
     try {
       const { getActiveExperimentInjection } =
         await import('../self-learning/experiment-loop/experiment-store');

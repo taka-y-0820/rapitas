@@ -48,6 +48,12 @@ export interface ComparisonRun {
   injected?: boolean;
   /** Checksum of the addendum text actually injected; null on the control arm. */
   injectedVersion?: string | null;
+  /**
+   * Model the run actually executed on, for audit. Arm assignment does not
+   * stratify by model, so a reader needs this to tell a prompt effect from a
+   * routing difference.
+   */
+  modelName?: string | null;
 }
 
 /**
@@ -98,6 +104,15 @@ export interface ComparisonSummary {
   candidateSuccessRate: number;
   /** Per-arm counted runs (infra failures excluded), for the standard error. */
   candidateSampleSize: number;
+  /**
+   * Raw per-arm counts. The adoption gate's Fisher exact test needs integer
+   * cell counts, not rates: reconstructing them by multiplying a rate back out
+   * would reintroduce rounding right where the decision is made.
+   */
+  currentSuccessCount: number;
+  currentFailureCount: number;
+  candidateSuccessCount: number;
+  candidateFailureCount: number;
   /** Smaller of the two arms' counted runs — the binding sample constraint. */
   sampleSize: number;
   excludedForInfraFailure: number;

@@ -325,6 +325,31 @@ describe('buildComparisonSummary', () => {
     expect(summary?.candidateSampleSize).toBe(5);
     // 両アームとも決定的(分散0) → SE=0 → low。
     expect(summary?.uncertainty).toBe('low');
+    // 採用ゲートの Fisher 検定が使う整数セルカウント。
+    expect(summary?.currentSuccessCount).toBe(0);
+    expect(summary?.currentFailureCount).toBe(5);
+    expect(summary?.candidateSuccessCount).toBe(5);
+    expect(summary?.candidateFailureCount).toBe(0);
+  });
+
+  it('excludes infra failures from the raw counts the adoption gate reads', () => {
+    const cells = [
+      cell('current', 'with', [
+        run({ success: true }),
+        run({ success: false, failureCause: 'implementation_error' }),
+        run({ success: false, failureCause: 'infra_failure' }),
+      ]),
+      cell('candidate', 'with', [run({ success: true }), run({ success: true })]),
+    ];
+    const summary = buildComparisonSummary(cells);
+
+    // 基盤障害はプロンプト品質の証拠にならないため分母にも分子にも入らない。
+    expect(summary?.currentSuccessCount).toBe(1);
+    expect(summary?.currentFailureCount).toBe(1);
+    expect(summary?.currentSampleSize).toBe(2);
+    expect(summary?.candidateSuccessCount).toBe(2);
+    expect(summary?.candidateFailureCount).toBe(0);
+    expect(summary?.excludedForInfraFailure).toBe(1);
   });
 
   it('reports high uncertainty for a wide-variance split even at n=8 per arm', () => {

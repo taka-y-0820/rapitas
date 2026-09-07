@@ -44,6 +44,7 @@ export { canReuseWorktree } from '../agents/orchestrator/git-operations/worktree
  * @param sessionId - Session opened for this phase. / このフェーズのセッションID
  * @param success - Whether the phase succeeded. / フェーズが成功したか
  * @param phaseStartedAt - When the phase began, for the duration fallback. / フェーズ開始時刻
+ * @param modelName - Model the phase ran on, recorded for audit only. / 実行モデル（監査用）
  */
 async function recordTrialRun(
   assignment: ComparisonAssignment | null,
@@ -51,6 +52,7 @@ async function recordTrialRun(
   sessionId: number,
   success: boolean,
   phaseStartedAt: Date,
+  modelName: string | null,
 ): Promise<void> {
   if (!assignment) return;
   try {
@@ -83,6 +85,9 @@ async function recordTrialRun(
       role: assignment.role,
       injected: assignment.injected,
       injectedVersion: assignment.injectedVersion,
+      // Arm assignment does not stratify by model, so a reader comparing the
+      // two arms needs this to rule out a routing difference.
+      modelName,
     });
   } catch {
     /* a lost comparison sample is never worth failing (or delaying) the phase for */
@@ -264,6 +269,7 @@ export async function executeCLIAgent(
       session.id,
       sessionSucceeded,
       phaseStartedAt,
+      agentConfig.modelId,
     );
     await finalizePhaseSession(session.id, sessionSucceeded);
   }

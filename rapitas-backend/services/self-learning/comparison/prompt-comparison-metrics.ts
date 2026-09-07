@@ -5,6 +5,15 @@
  * failure-cause classification, per-arm aggregation and the improved /
  * regressed / inconclusive / insufficient_data verdict. No I/O, no clock —
  * fixture-testable, mirroring the experiment-metrics.ts separation.
+ *
+ * IMPORTANT: `verdict` and `uncertainty` here are DESCRIPTIVE indicators, not
+ * a verified level of statistical certainty. They summarise the observed gap
+ * and its spread; they do not bound the probability of adopting a candidate
+ * that is no better than the current prompt. Whether a candidate may actually
+ * be adopted is decided separately by prompt-comparison-adoption-gate's Fisher
+ * exact test against the pre-registered budget from
+ * prompt-comparison-alpha-ledger. Do not treat `verdict === 'improved'` alone
+ * as evidence that the improvement is real.
  */
 import type {
   ComparisonArm,
@@ -75,6 +84,10 @@ interface ArmAggregate {
   avgDurationMs: number;
   /** Runs counted toward successRate/avgCostUsd/avgDurationMs (infra_failure excluded). */
   sampleSize: number;
+  /** Counted runs that succeeded — the Fisher exact test needs integers, not rates. */
+  successCount: number;
+  /** Counted runs that failed for a prompt-attributable reason. */
+  failureCount: number;
   excludedForInfraFailure: number;
 }
 
@@ -94,6 +107,8 @@ export function aggregateArm(runs: ComparisonRun[]): ArmAggregate {
       avgCostUsd: 0,
       avgDurationMs: 0,
       sampleSize: 0,
+      successCount: 0,
+      failureCount: 0,
       excludedForInfraFailure,
     };
   }
@@ -105,6 +120,8 @@ export function aggregateArm(runs: ComparisonRun[]): ArmAggregate {
     avgCostUsd: costTotal / counted.length,
     avgDurationMs: durationTotal / counted.length,
     sampleSize: counted.length,
+    successCount,
+    failureCount: counted.length - successCount,
     excludedForInfraFailure,
   };
 }
@@ -203,6 +220,10 @@ export function buildComparisonSummary(cells: ComparisonCell[]): ComparisonSumma
     currentSampleSize: current.sampleSize,
     candidateSuccessRate: candidate.successRate,
     candidateSampleSize: candidate.sampleSize,
+    currentSuccessCount: current.successCount,
+    currentFailureCount: current.failureCount,
+    candidateSuccessCount: candidate.successCount,
+    candidateFailureCount: candidate.failureCount,
     sampleSize: Math.min(current.sampleSize, candidate.sampleSize),
     excludedForInfraFailure: current.excludedForInfraFailure + candidate.excludedForInfraFailure,
   };
