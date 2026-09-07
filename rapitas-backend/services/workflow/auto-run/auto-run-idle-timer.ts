@@ -16,6 +16,7 @@ import { listConcerns } from '../../memory/concern-backlog-service';
 import { countOutstandingAutoCreated, resolveLimit } from './backlog-promoter-eligibility';
 import { promoteConcern } from './backlog-promoter-execute';
 import { notifyIdleStopped } from './auto-run-notifications-terminal';
+import { eligibleTopLevelTodoWhere } from './auto-run-eligibility';
 
 const log = createLogger('auto-run:idle-timer');
 
@@ -235,16 +236,18 @@ export async function shouldRefillBacklogNow(themeId: number, now: Date): Promis
 /**
  * Count top-level todo tasks a HUMAN filed (not backlog-promoted) — the
  * "new work appeared" signal that returns an idle-but-counting-down theme to
- * normal operation without waiting for the timer to expire.
+ * normal operation without waiting for the timer to expire. "runnable" here
+ * is defined by eligibleTopLevelTodoWhere and MUST stay aligned with
+ * selectNextTask's exclusions (task 884) — otherwise a workflowDisabled or
+ * awaiting_question task can trigger an immediate resume that selectNextTask
+ * then refuses, bouncing the theme straight back to idle.
  *
  * @param themeId - Theme to count for. / 対象テーマID
  * @returns Number of human-origin todo tasks. / 人間起票のtodoタスク数
  */
 export async function countHumanOriginTodo(themeId: number): Promise<number> {
   return prisma.task
-    .count({
-      where: { themeId, status: 'todo', parentId: null, autoCreatedFromBacklog: false },
-    })
+    .count({ where: eligibleTopLevelTodoWhere(themeId, { autoCreatedFromBacklog: false }) })
     .catch(() => 0);
 }
 

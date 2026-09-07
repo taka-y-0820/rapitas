@@ -9,7 +9,13 @@
  */
 import { prisma } from '../../../config';
 import { createLogger } from '../../../config/logger';
-import { mapToState, type IdleTimerColumns, type ThemeAutoRunState } from './theme-auto-run-types';
+import {
+  mapToState,
+  narrowAutoRunStatus,
+  isAutoResumablePauseStatus,
+  type IdleTimerColumns,
+  type ThemeAutoRunState,
+} from './theme-auto-run-types';
 
 const log = createLogger('theme-auto-run-service');
 
@@ -85,8 +91,10 @@ export async function startAutoRun(
 }
 
 /**
- * Pause auto-run for a theme (running → paused).
- * The current in-flight task is allowed to complete naturally.
+ * Pause auto-run for a theme (running → paused_user).
+ * The current in-flight task is allowed to complete naturally. Always
+ * records the pause as user-initiated (task 883) — the queued-item
+ * safety net and onPlanApproved() must never auto-resume this pause.
  *
  * @param themeId - Theme to pause / 一時停止するテーマID
  * @returns updated state / 更新後の状態
@@ -94,16 +102,18 @@ export async function startAutoRun(
 export async function pauseAutoRun(themeId: number): Promise<ThemeAutoRunState> {
   const updated = await prisma.themeAutoRun.upsert({
     where: { themeId },
-    create: { themeId, status: 'paused' },
-    update: { status: 'paused' },
+    create: { themeId, status: 'paused_user' },
+    update: { status: 'paused_user' },
   });
   log.info(`[ThemeAutoRunService] Paused auto-run for theme ${themeId}`);
   return mapToState(updated);
 }
 
 /**
- * Resume a paused theme (paused → running).
- * Used when plan approval is granted while the theme was waiting.
+ * Resume a paused theme (paused_approval → running).
+ * Used when plan approval is granted while the theme was waiting. No-ops
+ * for a user-initiated pause or a reason-unknown legacy pause (task 883) —
+ * only the awaiting-approval pause may be resumed this way.
  *
  * @param themeId - Theme to resume / 再開するテーマID
  * @returns updated state or null if theme not found / 更新後の状態またはnull
@@ -111,7 +121,9 @@ export async function pauseAutoRun(themeId: number): Promise<ThemeAutoRunState> 
 export async function resumeAutoRun(themeId: number): Promise<ThemeAutoRunState | null> {
   const existing = await prisma.themeAutoRun.findUnique({ where: { themeId } });
   if (!existing) return null;
-  if (existing.status !== 'paused') return mapToState(existing);
+  if (!isAutoResumablePauseStatus(narrowAutoRunStatus(existing.status))) {
+    return mapToState(existing);
+  }
 
   const updated = await prisma.themeAutoRun.update({
     where: { themeId },
@@ -202,14 +214,14 @@ export async function onTaskFailed(themeId: number, error: string): Promise<void
 }
 
 /**
- * Mark a queue item as waiting for plan approval (running → paused).
+ * Mark a queue item as waiting for plan approval (running → paused_approval).
  *
  * @param themeId - Theme ID / テーマID
  */
 export async function onAwaitingPlanApproval(themeId: number): Promise<void> {
   await prisma.themeAutoRun.updateMany({
     where: { themeId, status: 'running' },
-    data: { status: 'paused' },
+    data: { status: 'paused_approval' },
   });
   log.info(`[ThemeAutoRunService] Theme ${themeId} paused — awaiting plan approval`);
 }

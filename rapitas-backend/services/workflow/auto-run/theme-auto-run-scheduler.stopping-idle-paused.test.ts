@@ -96,6 +96,15 @@ describe('processIdleThemes', () => {
     await internal(scheduler).processIdleThemes([makeState({ enabled: true, themeId: 7 })]);
 
     expect(mockStartAutoRun).not.toHaveBeenCalled();
+    expect(mockTaskCount).toHaveBeenCalledWith({
+      where: {
+        themeId: 7,
+        status: 'todo',
+        parentId: null,
+        workflowDisabled: false,
+        OR: [{ workflowStatus: null }, { workflowStatus: { not: 'awaiting_question' } }],
+      },
+    });
   });
 
   it('resumes on a fresh todo task WITHOUT even checking the backlog (short-circuit)', async () => {
@@ -232,6 +241,16 @@ describe('processIdleThemes — re-arm after an idle-stop (task 784)', () => {
     ]);
 
     expect(mockStartAutoRun).toHaveBeenCalledWith(7);
+    expect(mockTaskCount).toHaveBeenCalledWith({
+      where: {
+        themeId: 7,
+        status: 'todo',
+        parentId: null,
+        workflowDisabled: false,
+        OR: [{ workflowStatus: null }, { workflowStatus: { not: 'awaiting_question' } }],
+        autoCreatedFromBacklog: false,
+      },
+    });
   });
 
   it('self-refills IN PLACE while stopped without re-arming (learning loop kept separate)', async () => {
@@ -266,9 +285,9 @@ describe('processIdleThemes — re-arm after an idle-stop (task 784)', () => {
 });
 
 describe('processPausedThemes', () => {
-  it('skips a paused theme with no currentTaskId', async () => {
+  it('skips a paused_approval theme with no currentTaskId', async () => {
     await internal(scheduler).processPausedThemes([
-      makeState({ status: 'paused', currentTaskId: null }),
+      makeState({ status: 'paused_approval', currentTaskId: null }),
     ]);
     expect(mockGetThemeActiveQueueItems).not.toHaveBeenCalled();
   });
@@ -279,7 +298,7 @@ describe('processPausedThemes', () => {
     ]);
 
     await internal(scheduler).processPausedThemes([
-      makeState({ status: 'paused', currentTaskId: 5, themeId: 9 }),
+      makeState({ status: 'paused_approval', currentTaskId: 5, themeId: 9 }),
     ]);
 
     expect(mockQueueItemFindFirst).not.toHaveBeenCalled();
@@ -291,7 +310,7 @@ describe('processPausedThemes', () => {
     mockQueueItemFindFirst.mockResolvedValue(null);
 
     await internal(scheduler).processPausedThemes([
-      makeState({ status: 'paused', currentTaskId: 5, themeId: 9 }),
+      makeState({ status: 'paused_approval', currentTaskId: 5, themeId: 9 }),
     ]);
 
     expect(mockResumeAutoRun).not.toHaveBeenCalled();
@@ -302,18 +321,44 @@ describe('processPausedThemes', () => {
     mockQueueItemFindFirst.mockResolvedValue({ id: 1, status: 'queued', errorMessage: null });
 
     await internal(scheduler).processPausedThemes([
-      makeState({ status: 'paused', currentTaskId: 5, themeId: 9 }),
+      makeState({ status: 'paused_approval', currentTaskId: 5, themeId: 9 }),
     ]);
 
     expect(mockResumeAutoRun).toHaveBeenCalledWith(9);
     expect(mockBroadcast).toHaveBeenCalled();
   });
 
+  it('does not auto-resume an explicit user pause even when a queued re-entry exists (task 883)', async () => {
+    mockGetThemeActiveQueueItems.mockResolvedValue([]);
+    mockQueueItemFindFirst.mockResolvedValue({ id: 1, status: 'queued', errorMessage: null });
+
+    await internal(scheduler).processPausedThemes([
+      makeState({ status: 'paused_user', currentTaskId: 5, themeId: 9 }),
+    ]);
+
+    expect(mockGetThemeActiveQueueItems).not.toHaveBeenCalled();
+    expect(mockResumeAutoRun).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-resume a reason-unknown legacy pause even when a queued re-entry exists (task 883)', async () => {
+    mockGetThemeActiveQueueItems.mockResolvedValue([]);
+    mockQueueItemFindFirst.mockResolvedValue({ id: 1, status: 'queued', errorMessage: null });
+
+    await internal(scheduler).processPausedThemes([
+      makeState({ status: 'paused', currentTaskId: 5, themeId: 9 }),
+    ]);
+
+    expect(mockGetThemeActiveQueueItems).not.toHaveBeenCalled();
+    expect(mockResumeAutoRun).not.toHaveBeenCalled();
+  });
+
   it('swallows an error from getThemeActiveQueueItems without throwing', async () => {
     mockGetThemeActiveQueueItems.mockImplementation(() => Promise.reject(new Error('db down')));
 
     await expect(
-      internal(scheduler).processPausedThemes([makeState({ status: 'paused', currentTaskId: 5 })]),
+      internal(scheduler).processPausedThemes([
+        makeState({ status: 'paused_approval', currentTaskId: 5 }),
+      ]),
     ).resolves.toBeUndefined();
   });
 });

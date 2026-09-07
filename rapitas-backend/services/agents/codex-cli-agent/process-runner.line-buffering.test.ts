@@ -1,19 +1,21 @@
 /**
- * process-runner.timing.test
+ * process-runner.line-buffering.test
  *
- * Covers stderr diagnostic filtering/model extraction and the idle /
- * initial-output / timeout polling loops inside `spawnCodexProcess`. Split
- * out of process-runner.events.test.ts (which covers stdout JSON-event
- * dispatch, line buffering, and raw-line filtering) to stay under the
- * 300-500 line file-size policy. Argument/env construction lives in
- * process-runner.spawn.test.ts / process-runner.args.test.ts; close/error
- * handling lives in process-runner.errors.test.ts.
+ * Covers partial-line buffering across stdout chunks inside
+ * `spawnCodexProcess`: JSON events (and their command_execution
+ * aggregated_output payload) split mid-line across `data` events, and lines
+ * left unterminated when the process closes. Split out of
+ * process-runner.events.test.ts (which now covers only JSON event dispatch
+ * and non-JSON raw-line handling) to stay under the 300-500 line file-size
+ * policy. stderr filtering and idle/timeout polling live in
+ * process-runner.timing.test.ts; argument/env construction lives in
+ * process-runner.spawn.test.ts / process-runner.args.test.ts; close/error/
+ * status handling lives in process-runner.errors.test.ts.
  *
  * `child_process.spawn` is mocked end-to-end — no real Codex CLI process is
- * ever spawned. The idle/timeout intervals are exercised by monkey-patching
- * `setInterval`/`clearInterval` so tests don't wait on real wall-clock time.
+ * ever spawned.
  */
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'child_process';
 import { createInitialWaitingState } from '../question-detection';
@@ -30,7 +32,7 @@ function makeStream(): MutableStream {
 }
 
 class MockChild extends EventEmitter {
-  pid = 888;
+  pid = 778;
   killed = false;
   stdout = makeStream();
   stderr = makeStream();
@@ -109,10 +111,10 @@ beforeEach(() => {
   mockSpawn.mockClear();
 });
 
-// ── stderr: diagnostic filtering + model extraction ─────────────────────────
+// ── stdout: partial-line buffering ──────────────────────────────────────────
 
-describe('spawnCodexProcess — stderr handling', () => {
-  test('extracts the reported model name from a "model: <name>" stderr line', async () => {
+describe('spawnCodexProcess — stdout line buffering', () => {
+  test('holds an incomplete JSON line across chunks until the newline arrives', async () => {
     const state = makeState();
     const callbacks = makeCallbacks();
     const resultPromise = spawnCodexProcess(
@@ -127,13 +129,17 @@ describe('spawnCodexProcess — stderr handling', () => {
     );
     await flush();
     const child = spawnedChildren[0];
-    child.stderr.emit('data', 'model: gpt-5.5-codex\n');
-    expect(state.actualModel).toBe('gpt-5.5-codex');
+    const full = JSON.stringify({ type: 'thread.started', thread_id: 'split-thread' });
+    const mid = Math.floor(full.length / 2);
+    child.stdout.emit('data', full.slice(0, mid));
+    expect(callbacks.onSessionId).not.toHaveBeenCalled();
+    child.stdout.emit('data', `${full.slice(mid)}\n`);
+    expect(callbacks.onSessionId).toHaveBeenCalledWith('split-thread');
     child.emit('close', 0);
     await resultPromise;
   });
 
-  test('surfaces an important stderr line (error keyword) with isError=true', async () => {
+  test('flushes a trailing unterminated line when the process closes', async () => {
     const state = makeState();
     const callbacks = makeCallbacks();
     const resultPromise = spawnCodexProcess(
@@ -148,105 +154,19 @@ describe('spawnCodexProcess — stderr handling', () => {
     );
     await flush();
     const child = spawnedChildren[0];
-    child.stderr.emit('data', 'thread panic: request failed\n');
-    const importantCall = callbacks.emitOutput.mock.calls.find((c) => c[1] === true);
-    expect(importantCall).toBeDefined();
-    expect(String(importantCall?.[0])).toContain('panic');
-    child.emit('close', 1);
-    await resultPromise;
-  });
-
-  test('drops benign diagnostic noise from stderr entirely', async () => {
-    const state = makeState();
-    const callbacks = makeCallbacks();
-    const resultPromise = spawnCodexProcess(
-      {},
-      'C:/work',
-      'prompt',
-      state,
-      callbacks,
-      Date.now(),
-      noArtifacts,
-      noCommits,
-    );
-    await flush();
-    const child = spawnedChildren[0];
-    child.stderr.emit('data', 'codex_core::session: failed to record rollout\n');
-    expect(state.outputBuffer).toBe('');
+    // No trailing newline — this stays in lineBuffer until close() flushes it.
+    child.stdout.emit('data', JSON.stringify({ type: 'thread.started', thread_id: 'flushed' }));
+    expect(callbacks.onSessionId).not.toHaveBeenCalled();
     child.emit('close', 0);
+    expect(callbacks.onSessionId).toHaveBeenCalledWith('flushed');
     await resultPromise;
   });
-});
 
-// ── idle / initial-output / timeout polling ─────────────────────────────────
-
-describe('spawnCodexProcess — idle and timeout monitoring', () => {
-  type IntervalRecord = { fn: () => void; ms: number };
-  let originalSetInterval: typeof setInterval;
-  let originalClearInterval: typeof clearInterval;
-  let intervalRecords: IntervalRecord[] = [];
-  let clearedCount = 0;
-
-  function installFakeIntervals(): void {
-    intervalRecords = [];
-    clearedCount = 0;
-    let nextId = 1;
-    originalSetInterval = global.setInterval;
-    originalClearInterval = global.clearInterval;
-    global.setInterval = ((fn: () => void, ms?: number) => {
-      intervalRecords.push({ fn, ms: ms ?? 0 });
-      return nextId++ as unknown as NodeJS.Timeout;
-    }) as typeof setInterval;
-    global.clearInterval = (() => {
-      clearedCount += 1;
-    }) as typeof clearInterval;
-  }
-
-  function restoreIntervals(): void {
-    global.setInterval = originalSetInterval;
-    global.clearInterval = originalClearInterval;
-  }
-
-  function invokeByDelay(ms: number): void {
-    const record = intervalRecords.find((r) => r.ms === ms);
-    if (!record) throw new Error(`No interval registered with delay ${ms}`);
-    record.fn();
-  }
-
-  afterEach(() => {
-    if (originalSetInterval) restoreIntervals();
-  });
-
-  test('warns once no output has arrived after the initial-output timeout', async () => {
-    installFakeIntervals();
+  test('item.completed(agent_message) split across multiple stdout chunks is processed as one event', async () => {
     const state = makeState();
     const callbacks = makeCallbacks();
-    // Simulate the execution having "started" 61s ago so the 60s
-    // initial-output threshold is already exceeded on the first idle check.
-    const longAgoStart = Date.now() - 61_000;
     const resultPromise = spawnCodexProcess(
       {},
-      'C:/work',
-      'prompt',
-      state,
-      callbacks,
-      longAgoStart,
-      noArtifacts,
-      noCommits,
-    );
-    await flush();
-    invokeByDelay(5000); // IDLE_CHECK_INTERVAL_MS
-    expect(callbacks.emitOutput).toHaveBeenCalledWith(expect.stringContaining('情報'));
-    spawnedChildren[0].emit('close', 0);
-    await resultPromise;
-  });
-
-  test('kills the process and resolves a failure once the output timeout elapses', async () => {
-    installFakeIntervals();
-    const state = makeState();
-    const callbacks = makeCallbacks();
-    const resultPromise = spawnCodexProcess(
-      { timeout: 1 },
       'C:/work',
       'prompt',
       state,
@@ -257,24 +177,25 @@ describe('spawnCodexProcess — idle and timeout monitoring', () => {
     );
     await flush();
     const child = spawnedChildren[0];
-    // Let a sliver of real wall-clock time pass so `Date.now() - lastOutputTime`
-    // exceeds the 1ms configured timeout when the interval callback runs.
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    invokeByDelay(10000); // TIMEOUT_CHECK_INTERVAL_MS
+    const full = JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'agent_message', text: '分割された最終回答' },
+    });
+    const mid = Math.floor(full.length / 2);
+    child.stdout.emit('data', full.slice(0, mid));
+    expect(state.outputBuffer).not.toContain('分割された最終回答');
+    child.stdout.emit('data', `${full.slice(mid)}\n`);
+    expect(state.outputBuffer).toContain('分割された最終回答');
+    child.emit('close', 0);
     const result = await resultPromise;
-    expect(result.success).toBe(false);
-    expect(result.errorMessage).toContain('timed out');
-    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
-    expect(callbacks.onStatusChange).toHaveBeenCalledWith('failed');
-    expect(clearedCount).toBeGreaterThan(0);
+    expect(result.output).toContain('分割された最終回答');
   });
 
-  test('does not fire the timeout once output has refreshed lastOutputTime', async () => {
-    installFakeIntervals();
+  test('item.completed(agent_message) with no trailing newline is flushed on close', async () => {
     const state = makeState();
     const callbacks = makeCallbacks();
     const resultPromise = spawnCodexProcess(
-      { timeout: 60_000 },
+      {},
       'C:/work',
       'prompt',
       state,
@@ -285,10 +206,88 @@ describe('spawnCodexProcess — idle and timeout monitoring', () => {
     );
     await flush();
     const child = spawnedChildren[0];
-    child.stdout.emit('data', `${JSON.stringify({ type: 'turn.started' })}\n`);
-    invokeByDelay(10000); // TIMEOUT_CHECK_INTERVAL_MS — should be a no-op right after fresh output
-    expect(child.kill).not.toHaveBeenCalled();
+    // No trailing newline — this stays in lineBuffer until close() flushes it.
+    child.stdout.emit(
+      'data',
+      JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: '改行なしの最終回答' },
+      }),
+    );
+    expect(state.outputBuffer).not.toContain('改行なしの最終回答');
     child.emit('close', 0);
-    await resultPromise;
+    const result = await resultPromise;
+    expect(result.output).toContain('改行なしの最終回答');
+  });
+
+  test('item.completed(command_execution) split across multiple stdout chunks is processed as one event', async () => {
+    const state = makeState();
+    const callbacks = makeCallbacks();
+    const resultPromise = spawnCodexProcess(
+      {},
+      'C:/work',
+      'prompt',
+      state,
+      callbacks,
+      Date.now(),
+      noArtifacts,
+      noCommits,
+    );
+    await flush();
+    const child = spawnedChildren[0];
+    const full = JSON.stringify({
+      type: 'item.completed',
+      item: {
+        id: 'cmd-split',
+        type: 'command_execution',
+        command: 'echo chunked',
+        exit_code: 0,
+        aggregated_output: 'chunked output\n',
+      },
+    });
+    const mid = Math.floor(full.length / 2);
+    child.stdout.emit('data', full.slice(0, mid));
+    expect(state.outputBuffer).not.toContain('[Command Done] echo chunked');
+    child.stdout.emit('data', `${full.slice(mid)}\n`);
+    expect(state.outputBuffer).toContain('[Command Done] echo chunked');
+    child.emit('close', 0);
+    const result = await resultPromise;
+    expect(result.output).toContain('[Command Done] echo chunked');
+  });
+
+  test('item.completed(command_execution) with no trailing newline is flushed on close', async () => {
+    const state = makeState();
+    const callbacks = makeCallbacks();
+    const resultPromise = spawnCodexProcess(
+      {},
+      'C:/work',
+      'prompt',
+      state,
+      callbacks,
+      Date.now(),
+      noArtifacts,
+      noCommits,
+    );
+    await flush();
+    const child = spawnedChildren[0];
+    // No trailing newline — this stays in lineBuffer until close() flushes it.
+    child.stdout.emit(
+      'data',
+      JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'cmd-no-newline',
+          type: 'command_execution',
+          command: 'echo no-newline',
+          exit_code: 1,
+          aggregated_output: 'partial output before crash',
+        },
+      }),
+    );
+    expect(state.outputBuffer).not.toContain('[Command Failed] echo no-newline');
+    child.emit('close', 0);
+    const result = await resultPromise;
+    expect(result.output).toContain('[Command Failed] echo no-newline');
+    expect(result.output).toContain('partial output before crash');
   });
 });
