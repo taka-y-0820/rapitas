@@ -194,6 +194,11 @@ test('lost completion CAS does not announce task completion but preserves merged
   expect(mockTaskUpdate).toHaveBeenCalledWith(
     expect.objectContaining({
       where: {
+        NOT: {
+          developerModeConfig: {
+            is: { agentSessions: { some: { agentExecutions: { some: { status: 'canceling' } } } } },
+          },
+        },
         id: candidate.taskId,
         OR: [
           { status: 'in-progress', workflowStatus: 'verify_done' },

@@ -1,3 +1,4 @@
+import { autoMergeCompletionPredicate } from './auto-merge-completion-predicate';
 import { canFinalizeAutoMerge } from './auto-merge-cancellation';
 /**
  * Auto-Merge Watcher
@@ -54,13 +55,7 @@ async function completeTaskRow(taskId: number): Promise<boolean> {
   if (!(await canFinalizeAutoMerge(prisma, taskId))) return false;
   const updated = await prisma.task
     .updateMany({
-      where: {
-        id: taskId,
-        OR: [
-          { status: 'in-progress', workflowStatus: 'verify_done' },
-          { status: { in: ['done', 'completed'] }, workflowStatus: 'completed' },
-        ],
-      },
+      where: autoMergeCompletionPredicate(taskId),
       data: { status: 'done', workflowStatus: 'completed', completedAt: new Date() },
     })
     .catch((err) => {
