@@ -5,7 +5,11 @@
  * 旧承認をsuperseded化)、承認済み追記の取得を検証する。
  * Own file — mock.module is process-global.
  */
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import type { ComparisonRecord } from './comparison/prompt-comparison-types';
 
 mock.module('../../config/logger', () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
@@ -85,6 +89,7 @@ mock.module('../../config/database', () => ({
 
 const { generateProposalsForPending, getApprovedRoleAddendum, reviewProposal, listProposals } =
   await import('./prompt-evolution-worker');
+const { writeComparisonRecord } = await import('./comparison/prompt-comparison-store');
 
 function pendingRow(id: number, role: string): EvoRow {
   return {
@@ -160,11 +165,57 @@ describe('reviewProposal', () => {
   });
 });
 
+function comparisonRecord(overrides: Partial<ComparisonRecord> = {}): ComparisonRecord {
+  return {
+    promptEvolutionId: 1,
+    role: 'implementer',
+    modelName: 'claude-sonnet-5',
+    budgetUsd: 2.5,
+    createdAt: new Date(0).toISOString(),
+    status: 'done',
+    sampleTaskIds: [810, 812],
+    arms: [],
+    summary: null,
+    knowledgeSnapshotHash: null,
+    stagedTaskIds: null,
+    ...overrides,
+  };
+}
+
 describe('getApprovedRoleAddendum', () => {
+  let tmpDir: string;
+  let savedDataDir: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'rapitas-prompt-evolution-worker-'));
+    savedDataDir = process.env.RAPITAS_DATA_DIR;
+    process.env.RAPITAS_DATA_DIR = tmpDir;
+  });
+
+  afterEach(() => {
+    if (savedDataDir === undefined) delete process.env.RAPITAS_DATA_DIR;
+    else process.env.RAPITAS_DATA_DIR = savedDataDir;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
   test('承認済み追記を返し、無ければnull', async () => {
     rows = [{ ...pendingRow(1, 'implementer'), status: 'approved', afterPrompt: '追記テキスト' }];
     expect(await getApprovedRoleAddendum('implementer')).toBe('追記テキスト');
     expect(await getApprovedRoleAddendum('planner')).toBeNull();
+  });
+
+  test('stagedTaskIds未設定(比較記録なし)なら全タスクに適用される', async () => {
+    rows = [{ ...pendingRow(1, 'implementer'), status: 'approved', afterPrompt: '追記テキスト' }];
+    expect(await getApprovedRoleAddendum('implementer', 810)).toBe('追記テキスト');
+    expect(await getApprovedRoleAddendum('implementer', 999)).toBe('追記テキスト');
+  });
+
+  test('stagedTaskIdsが設定されていれば対象外タスクにはnullを返す', async () => {
+    rows = [{ ...pendingRow(1, 'implementer'), status: 'approved', afterPrompt: '追記テキスト' }];
+    writeComparisonRecord(comparisonRecord({ promptEvolutionId: 1, stagedTaskIds: [810, 812] }));
+
+    expect(await getApprovedRoleAddendum('implementer', 810)).toBe('追記テキスト');
+    expect(await getApprovedRoleAddendum('implementer', 811)).toBeNull();
   });
 });
 

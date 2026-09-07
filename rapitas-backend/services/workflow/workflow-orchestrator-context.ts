@@ -40,7 +40,7 @@ export async function buildExecutionContext(
   // touching each buildRoleContext case. Best-effort.
   try {
     const { getApprovedRoleAddendum } = await import('../self-learning/prompt-evolution-worker');
-    const addendum = await getApprovedRoleAddendum(transition.role);
+    const addendum = await getApprovedRoleAddendum(transition.role, taskId);
     if (addendum) {
       context += `\n\n## 承認済みの改善ガイダンス(プロンプト進化)\n\n${addendum}`;
       // Observability: role-evidence success rates before/after this line

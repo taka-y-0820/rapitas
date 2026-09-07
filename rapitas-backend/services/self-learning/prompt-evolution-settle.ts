@@ -13,8 +13,33 @@
 import type { PrismaClient } from '../../generated/prisma-postgres';
 import { createLogger } from '../../config/logger';
 import { evaluateRole, type RoleEvaluation } from './prompt-evolution-runner';
+import { readComparisonRecord, writeComparisonRecord } from './comparison/prompt-comparison-store';
 
 const log = createLogger('self-learning:prompt-evolution-settle');
+
+/**
+ * Environment escape hatch for low-risk auto-promotion (default OFF — a
+ * human must always clear `stagedTaskIds` manually unless this is set).
+ * / 低リスク自動昇格の有効化フラグ（既定オフ）
+ */
+function autoPromoteEnabled(): boolean {
+  return process.env.RAPITAS_PROMPT_AUTO_PROMOTE === 'true';
+}
+
+/**
+ * Whether an addendum text reads as a pure addition rather than an
+ * instruction to remove/replace existing agent behavior. The addendum
+ * mechanism itself only ever APPENDS to the engineered role prompt (see
+ * module doc) — `beforePrompt` is never populated to diff against — so this
+ * is a conservative textual guard against an LLM-authored addendum that
+ * tells the agent to strip out existing behavior, not a full diff.
+ *
+ * @param addendum - Approved addendum text. / 承認済み追記文
+ * @returns True when no deletion-signal keywords are present. / 削除を示す語が無ければtrue
+ */
+export function isPureAddendum(addendum: string): boolean {
+  return !/削除|除去|取り除|remove|delete/i.test(addendum);
+}
 
 /** Sessions after approval needed before a verdict — below this the sample is noise. */
 export const SETTLE_MIN_RUNS = 5;
@@ -47,6 +72,7 @@ interface ApprovedRow {
   id: number;
   basePromptKey: string | null;
   evidenceJson: string | null;
+  afterPrompt: string;
 }
 
 interface Evidence {
@@ -91,12 +117,13 @@ export async function settleApprovedEvolutions(
     prisma: PrismaClient,
     role: string,
     since: Date,
+    scopeTaskIds?: number[],
   ) => Promise<Pick<RoleEvaluation, 'totalRuns' | 'successRate'>> = evaluateRole,
   now: () => Date = () => new Date(),
 ): Promise<number> {
   const rows = await prisma.promptEvolution.findMany({
     where: { status: 'approved' },
-    select: { id: true, basePromptKey: true, evidenceJson: true },
+    select: { id: true, basePromptKey: true, evidenceJson: true, afterPrompt: true },
   });
   let settled = 0;
   for (const row of rows) {
@@ -110,6 +137,13 @@ export async function settleApprovedEvolutions(
       });
       continue;
     }
+    // A candidate limited to a comparison's stagedTaskIds is judged only on
+    // those tasks — evaluating the whole role would dilute the signal with
+    // tasks that never saw the addendum. Unstaged candidates (no comparison
+    // record, or stagedTaskIds cleared) fall back to the original role-wide
+    // evaluation.
+    const comparison = readComparisonRecord(row.id);
+    const stagedTaskIds = comparison?.stagedTaskIds ?? null;
     const beforeRate = typeof evidence.successRate === 'number' ? evidence.successRate : 0;
     let after: Pick<RoleEvaluation, 'totalRuns' | 'successRate'>;
     try {
@@ -117,6 +151,7 @@ export async function settleApprovedEvolutions(
         prisma as unknown as PrismaClient,
         role,
         new Date(evidence.approvedAt),
+        stagedTaskIds ?? undefined,
       );
     } catch (err) {
       // Missing evidence must not become a verdict either way.
@@ -140,6 +175,26 @@ export async function settleApprovedEvolutions(
       },
     });
     settled++;
+
+    // Low-risk auto-promotion: only when a staged rollout was CONFIRMED good
+    // in the field (verdict==='completed', not merely the initial shadow
+    // comparison), the original comparison already called it 'improved', and
+    // the addendum reads as a pure addition. Default OFF — without the env
+    // var this block never runs, so a human must always clear stagedTaskIds.
+    if (
+      verdict === 'completed' &&
+      stagedTaskIds !== null &&
+      autoPromoteEnabled() &&
+      comparison?.summary?.verdict === 'improved' &&
+      isPureAddendum(row.afterPrompt)
+    ) {
+      writeComparisonRecord({ ...comparison, stagedTaskIds: null });
+      log.info(
+        { id: row.id, role },
+        '[settle] Low-risk auto-promotion: staged candidate promoted to full rollout',
+      );
+    }
+
     log.info(
       { id: row.id, role, verdict, delta, afterRuns: after.totalRuns },
       '[settle] Prompt evolution settled',
