@@ -1,3 +1,4 @@
+import { recoverMergedTasks } from './auto-merge-recovery';
 import { autoMergeCompletionPredicate } from './auto-merge-completion-predicate';
 import { canFinalizeAutoMerge } from './auto-merge-cancellation';
 /**
@@ -120,6 +121,9 @@ export class AutoMergeWatcher {
     if (this.ticking) return; // never overlap ticks
     this.ticking = true;
     try {
+      await recoverMergedTasks(prisma).catch((err) =>
+        log.warn({ err }, 'Merged task recovery failed'),
+      );
       const candidates = await findCandidates();
       const blocking = blockingChecks();
       for (const c of candidates) {
