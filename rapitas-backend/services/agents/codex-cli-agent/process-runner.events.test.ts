@@ -2,13 +2,13 @@
  * process-runner.events.test
  *
  * Covers stdout event coordination inside `spawnCodexProcess`: JSON event
- * dispatch to the (real, pure) json-event-handler, partial-line buffering
- * across chunks, and non-JSON raw-line filtering/truncation. stderr
- * filtering and idle/timeout polling live in process-runner.timing.test.ts
- * (kept separate to stay under the 300-500 line file-size policy);
- * argument/env construction lives in process-runner.spawn.test.ts /
- * process-runner.args.test.ts; close/error/status handling lives in
- * process-runner.errors.test.ts.
+ * dispatch to the (real, pure) json-event-handler, and non-JSON raw-line
+ * filtering/truncation. Partial-line buffering across chunks lives in
+ * process-runner.line-buffering.test.ts; stderr filtering and idle/timeout
+ * polling live in process-runner.timing.test.ts (both kept separate to stay
+ * under the 300-500 line file-size policy); argument/env construction lives
+ * in process-runner.spawn.test.ts / process-runner.args.test.ts; close/error/
+ * status handling lives in process-runner.errors.test.ts.
  *
  * `child_process.spawn` is mocked end-to-end — no real Codex CLI process is
  * ever spawned.
@@ -86,6 +86,7 @@ function makeState(): ProcessRunnerState {
     turnFailed: false,
     turnFailureMessage: null,
     activeCodexCommands: new Map(),
+    seenAgentMessageIds: new Set(),
   };
 }
 
@@ -247,116 +248,6 @@ describe('spawnCodexProcess — stdout JSON events', () => {
     child.emit('close', 0);
     const result = await resultPromise;
     expect(result.output).toContain('最終回答のテキストです');
-  });
-});
-
-// ── stdout: partial-line buffering ──────────────────────────────────────────
-
-describe('spawnCodexProcess — stdout line buffering', () => {
-  test('holds an incomplete JSON line across chunks until the newline arrives', async () => {
-    const state = makeState();
-    const callbacks = makeCallbacks();
-    const resultPromise = spawnCodexProcess(
-      {},
-      'C:/work',
-      'prompt',
-      state,
-      callbacks,
-      Date.now(),
-      noArtifacts,
-      noCommits,
-    );
-    await flush();
-    const child = spawnedChildren[0];
-    const full = JSON.stringify({ type: 'thread.started', thread_id: 'split-thread' });
-    const mid = Math.floor(full.length / 2);
-    child.stdout.emit('data', full.slice(0, mid));
-    expect(callbacks.onSessionId).not.toHaveBeenCalled();
-    child.stdout.emit('data', `${full.slice(mid)}\n`);
-    expect(callbacks.onSessionId).toHaveBeenCalledWith('split-thread');
-    child.emit('close', 0);
-    await resultPromise;
-  });
-
-  test('flushes a trailing unterminated line when the process closes', async () => {
-    const state = makeState();
-    const callbacks = makeCallbacks();
-    const resultPromise = spawnCodexProcess(
-      {},
-      'C:/work',
-      'prompt',
-      state,
-      callbacks,
-      Date.now(),
-      noArtifacts,
-      noCommits,
-    );
-    await flush();
-    const child = spawnedChildren[0];
-    // No trailing newline — this stays in lineBuffer until close() flushes it.
-    child.stdout.emit('data', JSON.stringify({ type: 'thread.started', thread_id: 'flushed' }));
-    expect(callbacks.onSessionId).not.toHaveBeenCalled();
-    child.emit('close', 0);
-    expect(callbacks.onSessionId).toHaveBeenCalledWith('flushed');
-    await resultPromise;
-  });
-
-  test('item.completed(agent_message) split across multiple stdout chunks is processed as one event', async () => {
-    const state = makeState();
-    const callbacks = makeCallbacks();
-    const resultPromise = spawnCodexProcess(
-      {},
-      'C:/work',
-      'prompt',
-      state,
-      callbacks,
-      Date.now(),
-      noArtifacts,
-      noCommits,
-    );
-    await flush();
-    const child = spawnedChildren[0];
-    const full = JSON.stringify({
-      type: 'item.completed',
-      item: { type: 'agent_message', text: '分割された最終回答' },
-    });
-    const mid = Math.floor(full.length / 2);
-    child.stdout.emit('data', full.slice(0, mid));
-    expect(state.outputBuffer).not.toContain('分割された最終回答');
-    child.stdout.emit('data', `${full.slice(mid)}\n`);
-    expect(state.outputBuffer).toContain('分割された最終回答');
-    child.emit('close', 0);
-    const result = await resultPromise;
-    expect(result.output).toContain('分割された最終回答');
-  });
-
-  test('item.completed(agent_message) with no trailing newline is flushed on close', async () => {
-    const state = makeState();
-    const callbacks = makeCallbacks();
-    const resultPromise = spawnCodexProcess(
-      {},
-      'C:/work',
-      'prompt',
-      state,
-      callbacks,
-      Date.now(),
-      noArtifacts,
-      noCommits,
-    );
-    await flush();
-    const child = spawnedChildren[0];
-    // No trailing newline — this stays in lineBuffer until close() flushes it.
-    child.stdout.emit(
-      'data',
-      JSON.stringify({
-        type: 'item.completed',
-        item: { type: 'agent_message', text: '改行なしの最終回答' },
-      }),
-    );
-    expect(state.outputBuffer).not.toContain('改行なしの最終回答');
-    child.emit('close', 0);
-    const result = await resultPromise;
-    expect(result.output).toContain('改行なしの最終回答');
   });
 });
 

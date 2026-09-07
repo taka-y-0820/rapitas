@@ -107,6 +107,7 @@ function makeState(): ProcessRunnerState {
     turnFailed: false,
     turnFailureMessage: null,
     activeCodexCommands: new Map(),
+    seenAgentMessageIds: new Set(),
   };
 }
 

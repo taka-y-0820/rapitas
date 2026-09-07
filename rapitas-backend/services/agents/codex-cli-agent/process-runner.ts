@@ -72,6 +72,7 @@ export type ProcessRunnerState = {
   turnFailed: boolean;
   turnFailureMessage: string | null;
   activeCodexCommands: Map<string, { command: string; startedAt: number }>;
+  seenAgentMessageIds: Set<string>;
 };
 
 /**
