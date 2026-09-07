@@ -83,6 +83,22 @@ export interface ComparisonSummary {
   durationDeltaMs: number;
   /** Baseline (current arm) mean duration, used for the duration tolerance check. */
   baselineDurationMs: number;
+  /**
+   * Baseline (current arm) mean cost. `costDelta` is an ABSOLUTE USD figure,
+   * so the cost tolerance can only be applied as a fraction of this — without
+   * it a $0.20 tolerance means "5% worse" on an expensive role and "20x worse"
+   * on a cheap one (concern #9231).
+   */
+  baselineCostUsd: number;
+  /** Per-arm success rate, kept so the delta's standard error can be computed. */
+  currentSuccessRate: number;
+  /** Per-arm counted runs (infra failures excluded), for the standard error. */
+  currentSampleSize: number;
+  /** Per-arm success rate, kept so the delta's standard error can be computed. */
+  candidateSuccessRate: number;
+  /** Per-arm counted runs (infra failures excluded), for the standard error. */
+  candidateSampleSize: number;
+  /** Smaller of the two arms' counted runs — the binding sample constraint. */
   sampleSize: number;
   excludedForInfraFailure: number;
   verdict: ComparisonVerdict;

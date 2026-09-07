@@ -4,11 +4,12 @@
  * 2段ゲート（proposed→staged→approved）を検証する。テキストガードは限定試行を
  * 開始させるだけで全体採用しないこと、全体採用/撤回は比較記録の実測判定にのみ
  * 従うこと、記録取得失敗は unknown 扱いで状態を変えないこと、恒久不合格の先頭
- * 候補が後続を止め続けないことを確認する。
+ * 候補が後続を止め続けないこと、そして破損・未完了の比較記録を空の新規記録で
+ * 上書きせず staging を保留することを確認する。
  * Own file — mock.module is process-global.
  */
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -239,6 +240,92 @@ describe('autoApproveEligibleProposals — 第1段: proposed → staged', () => 
   });
 });
 
+/** Absolute path of a candidate's comparison record inside the test data dir. */
+function recordPath(id: number): string {
+  return join(tmpDir, '.prompt-comparisons', `${id}.json`);
+}
+
+function writeRawRecord(id: number, contents: string): void {
+  mkdirSync(join(tmpDir, '.prompt-comparisons'), { recursive: true });
+  writeFileSync(recordPath(id), contents);
+}
+
+describe('autoApproveEligibleProposals — 既存比較記録の保護', () => {
+  test('破損した比較記録を空の新規記録で上書きせず、staging を保留する', async () => {
+    rows = [proposedRow(40, '- 提出前にlintを実行する')];
+    writeRawRecord(40, '{ broken json');
+    const before = readFileSync(recordPath(40), 'utf8');
+
+    const result = await autoApproveEligibleProposals();
+
+    // staged にせず proposed のまま = 評価段の「記録なし」と混同しない。
+    expect(rows[0].status).toBe('proposed');
+    expect(result.staged).toBe(0);
+    expect(result.withheld).toBe(1);
+    expect(evidenceOf(40).comparisonRecordIssue).toBe('corrupted');
+    expect(evidenceOf(40).comparisonInitRetries).toBe(1);
+    // 破損証拠そのものは保持される。
+    expect(readFileSync(recordPath(40), 'utf8')).toBe(before);
+  });
+
+  test('未完了(in_progress)の記録も上書きせず保留する', async () => {
+    rows = [proposedRow(41, '- 提出前にlintを実行する')];
+    writeComparisonRecord({
+      promptEvolutionId: 41,
+      role: 'implementer',
+      modelName: '',
+      budgetUsd: 0,
+      createdAt: new Date(0).toISOString(),
+      status: 'in_progress',
+      sampleTaskIds: [777],
+      arms: [],
+      summary: null,
+      knowledgeSnapshotHash: null,
+      stagedTaskIds: null,
+    });
+
+    const result = await autoApproveEligibleProposals();
+
+    expect(rows[0].status).toBe('proposed');
+    expect(result.withheld).toBe(1);
+    expect(evidenceOf(41).comparisonRecordIssue).toBe('in_progress');
+    // 元の記録内容が残っていること（sampleTaskIds が空配列に潰れていない）。
+    const raw = JSON.parse(readFileSync(recordPath(41), 'utf8')) as { sampleTaskIds: number[] };
+    expect(raw.sampleTaskIds).toEqual([777]);
+  });
+
+  test('保留は繰り返し試行され、回復すれば staged へ進む', async () => {
+    rows = [proposedRow(42, '- 提出前にlintを実行する')];
+    writeRawRecord(42, '{ broken json');
+
+    await autoApproveEligibleProposals();
+    await autoApproveEligibleProposals();
+    expect(rows[0].status).toBe('proposed');
+    expect(evidenceOf(42).comparisonInitRetries).toBe(2);
+
+    // 運用者が壊れたファイルを取り除いた後は自然に再開する。
+    rmSync(recordPath(42));
+    const result = await autoApproveEligibleProposals();
+
+    expect(rows[0].status).toBe('staged');
+    expect(result.staged).toBe(1);
+    // 回復時に診断スタンプは片付ける。
+    expect(evidenceOf(42).comparisonRecordIssue).toBeUndefined();
+    expect(evidenceOf(42).comparisonInitRetries).toBeUndefined();
+  });
+
+  test('記録が壊れていてもテキスト品質を理由に rejected にはしない', async () => {
+    rows = [proposedRow(43, '- 提出前にlintを実行する')];
+    writeRawRecord(43, '{ broken json');
+
+    for (let i = 0; i < 5; i++) await autoApproveEligibleProposals();
+
+    // 原因は追記文ではなく記録側なので、再試行上限で却下してはならない。
+    expect(rows[0].status).toBe('proposed');
+    expect(evidenceOf(43).autoApproveQualityRetries).toBeUndefined();
+  });
+});
+
 describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () => {
   test('証拠不足のあいだは staged のまま継続し、全体採用しない', async () => {
     rows = [proposedRow(20, '- 提出前にlintを実行する')];
@@ -302,7 +389,8 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
     expect(readComparisonRecord(23)?.stagedTaskIds).toBeNull();
   });
 
-  test('改善を実測しても AUTO_PROMOTE 未設定なら staged のまま保留される', async () => {
+  test('改善を実測し AUTO_PROMOTE 明示 false なら staged のまま保留される', async () => {
+    process.env.RAPITAS_PROMPT_AUTO_PROMOTE = 'false';
     rows = [proposedRow(24, '- 提出前にlintを実行する')];
     await autoApproveEligibleProposals();
     fillArm(24, 'current', 1, COMPARISON_MIN_SAMPLE);
@@ -315,6 +403,36 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
     expect(evidenceOf(24).readyForPromotion).toBe(true);
     // 保留中は限定スコープを解除しない。
     expect(readComparisonRecord(24)?.stagedTaskIds).not.toBeNull();
+  });
+
+  test('AUTO_PROMOTE 未設定(既定)でも実測改善なら人手なしで全体採用される', async () => {
+    // 既定オフのままでは「比較を通過しても永久に昇格しない」ため、
+    // 環境変数を一切設定しない運用で採用まで到達することを固定する。
+    rows = [proposedRow(28, '- 提出前にlintを実行する')];
+    await autoApproveEligibleProposals();
+    fillArm(28, 'current', 1, COMPARISON_MIN_SAMPLE);
+    fillArm(28, 'candidate', COMPARISON_MIN_SAMPLE, COMPARISON_MIN_SAMPLE);
+
+    const result = await autoApproveEligibleProposals();
+
+    expect(rows[0].status).toBe('approved');
+    expect(result.approved).toBe(1);
+    expect(readComparisonRecord(28)?.stagedTaskIds).toBeNull();
+  });
+
+  test('僅差の改善は既定ONでも採用されない(有意性ゲートが効く)', async () => {
+    // current 2/5・candidate 3/5 → delta=0.2 だが SE≈0.30 で 1.28*SE≈0.39。
+    // 件数だけを見ていた旧判定はこれを improved にしていた。
+    rows = [proposedRow(29, '- 提出前にlintを実行する')];
+    await autoApproveEligibleProposals();
+    fillArm(29, 'current', 2, COMPARISON_MIN_SAMPLE);
+    fillArm(29, 'candidate', 3, COMPARISON_MIN_SAMPLE);
+
+    const result = await autoApproveEligibleProposals();
+
+    expect(rows[0].status).toBe('staged');
+    expect(result.approved).toBe(0);
+    expect(evidenceOf(29).comparisonVerdict).toBe('inconclusive');
   });
 
   test('全体採用時は同ロールの旧承認をsupersededにする(追記は常に1件)', async () => {

@@ -66,6 +66,54 @@ export function addendumVersionHash(text: string): string {
 }
 
 /**
+ * Why a comparison record could not be used, or the record itself.
+ *
+ * `readComparisonRecord` collapses every one of these into `null`, which is
+ * enough for "can I use this record?" but not for "may I overwrite it?" —
+ * a missing file and a corrupt file demand opposite actions, and treating
+ * both as "absent" let staging silently destroy measured evidence.
+ */
+export type ComparisonReadStatus =
+  | { kind: 'ok'; record: ComparisonRecord }
+  | { kind: 'not_found' }
+  | { kind: 'in_progress'; record: ComparisonRecord }
+  | { kind: 'corrupted' }
+  | { kind: 'io_error'; error: unknown };
+
+/**
+ * Read a candidate's comparison record, reporting WHY it is unusable when it
+ * is. Callers that only need "a usable record or nothing" should keep using
+ * readComparisonRecord; callers that may WRITE must use this, so they can tell
+ * "nothing to lose" (`not_found`) from "evidence I must not clobber"
+ * (`corrupted` / `in_progress` / `io_error`).
+ *
+ * @param promptEvolutionId - Candidate id. / 候補ID
+ * @returns The record, or the reason it cannot be used. / 記録、または使用不可の理由
+ */
+export function readComparisonRecordStatus(promptEvolutionId: number): ComparisonReadStatus {
+  let raw: string;
+  try {
+    raw = readFileSync(recordFile(promptEvolutionId), 'utf8');
+  } catch (error) {
+    // ENOENT is the only "there is genuinely nothing here" case. Every other
+    // fs failure (EACCES, EISDIR, EBUSY, ...) means a file may well exist and
+    // we simply could not read it.
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    return code === 'ENOENT' ? { kind: 'not_found' } : { kind: 'io_error', error };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { kind: 'corrupted' };
+  }
+  if (!isComparisonRecord(parsed)) return { kind: 'corrupted' };
+  return parsed.status === 'in_progress'
+    ? { kind: 'in_progress', record: parsed }
+    : { kind: 'ok', record: parsed };
+}
+
+/**
  * Read a candidate's comparison record. An `in_progress` record (left behind
  * by a run interrupted before completion, e.g. a server restart) is treated
  * as absent — partial shadow-run data must never be surfaced as a result.
@@ -74,13 +122,8 @@ export function addendumVersionHash(text: string): string {
  * @returns The completed record, or null when none/incomplete/corrupt. / 完了済み記録 or null
  */
 export function readComparisonRecord(promptEvolutionId: number): ComparisonRecord | null {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(recordFile(promptEvolutionId), 'utf8'));
-    if (!isComparisonRecord(parsed)) return null;
-    return parsed.status === 'in_progress' ? null : parsed;
-  } catch {
-    return null;
-  }
+  const status = readComparisonRecordStatus(promptEvolutionId);
+  return status.kind === 'ok' ? status.record : null;
 }
 
 /**
@@ -136,17 +179,33 @@ export function releaseComparisonLock(promptEvolutionId: number): void {
   }
 }
 
+/** Why staging could not initialize a record, or null when it succeeded. */
+export type ComparisonInitIssue = 'corrupted' | 'io_error' | 'in_progress' | 'write_failed';
+
+/** Outcome of preparing a candidate's comparison record for a limited trial. */
+export interface ComparisonInitResult {
+  /** The usable record, or null when one could not be established. */
+  record: ComparisonRecord | null;
+  /** Non-null when the caller must hold the candidate back instead of staging it. */
+  issue: ComparisonInitIssue | null;
+}
+
 /**
- * Create the empty record a candidate needs before its limited trial starts.
- * Written `done` (not `in_progress`) because a live trial accumulates one run
- * at a time and each intermediate state is a legitimate, readable result —
- * unlike a shadow run, where a partial record means a crashed batch.
+ * Establish the comparison record a candidate needs before its limited trial
+ * starts. Written `done` (not `in_progress`) because a live trial accumulates
+ * one run at a time and each intermediate state is a legitimate, readable
+ * result — unlike a shadow run, where a partial record means a crashed batch.
  *
- * Existing records are left untouched so a re-staged candidate keeps the runs
- * it already collected.
+ * A new record is written ONLY when the file genuinely does not exist. A
+ * corrupt, unreadable or in-progress file is reported through `issue` and left
+ * exactly as it is: those states may hold real measured runs, and "could not
+ * read it" is not evidence that there is nothing to lose. The previous version
+ * routed all three through `readComparisonRecord`'s null and overwrote them
+ * with an empty record, silently destroying the evidence the trial exists to
+ * collect.
  *
  * @param seed - Identity of the candidate entering the trial. / 試行開始する候補の識別情報
- * @returns The record now on disk, or null when the write failed. / 保存済み記録 or null
+ * @returns The usable record, or the reason staging must be held back. / 記録、または保留理由
  */
 export function initComparisonRecordForStaging(seed: {
   promptEvolutionId: number;
@@ -154,9 +213,17 @@ export function initComparisonRecordForStaging(seed: {
   modelName?: string | null;
   budgetUsd?: number | null;
   createdAt: string;
-}): ComparisonRecord | null {
-  const existing = readComparisonRecord(seed.promptEvolutionId);
-  if (existing) return existing;
+}): ComparisonInitResult {
+  const status = readComparisonRecordStatus(seed.promptEvolutionId);
+  if (status.kind === 'ok') return { record: status.record, issue: null };
+  if (status.kind !== 'not_found') {
+    log.warn(
+      { promptEvolutionId: seed.promptEvolutionId, kind: status.kind },
+      '[prompt-comparison] Existing comparison record is unusable — preserved, staging held back',
+    );
+    return { record: null, issue: status.kind };
+  }
+
   const record: ComparisonRecord = {
     promptEvolutionId: seed.promptEvolutionId,
     role: seed.role,
@@ -172,7 +239,9 @@ export function initComparisonRecordForStaging(seed: {
     // candidate arm, so it starts empty rather than null (null = role-wide).
     stagedTaskIds: [],
   };
-  return writeComparisonRecord(record) ? record : null;
+  return writeComparisonRecord(record)
+    ? { record, issue: null }
+    : { record: null, issue: 'write_failed' };
 }
 
 /**

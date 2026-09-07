@@ -2,11 +2,13 @@
  * prompt-comparison-store.test
  *
  * Verifies same-candidate lock rejection, different-candidate concurrent
- * writes, in_progress records degrading to null on read, and the live-trial
- * append path (staging init, arm cells, injection proof, dedup by executionId).
+ * writes, in_progress records degrading to null on read, the live-trial
+ * append path (staging init, arm cells, injection proof, dedup by executionId),
+ * and that staging distinguishes missing / corrupt / in-progress / unreadable
+ * records instead of overwriting measured evidence with an empty one.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -14,6 +16,7 @@ import {
   addendumVersionHash,
   initComparisonRecordForStaging,
   readComparisonRecord,
+  readComparisonRecordStatus,
   recordComparisonRun,
   releaseComparisonLock,
   writeComparisonRecord,
@@ -102,8 +105,8 @@ function trialRun(over: Partial<ComparisonRun> = {}): ComparisonRun {
   };
 }
 
-function stage(id: number): void {
-  initComparisonRecordForStaging({
+function stage(id: number) {
+  return initComparisonRecordForStaging({
     promptEvolutionId: id,
     role: 'implementer',
     modelName: 'claude-sonnet-5',
@@ -178,5 +181,102 @@ describe('addendumVersionHash', () => {
     expect(addendumVersionHash('- lintを実行する')).toBe(addendumVersionHash('- lintを実行する'));
     expect(addendumVersionHash('- lintを実行する')).not.toBe(addendumVersionHash('- 型を通す'));
     expect(addendumVersionHash('x')).toHaveLength(12);
+  });
+});
+
+/** Absolute path of a candidate's record file inside the test's data dir. */
+function recordPath(id: number): string {
+  return join(tmpDir, '.prompt-comparisons', `${id}.json`);
+}
+
+function writeRaw(id: number, contents: string): void {
+  const file = recordPath(id);
+  mkdirSync(join(tmpDir, '.prompt-comparisons'), { recursive: true });
+  writeFileSync(file, contents);
+}
+
+describe('readComparisonRecordStatus', () => {
+  it('reports ok with the record for a completed file', () => {
+    writeComparisonRecord(baseRecord(80));
+    const status = readComparisonRecordStatus(80);
+    expect(status.kind).toBe('ok');
+    expect(status.kind === 'ok' && status.record.promptEvolutionId).toBe(80);
+  });
+
+  it('reports not_found only when the file genuinely does not exist', () => {
+    expect(readComparisonRecordStatus(81).kind).toBe('not_found');
+  });
+
+  it('reports corrupted for unparseable JSON', () => {
+    writeRaw(82, '{ this is not json');
+    expect(readComparisonRecordStatus(82).kind).toBe('corrupted');
+  });
+
+  it('reports corrupted for valid JSON of the wrong shape', () => {
+    writeRaw(83, JSON.stringify({ hello: 'world' }));
+    expect(readComparisonRecordStatus(83).kind).toBe('corrupted');
+  });
+
+  it('reports io_error when the record path cannot be read as a file', () => {
+    // ディレクトリを record パスに作ると readFileSync は EISDIR で失敗する。
+    mkdirSync(recordPath(84), { recursive: true });
+    const status = readComparisonRecordStatus(84);
+    expect(status.kind).toBe('io_error');
+  });
+
+  it('reports in_progress and still surfaces the record', () => {
+    writeComparisonRecord(baseRecord(85, 'in_progress'));
+    const status = readComparisonRecordStatus(85);
+    expect(status.kind).toBe('in_progress');
+    expect(status.kind === 'in_progress' && status.record.promptEvolutionId).toBe(85);
+  });
+});
+
+describe('initComparisonRecordForStaging — 既存記録の保護', () => {
+  it('creates a record and reports no issue when none exists', () => {
+    const result = stage(90);
+    expect(result.issue).toBeNull();
+    expect(result.record?.arms).toEqual([]);
+  });
+
+  it('does not overwrite a corrupt record and reports the issue', () => {
+    writeRaw(91, '{ broken');
+    const before = readFileSync(recordPath(91), 'utf8');
+
+    const result = stage(91);
+
+    expect(result.issue).toBe('corrupted');
+    expect(result.record).toBeNull();
+    expect(readFileSync(recordPath(91), 'utf8')).toBe(before);
+  });
+
+  it('does not overwrite an in_progress record and reports the issue', () => {
+    writeComparisonRecord(baseRecord(92, 'in_progress'));
+    const before = readFileSync(recordPath(92), 'utf8');
+
+    const result = stage(92);
+
+    expect(result.issue).toBe('in_progress');
+    expect(result.record).toBeNull();
+    expect(readFileSync(recordPath(92), 'utf8')).toBe(before);
+  });
+
+  it('does not treat an unreadable path as a fresh candidate', () => {
+    mkdirSync(recordPath(93), { recursive: true });
+
+    const result = stage(93);
+
+    expect(result.issue).toBe('io_error');
+    expect(result.record).toBeNull();
+  });
+
+  it('keeps the runs an already-staged candidate collected', () => {
+    stage(94);
+    recordComparisonRun(94, 'current', trialRun({ executionId: 41 }));
+
+    const result = stage(94);
+
+    expect(result.issue).toBeNull();
+    expect(result.record?.arms[0]?.runs).toHaveLength(1);
   });
 });

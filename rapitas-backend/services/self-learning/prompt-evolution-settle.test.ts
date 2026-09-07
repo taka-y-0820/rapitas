@@ -249,7 +249,8 @@ describe('settleApprovedEvolutions — staged scope + auto-promote', () => {
     expect(evaluate).toHaveBeenCalledTimes(1);
   });
 
-  test('RAPITAS_PROMPT_AUTO_PROMOTE unset (default): stagedTaskIds is never cleared', async () => {
+  test('RAPITAS_PROMPT_AUTO_PROMOTE=false (explicit opt-out): stagedTaskIds is never cleared', async () => {
+    process.env.RAPITAS_PROMPT_AUTO_PROMOTE = 'false';
     writeComparisonRecord(comparisonRecord({ promptEvolutionId: 11 }));
     const { prisma } = makePrisma([
       {
@@ -265,6 +266,26 @@ describe('settleApprovedEvolutions — staged scope + auto-promote', () => {
       now,
     );
     expect(readComparisonRecord(11)?.stagedTaskIds).toEqual([810, 812]);
+  });
+
+  test('RAPITAS_PROMPT_AUTO_PROMOTE unset (default ON): stagedTaskIds is cleared', async () => {
+    // 既定 opt-in のままだと比較を通過した候補が永久に staged に留まるため、
+    // 環境変数を設定しない運用でも昇格が成立することを固定する。
+    writeComparisonRecord(comparisonRecord({ promptEvolutionId: 14 }));
+    const { prisma } = makePrisma([
+      {
+        id: 14,
+        basePromptKey: 'workflow_role_implementer',
+        evidenceJson: '{"successRate":0.6,"approvedAt":"2026-09-01T00:00:00.000Z"}',
+        afterPrompt: '提出前にlintを実行する',
+      },
+    ]);
+    await settleApprovedEvolutions(
+      prisma,
+      () => Promise.resolve({ totalRuns: 6, successRate: 0.9 }),
+      now,
+    );
+    expect(readComparisonRecord(14)?.stagedTaskIds).toBeNull();
   });
 
   test('RAPITAS_PROMPT_AUTO_PROMOTE=true + completed + improved + pure addendum: stagedTaskIds is cleared', async () => {

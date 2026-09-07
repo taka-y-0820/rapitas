@@ -4,7 +4,8 @@
  * ロールコンテキストへの追記注入の実行経路を検証する。未評価(staged)候補が
  * 全実行へ無条件注入されず、対照アームでは本文が一切入らないこと、承認済み
  * 追記がある場合は限定試行が起動せず二重注入されないこと、注入できた場合のみ
- * 割当が injected=true になり呼び出し側へ返ること。
+ * 割当が injected=true になり呼び出し側へ返ること、そして比較アームに割り当て
+ * られたフェーズには実験ループの未承認文言が混入しないこと。
  * Own file — mock.module is process-global.
  */
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
@@ -43,9 +44,11 @@ mock.module('../self-learning/prompt-evolution-staged-trial', () => ({
   getStagedRoleAddendumForTrial,
 }));
 
+let experiment: { experimentId: string; hypothesisId: number; addendum: string } | null = null;
+const getActiveExperimentInjection = mock(() => Promise.resolve(experiment));
 mock.module('../self-learning/experiment-loop/experiment-store', () => ({
-  getActiveExperimentInjection: () => Promise.resolve(null),
-  getActiveExperimentAddendum: () => Promise.resolve(null),
+  getActiveExperimentInjection,
+  getActiveExperimentAddendum: () => Promise.resolve(experiment?.addendum ?? null),
 }));
 
 const { buildExecutionContext } = await import('./workflow-orchestrator-context');
@@ -75,8 +78,10 @@ function stagedTrial(over: Partial<StagedTrialAssignment> = {}): StagedTrialAssi
 beforeEach(() => {
   approved = null;
   trial = null;
+  experiment = null;
   getApprovedRoleAddendumDetail.mockClear();
   getStagedRoleAddendumForTrial.mockClear();
+  getActiveExperimentInjection.mockClear();
 });
 
 describe('buildExecutionContext — 追記注入の経路', () => {
@@ -132,6 +137,66 @@ describe('buildExecutionContext — 追記注入の経路', () => {
     expect(result.context).toContain('## 承認済みの改善ガイダンス(プロンプト進化)');
     expect(result.context).not.toContain('## 限定試行中の改善ガイダンス(効果測定中)');
     expect(getStagedRoleAddendumForTrial).not.toHaveBeenCalled();
+    expect(result.comparisonAssignment).toBeNull();
+  });
+});
+
+describe('buildExecutionContext — 実験ループとの排他化', () => {
+  const activeExperiment = {
+    experimentId: 'exp_1_1000',
+    hypothesisId: 1,
+    addendum: '- 実験中の指示',
+  };
+
+  test('比較アームに割り当てられたフェーズには実験文言を混入させない', async () => {
+    trial = stagedTrial();
+    experiment = activeExperiment;
+
+    const result = await buildExecutionContext(1, transition, task, 'ja', 'lightweight');
+
+    expect(result.context).toContain('## 限定試行中の改善ガイダンス(効果測定中)');
+    expect(result.context).not.toContain('## 実験中の改善ガイダンス');
+    // 呼び出し自体を行わない（事後除外ではなく注入前に排他化する）。
+    expect(getActiveExperimentInjection).not.toHaveBeenCalled();
+  });
+
+  test('対照アームでも実験文言は混入しない(対照が対照でなくなるため)', async () => {
+    trial = stagedTrial({
+      assignment: {
+        promptEvolutionId: 55,
+        role: 'implementer',
+        arm: 'current',
+        injected: false,
+        injectedVersion: null,
+      },
+      addendum: null,
+      version: null,
+    });
+    experiment = activeExperiment;
+
+    const result = await buildExecutionContext(1, transition, task, 'ja', 'lightweight');
+
+    expect(result.context).toBe('BASE');
+    expect(getActiveExperimentInjection).not.toHaveBeenCalled();
+  });
+
+  test('承認済み追記があるフェーズにも実験文言を混入させない', async () => {
+    approved = { promptEvolutionId: 7, text: '- 承認済みの追記' };
+    experiment = activeExperiment;
+
+    const result = await buildExecutionContext(1, transition, task, 'ja', 'lightweight');
+
+    expect(result.context).toContain('## 承認済みの改善ガイダンス(プロンプト進化)');
+    expect(result.context).not.toContain('## 実験中の改善ガイダンス');
+  });
+
+  test('比較割当も承認済み追記も無ければ実験文言は従来どおり注入される', async () => {
+    experiment = activeExperiment;
+
+    const result = await buildExecutionContext(1, transition, task, 'ja', 'lightweight');
+
+    expect(result.context).toContain('## 実験中の改善ガイダンス(未承認・効果測定中)');
+    expect(result.context).toContain('- 実験中の指示');
     expect(result.comparisonAssignment).toBeNull();
   });
 });

@@ -108,31 +108,39 @@ export async function buildExecutionContext(
   // Deliberately a SEPARATE path from the addenda above: the text is
   // unapproved and under a different measurement, so it carries its own
   // heading and never touches getApprovedRoleAddendum's status semantics.
-  // Best-effort.
-  try {
-    const { getActiveExperimentInjection } =
-      await import('../self-learning/experiment-loop/experiment-store');
-    const experiment = await getActiveExperimentInjection(transition.role);
-    if (experiment) {
-      context += `\n\n## 実験中の改善ガイダンス(未承認・効果測定中)\n\n${experiment.addendum}`;
-      // Same audit fields as the two paths above, so one log query answers
-      // "which text did task X's role Y actually run under" for every path.
-      const { addendumVersionHash } =
-        await import('../self-learning/comparison/prompt-comparison-store');
-      log.info(
-        {
-          taskId,
-          role: transition.role,
-          experimentId: experiment.experimentId,
-          hypothesisId: experiment.hypothesisId,
-          version: addendumVersionHash(experiment.addendum),
-          arm: 'experiment',
-        },
-        '[experiment] Active-experiment addendum injected into role context',
-      );
+  //
+  // Skipped whenever this phase already carries either a rollout or a
+  // comparison-arm assignment. A phase assigned to the control arm that also
+  // received unapproved experiment text is not a control run at all, and one
+  // assigned to the intervention arm can no longer attribute its outcome to
+  // the candidate — either way the comparison record would accumulate runs
+  // whose result has a second, unrecorded cause. Best-effort.
+  if (!approved && !comparisonAssignment) {
+    try {
+      const { getActiveExperimentInjection } =
+        await import('../self-learning/experiment-loop/experiment-store');
+      const experiment = await getActiveExperimentInjection(transition.role);
+      if (experiment) {
+        context += `\n\n## 実験中の改善ガイダンス(未承認・効果測定中)\n\n${experiment.addendum}`;
+        // Same audit fields as the two paths above, so one log query answers
+        // "which text did task X's role Y actually run under" for every path.
+        const { addendumVersionHash } =
+          await import('../self-learning/comparison/prompt-comparison-store');
+        log.info(
+          {
+            taskId,
+            role: transition.role,
+            experimentId: experiment.experimentId,
+            hypothesisId: experiment.hypothesisId,
+            version: addendumVersionHash(experiment.addendum),
+            arm: 'experiment',
+          },
+          '[experiment] Active-experiment addendum injected into role context',
+        );
+      }
+    } catch {
+      // Experiment injection must never block the run.
     }
-  } catch {
-    // Experiment injection must never block the run.
   }
 
   return { context, comparisonAssignment };

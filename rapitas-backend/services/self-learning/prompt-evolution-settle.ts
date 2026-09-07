@@ -18,17 +18,27 @@ import { readComparisonRecord, writeComparisonRecord } from './comparison/prompt
 const log = createLogger('self-learning:prompt-evolution-settle');
 
 /**
- * Environment escape hatch for low-risk auto-promotion (default OFF — a
- * human must always clear `stagedTaskIds` manually unless this is set).
+ * Whether a candidate that PASSED its measured comparison may be promoted to a
+ * full rollout without a human click. Default ON; set
+ * RAPITAS_PROMPT_AUTO_PROMOTE=false to opt out.
+ *
  * Shared with prompt-evolution-auto-approve so the limited trial's adoption
  * step and this module's staged promotion are gated by the SAME switch rather
  * than two copies that can drift apart.
- * / 低リスク自動昇格の有効化フラグ（既定オフ）
+ *
+ * NOTE: this was opt-in (`=== 'true'`) and therefore off in every real
+ * deployment, which meant a candidate could clear the comparison gate and then
+ * sit `staged` forever — the loop looked complete but never closed. The safety
+ * property lives in the EVIDENCE gate (decideComparisonVerdict: minimum
+ * sample, significance floor, baseline-relative cost/duration tolerance), not
+ * in a flag nobody sets; its sibling `autoApproveEnabled` is opt-out for the
+ * same reason.
+ * / 実測比較を通過した候補の無人昇格（既定オン。'false' 明示でオプトアウト）
  *
  * @returns True when unattended promotion is enabled. / 無人昇格が有効なら true
  */
 export function autoPromoteEnabled(): boolean {
-  return process.env.RAPITAS_PROMPT_AUTO_PROMOTE === 'true';
+  return process.env.RAPITAS_PROMPT_AUTO_PROMOTE !== 'false';
 }
 
 /**
