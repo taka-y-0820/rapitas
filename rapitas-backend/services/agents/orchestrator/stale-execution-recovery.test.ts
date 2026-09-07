@@ -506,12 +506,12 @@ describe('recoverStaleExecutions() — 孤児セッションの終端整合', ()
     const result = await recoverStaleExecutions(ctx);
 
     expect(prisma.agentSession.findMany).toHaveBeenCalledWith({
-      where: { status: { in: ['active', 'running'] } },
+      where: { status: { in: ['active', 'running'] }, createdAt: { lt: ctx.serverStartedAt } },
       select: { id: true },
     });
     expect(prisma.agentSession.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 42 },
+        where: expect.objectContaining({ id: 42, status: { in: ['active', 'running'] } }),
         data: expect.objectContaining({ status: 'interrupted' }),
       }),
     );
@@ -560,10 +560,10 @@ describe('recoverStaleExecutions() — 孤児セッションの終端整合', ()
     // 本流の session 巻き戻し(600) + 孤児是正(42) の合算
     expect(result.updatedSessions).toBe(2);
     expect(prisma.agentSession.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 600 } }),
+      expect.objectContaining({ where: expect.objectContaining({ id: 600 }) }),
     );
     expect(prisma.agentSession.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 42 } }),
+      expect.objectContaining({ where: expect.objectContaining({ id: 42 }) }),
     );
   });
 });

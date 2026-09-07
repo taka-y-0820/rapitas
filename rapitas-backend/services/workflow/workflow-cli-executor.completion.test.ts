@@ -77,6 +77,16 @@ describe('executeCLIAgent — cleanup + AgentExecution completion flip', () => {
     expect(result).toBeDefined();
   });
 
+  test('finalizes the successful phase session so recovery does not mark it interrupted', async () => {
+    await run(researchTransition(), noopAdvance);
+    expect(spies.agentSessionUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 100 }),
+        data: expect.objectContaining({ status: 'completed' }),
+      }),
+    );
+  });
+
   test('flips AgentExecution post_processing -> completed only for investigation phases', async () => {
     await run(researchTransition(), noopAdvance);
     expect(spies.agentExecutionUpdateMany).toHaveBeenCalledTimes(1);

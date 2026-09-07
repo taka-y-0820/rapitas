@@ -15,6 +15,14 @@ import { recordTransition } from '../../workflow/transition-recorder';
 
 const logger = createLogger('stale-recovery-helpers');
 
+const LIVE_SESSION_EXECUTIONS = [
+  'running',
+  'pending',
+  'waiting_for_input',
+  'post_processing',
+  'canceling',
+];
+
 /**
  * Marks affected sessions as interrupted when they have no remaining active executions.
  *
@@ -32,13 +40,17 @@ export async function updateAffectedSessions(
       const activeCount = await ctx.prisma.agentExecution.count({
         where: {
           sessionId,
-          status: { in: ['running', 'pending', 'waiting_for_input'] },
+          status: { in: LIVE_SESSION_EXECUTIONS },
         },
       });
 
       if (activeCount === 0) {
         await ctx.prisma.agentSession.update({
-          where: { id: sessionId },
+          where: {
+            id: sessionId,
+            status: { in: ['active', 'running'] },
+            agentExecutions: { none: { status: { in: LIVE_SESSION_EXECUTIONS } } },
+          },
           data: {
             status: 'interrupted',
             lastActivityAt: new Date(),
@@ -67,7 +79,10 @@ export async function reconcileOrphanedActiveSessions(ctx: OrchestratorContext):
   let updated = 0;
   try {
     const candidates = await ctx.prisma.agentSession.findMany({
-      where: { status: { in: ['active', 'running'] } },
+      where: {
+        status: { in: ['active', 'running'] },
+        createdAt: { lt: ctx.serverStartedAt },
+      },
       select: { id: true },
     });
     for (const session of candidates) {
@@ -75,12 +90,17 @@ export async function reconcileOrphanedActiveSessions(ctx: OrchestratorContext):
         const liveCount = await ctx.prisma.agentExecution.count({
           where: {
             sessionId: session.id,
-            status: { in: ['running', 'pending', 'waiting_for_input'] },
+            status: { in: LIVE_SESSION_EXECUTIONS },
           },
         });
         if (liveCount === 0) {
           await ctx.prisma.agentSession.update({
-            where: { id: session.id },
+            where: {
+              id: session.id,
+              status: { in: ['active', 'running'] },
+              createdAt: { lt: ctx.serverStartedAt },
+              agentExecutions: { none: { status: { in: LIVE_SESSION_EXECUTIONS } } },
+            },
             data: { status: 'interrupted', lastActivityAt: new Date() },
           });
           updated++;

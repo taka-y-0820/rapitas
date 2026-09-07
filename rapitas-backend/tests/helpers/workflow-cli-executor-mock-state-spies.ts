@@ -80,6 +80,7 @@ export const spies = {
   taskUpdateMany: mock(() => Promise.resolve({ count: 0 })),
   taskFindUnique: mock(() => Promise.resolve(wf.taskHasLinkedPrRow)),
   agentSessionCreate: mock(() => Promise.resolve({ id: 100 })),
+  agentSessionUpdateMany: mock(() => Promise.resolve({ count: 1 })),
   gitHubPrFindFirst: mock(() => Promise.resolve(wf.linkedPrRow)),
   agentExecutionUpdateMany: mock(() => Promise.resolve({ count: 0 })),
   agentExecutionFindFirst: mock(() => Promise.resolve(null)),

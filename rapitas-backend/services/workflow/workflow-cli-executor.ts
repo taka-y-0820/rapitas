@@ -18,6 +18,7 @@ import { buildCliAgentPrompt } from './workflow-cli-executor-prompt';
 import { harvestInvestigationOutput, runPhaseEpilogue } from './workflow-cli-executor-epilogue';
 import { runPostProcessing } from './workflow-cli-executor-postprocess';
 import { resumeSessionIdFor } from './phase-session-resume';
+import { finalizePhaseSession } from './workflow-phase-session';
 
 // Disk-existence guard for reusing a recorded worktree. Re-exported here so the
 // existing worktree-reuse.test.ts import path keeps working; the single source
@@ -179,6 +180,8 @@ export async function executeCLIAgent(
     isInvestigationPhase,
     advanceWorkflow,
   });
+
+  await finalizePhaseSession(session.id, effectiveSuccess);
 
   return finalResult;
 }
