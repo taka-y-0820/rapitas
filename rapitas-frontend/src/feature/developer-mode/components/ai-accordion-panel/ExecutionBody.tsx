@@ -1,8 +1,6 @@
 'use client';
 // ExecutionBody
 
-import { useTranslations } from 'next-intl';
-import { Spinner } from '@/components/ui/spinner';
 import type { ExecutionLogStatus } from '../ExecutionLogViewer';
 import { SubtaskLogTabs } from '../SubtaskLogTabs';
 import { PhaseTimeline } from '../phase-timeline';
@@ -117,7 +115,6 @@ export function ExecutionBody({
   onSetBaseBranch,
   onGenerateBranchName: _onGenerateBranchName,
 }: ExecutionBodyProps) {
-  const t = useTranslations('devMode.executionSection');
   const hasSubtaskLogs = !!(hasSubtasks && subtaskLogs && parallelSessionId);
 
   // Running state
@@ -144,20 +141,8 @@ export function ExecutionBody({
               onRefreshLogs={onRefreshSubtaskLogs}
               maxHeight={300}
             />
-          ) : logs.length > 0 ? (
-            <PhaseTimeline taskId={taskId} isRunning={isRunning} liveLogs={logs} />
           ) : (
-            // NOTE: Before the first log line streams in (or when there's no
-            // log viewer to show at all — e.g. a non-subtask run whose
-            // stream hasn't connected yet), this body was previously blank
-            // with zero indication anything was happening. A running task
-            // with no visible feedback reads as broken/stuck to the user.
-            !hasQuestion && (
-              <div className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400">
-                <Spinner size="sm" />
-                {t('runningNoLogsYet')}
-              </div>
-            )
+            <PhaseTimeline taskId={taskId} isRunning={isRunning} liveLogs={logs} />
           )}
         </div>
       </div>
@@ -177,7 +162,7 @@ export function ExecutionBody({
             onRefreshLogs={onRefreshSubtaskLogs}
             maxHeight={300}
           />
-        ) : logs.length > 0 && showLogs ? (
+        ) : showLogs ? (
           <PhaseTimeline taskId={taskId} isRunning={false} liveLogs={logs} />
         ) : null}
         <ContinuationForm
@@ -192,16 +177,12 @@ export function ExecutionBody({
 
   // Cancelled state — status shown in header badge
   if (isCancelled) {
-    return logs.length > 0 && showLogs ? (
-      <PhaseTimeline taskId={taskId} isRunning={false} liveLogs={logs} />
-    ) : null;
+    return showLogs ? <PhaseTimeline taskId={taskId} isRunning={false} liveLogs={logs} /> : null;
   }
 
   // Interrupted state — status shown in header badge
   if (isInterrupted) {
-    return logs.length > 0 && showLogs ? (
-      <PhaseTimeline taskId={taskId} isRunning={false} liveLogs={logs} />
-    ) : null;
+    return showLogs ? <PhaseTimeline taskId={taskId} isRunning={false} liveLogs={logs} /> : null;
   }
 
   // Failed state — error detail shown inline only if message exists
@@ -213,9 +194,7 @@ export function ExecutionBody({
             {executionError}
           </p>
         )}
-        {logs.length > 0 && showLogs && (
-          <PhaseTimeline taskId={taskId} isRunning={false} liveLogs={logs} />
-        )}
+        {showLogs && <PhaseTimeline taskId={taskId} isRunning={false} liveLogs={logs} />}
       </div>
     );
   }
