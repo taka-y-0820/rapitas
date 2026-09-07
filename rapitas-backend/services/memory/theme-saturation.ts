@@ -75,8 +75,13 @@ export async function findNearDuplicate(
   threshold: number,
 ): Promise<number | null> {
   if (title.trim().length < 6) return null;
-  const where: { sourceType: string; sourceId?: string } = { sourceType: opts.sourceType };
-  if (opts.openConcernOnly) where.sourceId = 'open';
+  const where: { sourceType: string; sourceId?: string; forgettingStage?: string } = {
+    sourceType: opts.sourceType,
+  };
+  if (opts.openConcernOnly) {
+    where.sourceId = 'open';
+    where.forgettingStage = 'active'; // Match the visible/actionable concern backlog.
+  }
   const rows = await prisma.knowledgeEntry
     .findMany({ where, select: { id: true, title: true }, take: 600 })
     .catch(() => [] as { id: number; title: string }[]);
@@ -136,8 +141,11 @@ export async function findSaturatedTheme(
   const { sourceType, cap, salient, openConcernOnly } = opts;
   const subject = stripTitleMarkers(title);
   if (subject.length < salient) return null;
-  const where: { sourceType: string; sourceId?: string } = { sourceType };
-  if (openConcernOnly) where.sourceId = 'open';
+  const where: { sourceType: string; sourceId?: string; forgettingStage?: string } = { sourceType };
+  if (openConcernOnly) {
+    where.sourceId = 'open';
+    where.forgettingStage = 'active'; // Archived rows must not swallow new reports.
+  }
   const rows = await prisma.knowledgeEntry
     .findMany({ where, select: { id: true, title: true }, take: 600 })
     .catch(() => [] as { id: number; title: string }[]);

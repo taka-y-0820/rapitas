@@ -17,7 +17,7 @@
 
 export const PHASE_ORDER = ['research', 'plan', 'implement', 'verify'] as const;
 
-/** One of the four timeline sections. `plan` is omitted entirely in lightweight mode. */
+/** One of the four timeline sections, populated from recorded executions. */
 export type PhaseType = (typeof PHASE_ORDER)[number];
 
 export type PhaseRunStatus = 'running' | 'completed' | 'failed';
@@ -120,7 +120,11 @@ export function segmentPhases(
   transitions: RawPhaseTransition[],
   hasPlanFile: boolean,
 ): SegmentPhasesResult {
-  const workflowMode: WorkflowTimelineMode = hasPlanFile ? 'standard' : 'lightweight';
+  // A planner runs before plan.md exists; answering a question also archives
+  // the old plan. Neither case may hide its live or historical execution logs.
+  const hasPlanningExecution = executions.some((execution) => execution.phaseType === 'plan');
+  const workflowMode: WorkflowTimelineMode =
+    hasPlanFile || hasPlanningExecution ? 'standard' : 'lightweight';
 
   const repairTimes = transitions
     .filter((t) => t.cause && REPAIR_CAUSES.has(t.cause))
@@ -130,9 +134,7 @@ export function segmentPhases(
   const allTransitionTimes = transitions.map((t) => toTime(t.createdAt));
 
   const sorted = executions
-    .filter(
-      (e) => e.phaseType !== null && !(workflowMode === 'lightweight' && e.phaseType === 'plan'),
-    )
+    .filter((e) => e.phaseType !== null)
     .map((e) => ({ ...e, time: toTime(e.startedAt ?? e.createdAt) }))
     .sort((a, b) => a.time - b.time);
 
@@ -142,7 +144,6 @@ export function segmentPhases(
 
   const phases: PhaseSegment[] = [];
   for (const phaseType of PHASE_ORDER) {
-    if (workflowMode === 'lightweight' && phaseType === 'plan') continue;
     const execs = byPhase.get(phaseType)!;
     if (execs.length === 0) continue;
 
