@@ -1,3 +1,5 @@
+import { mergeFallbackSegmentTime } from './execution-attempt-metrics';
+export { mergeFallbackSegmentTime } from './execution-attempt-metrics';
 /**
  * TaskExecutor
  *
@@ -365,26 +367,6 @@ async function buildTaskWithContext(
 // recovery-metrics recording (task 641). Behavior is unchanged.
 
 /**
- * Merge the primary agent's CLI segment time into a fallback result.
- *
- * Adopting a fallback result wholesale used to discard the failed primary
- * agent's executionTimeMs, under-recording active time (task #560). Time is
- * the only field merged — every other field must reflect the fallback run.
- *
- * @param primary - Result of the failed primary agent run. / 失敗した一次実行の結果
- * @param fallback - Result of the fallback agent run. / フォールバック実行の結果
- * @returns Fallback result with both segments' executionTimeMs summed. / 両セグメント合算済みの結果
- */
-export function mergeFallbackSegmentTime(
-  primary: AgentExecutionResult,
-  fallback: AgentExecutionResult,
-): AgentExecutionResult {
-  const primaryMs = primary.executionTimeMs ?? 0;
-  if (primaryMs <= 0) return fallback;
-  return { ...fallback, executionTimeMs: (fallback.executionTimeMs ?? 0) + primaryMs };
-}
-
-/**
  * Handle successful execution - memory system and auto-complete.
  */
 function handleExecutionSuccess(
@@ -593,7 +575,7 @@ export async function executeTask(
         const freshAgent = agentFactory.createAgent(agentConfig);
         agentInfo.agent = freshAgent;
         setupAgentHandlers(ctx, freshAgent, setup, options);
-        r = await freshAgent.execute(taskWithAnalysis);
+        r = mergeFallbackSegmentTime(r, await freshAgent.execute(taskWithAnalysis));
       }
 
       // Check for fallback need

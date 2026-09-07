@@ -110,6 +110,7 @@ export async function saveExecutionResult(
   sessionId: number,
   state: ExecutionState,
   result: {
+    attemptMetrics?: import('../base-agent').AgentExecutionResult['attemptMetrics'];
     success: boolean;
     waitingForInput?: boolean;
     output?: string;
@@ -161,6 +162,12 @@ export async function saveExecutionResult(
   },
   opts?: { investigationMode?: boolean },
 ): Promise<void> {
+  if (result.attemptMetrics)
+    fileLogger.log('INFO', 'recovery', 'execution_attempt_metrics', {
+      executionId,
+      sessionId,
+      attempts: result.attemptMetrics,
+    });
   const executionStatus = determineExecutionStatus(result, fileLogger, state, opts);
 
   // Real-cost fields are only emitted on terminal states by the resolver, so

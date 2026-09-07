@@ -17,6 +17,7 @@ mock.module('../../self-learning/workflow-learning-recorder', () => ({
 // ── 動的 import（全 mock.module 宣言後） ──────────────────────────────────────
 
 const { determineExecutionStatus, saveExecutionResult } = await import('./execution-persistence');
+const { mergeFallbackSegmentTime } = await import('./execution-attempt-metrics');
 
 // ── 型 import（ランタイムに影響なし） ─────────────────────────────────────────
 
@@ -47,6 +48,7 @@ function makeFileLogger() {
     logError: mock(() => {}),
     logWarn: mock(() => {}),
     logInfo: mock(() => {}),
+    log: mock(() => {}),
     flush: mock(async () => {}),
     // biome-ignore-like cast: only the methods used by execution-persistence matter here
   } as unknown as import('../execution-file-logger').ExecutionFileLogger;
@@ -192,6 +194,31 @@ describe('determineExecutionStatus()', () => {
 // ── saveExecutionResult() ────────────────────────────────────────────────────
 
 describe('saveExecutionResult()', () => {
+  test.each([0.75, undefined])(
+    'same-ID attempt metrics reach the log and only a complete total reaches DB (%s)',
+    async (costUsd) => {
+      const prisma = makePrisma();
+      const fileLogger = makeFileLogger();
+      const result = mergeFallbackSegmentTime(
+        { success: false, output: '', costUsd, modelName: 'first-model' },
+        { success: true, output: 'ok', costUsd: 1.25, modelName: 'last-model' },
+      );
+      await saveExecutionResult(prisma as never, 1, 2, makeState(), result, fileLogger);
+      expect(fileLogger.log).toHaveBeenCalledWith('INFO', 'recovery', 'execution_attempt_metrics', {
+        executionId: 1,
+        sessionId: 2,
+        attempts: result.attemptMetrics,
+      });
+      expect(prisma.agentExecution.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data:
+            costUsd === undefined
+              ? expect.not.objectContaining({ costUsd: expect.anything() })
+              : expect.objectContaining({ costUsd: 2 }),
+        }),
+      );
+    },
+  );
   test('completed: 既存値に加算し、completedAt を設定し、自己学習レコードを記録する', async () => {
     const prisma = makePrisma();
     const state = makeState({ output: 'final output' });

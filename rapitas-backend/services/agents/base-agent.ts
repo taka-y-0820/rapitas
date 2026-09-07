@@ -100,6 +100,13 @@ export type { QuestionType };
 // QuestionDetails is re-exported from question-detection.ts for backward compatibility
 
 export type AgentExecutionResult = {
+  /** Ordered measured attempts retained when one execution ID is retried. */
+  attemptMetrics?: Array<{
+    success: boolean;
+    costUsd: number | null;
+    executionTimeMs: number | null;
+    modelName: string | null;
+  }>;
   success: boolean;
   output: string;
   artifacts?: AgentArtifact[];
