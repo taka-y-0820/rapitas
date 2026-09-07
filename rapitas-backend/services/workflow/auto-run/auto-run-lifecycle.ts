@@ -20,6 +20,7 @@ import {
   resumeAutoRun,
   finalizeStop,
   startAutoRun,
+  isAutoResumablePauseStatus,
   type ThemeAutoRunState,
 } from './theme-auto-run-service';
 import {
@@ -262,9 +263,12 @@ export async function processIdleThemesImpl(
 
 /**
  * For paused themes, check whether approval was granted and auto-resume.
+ * Only themes paused for approval (status='paused_approval') are eligible —
+ * an explicit user pause or the reason-unknown legacy pause must never be
+ * silently overridden by this polling safety net (task 883).
  *
  * @param prisma - Prisma client / Prismaクライアント
- * @param paused - Themes currently in 'paused' status / 一時停止中テーマ一覧
+ * @param paused - Themes currently in a paused status / 一時停止中テーマ一覧
  */
 export async function processPausedThemesImpl(
   prisma: PrismaClient,
@@ -272,6 +276,7 @@ export async function processPausedThemesImpl(
 ): Promise<void> {
   for (const state of paused) {
     if (!state.currentTaskId) continue;
+    if (!isAutoResumablePauseStatus(state.status)) continue;
     try {
       // If the queue item is no longer 'waiting_approval' (e.g. user approved in UI)
       // AND the ThemeAutoRun was not already resumed by onPlanApproved(), resume now.
