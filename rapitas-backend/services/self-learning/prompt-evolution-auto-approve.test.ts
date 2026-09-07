@@ -31,6 +31,7 @@ interface EvoRow {
 }
 
 let rows: EvoRow[] = [];
+let replaySessions: import('./comparison/prompt-comparison-reconcile').TrialSessionSnapshot[] = [];
 
 type StatusWhere = string | { in: string[] } | undefined;
 const statusMatches = (status: string, where: StatusWhere): boolean =>
@@ -41,6 +42,11 @@ const statusMatches = (status: string, where: StatusWhere): boolean =>
 mock.module('../../config/database', () => ({
   ensureDatabaseConnection: mock(async () => {}),
   prisma: {
+    agentSession: {
+      findMany: mock((args: { where: { id: { in: number[] } } }) =>
+        Promise.resolve(replaySessions.filter((s) => args.where.id.in.includes(s.id))),
+      ),
+    },
     promptEvolution: {
       findMany: mock((args: { where?: { status?: StatusWhere }; take?: number }) => {
         const filtered = rows.filter((r) => statusMatches(r.status, args?.where?.status));
@@ -85,7 +91,11 @@ const {
   addendumVersionHash,
 } = await import('./comparison/prompt-comparison-store');
 const { COMPARISON_MIN_SAMPLE } = await import('./comparison/prompt-comparison-metrics');
-import { readTrialManifest, reserveTrialSlot } from './comparison/prompt-comparison-trial-manifest';
+import {
+  readTrialManifest,
+  reserveTrialSlot,
+  bindTrialSession,
+} from './comparison/prompt-comparison-trial-manifest';
 import type { ComparisonRun } from './comparison/prompt-comparison-types';
 
 function proposedRow(id: number, afterPrompt: string): EvoRow {
@@ -161,6 +171,7 @@ let savedPromote: string | undefined;
 
 beforeEach(() => {
   rows = [];
+  replaySessions = [];
   tmpDir = mkdtempSync(join(tmpdir(), 'rapitas-auto-approve-'));
   savedDataDir = process.env.RAPITAS_DATA_DIR;
   process.env.RAPITAS_DATA_DIR = tmpDir;
@@ -375,6 +386,66 @@ describe('autoApproveEligibleProposals — 既存比較記録の保護', () => {
 });
 
 describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () => {
+  test('the unattended evaluation cycle recovers a missing outcome after its session finishes', async () => {
+    rows = [proposedRow(65, '- 提出前にlintを実行する')];
+    await autoApproveEligibleProposals();
+    const reservation = reserveTrialSlot(
+      {
+        promptEvolutionId: 65,
+        role: 'implementer',
+        candidateVersion: addendumVersionHash(rows[0].afterPrompt),
+        controlVersion: null,
+        seed: 'auto-test-65',
+      },
+      965000,
+      () => true,
+    );
+    if (reservation.issue !== null) throw new Error(reservation.issue);
+    const first = reservation.slot;
+    bindTrialSession(65, first.id, 777, {
+      injected: first.arm === 'candidate',
+      injectedVersion: first.arm === 'candidate' ? addendumVersionHash(rows[0].afterPrompt) : null,
+      controlVersion: null,
+    });
+    fillArm(65, 'current', 0, 5);
+    fillArm(65, 'candidate', 5, 5);
+    const record = readComparisonRecord(65)!;
+    const cell = record.arms.find((c) => c.arm === first.arm)!;
+    const lost = cell.runs.find((r) => r.assignmentId === first.id)!;
+    cell.runs = cell.runs.filter((r) => r.assignmentId !== first.id);
+    writeComparisonRecord(record);
+    replaySessions = [
+      {
+        id: 777,
+        status: 'active',
+        mode: 'workflow-implementer',
+        config: { taskId: first.taskId },
+        agentExecutions: [
+          {
+            id: lost.executionId,
+            status: lost.success ? 'completed' : 'failed',
+            modelName: lost.modelName!,
+            costUsd: lost.costUsd,
+            executionTimeMs: lost.durationMs,
+            startedAt: new Date(0),
+            completedAt: new Date(lost.durationMs),
+            errorMessage: null,
+          },
+        ],
+      },
+    ];
+    await autoApproveEligibleProposals();
+    expect(rows[0].status).toBe('staged');
+    replaySessions[0].status = lost.success ? 'completed' : 'failed';
+    await autoApproveEligibleProposals();
+    expect(rows[0].status).toBe('approved');
+    expect(evidenceOf(65).comparisonRecovery).toMatchObject({ recovered: 1 });
+    expect(
+      readComparisonRecord(65)!
+        .arms.flatMap((c) => c.runs)
+        .find((r) => r.assignmentId === first.id),
+    ).toMatchObject({ recoveredFromSessionId: 777, success: lost.success });
+  });
   test('later successes cannot promote until the earlier assigned outcome is recorded', async () => {
     rows = [proposedRow(64, '- 提出前にlintを実行する')];
     await autoApproveEligibleProposals();

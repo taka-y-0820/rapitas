@@ -187,6 +187,7 @@ export async function executeCLIAgent(
         comparisonAssignment.promptEvolutionId,
         comparisonAssignment.assignmentId,
         session.id,
+        comparisonAssignment,
       );
     }
     const result = await orchestrator.executeTask(
@@ -275,16 +276,17 @@ export async function executeCLIAgent(
 
     return finalResult;
   } finally {
-    // The comparison sample is recorded BEFORE the session is finalized: the
-    // run's own outcome is what the trial measures, and it must not be skipped
-    // when the finalization write races another owner and no-ops.
-    await recordTrialRun(
-      comparisonAssignment,
-      taskId,
-      session.id,
-      sessionSucceeded,
-      phaseStartedAt,
-    );
-    await finalizePhaseSession(session.id, sessionSucceeded);
+    // A lost finalization race must not credit a cancelled/still-running phase
+    // as successful. The reconciler can recover it once the actual owner has
+    // committed a terminal session outcome.
+    if (await finalizePhaseSession(session.id, sessionSucceeded)) {
+      await recordTrialRun(
+        comparisonAssignment,
+        taskId,
+        session.id,
+        sessionSucceeded,
+        phaseStartedAt,
+      );
+    }
   }
 }

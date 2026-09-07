@@ -16,7 +16,7 @@ const { finalizePhaseSession } = await import('./workflow-phase-session');
 beforeEach(() => updateMany.mockClear());
 
 test('completion is a conditional write requiring only completed executions and an active session', async () => {
-  await finalizePhaseSession(42, true);
+  expect(await finalizePhaseSession(42, true)).toBe(true);
   expect(updateMany).toHaveBeenCalledWith({
     where: {
       id: 42,
@@ -45,7 +45,7 @@ test('rejected output records a failed session even when the CLI succeeded', asy
 
 test('a lost conditional write never retries by overwriting a stopped session', async () => {
   updateMany.mockImplementationOnce(async () => ({ count: 0 }));
-  await finalizePhaseSession(42, true);
+  expect(await finalizePhaseSession(42, true)).toBe(false);
   expect(updateMany).toHaveBeenCalledTimes(1);
 });
 

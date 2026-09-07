@@ -29,6 +29,8 @@ export type ComparisonVerdict = 'improved' | 'regressed' | 'inconclusive' | 'ins
 
 /** One shadow run's outcome within an arm/knowledge cell. */
 export interface ComparisonRun {
+  /** Set only when a missing file outcome is recovered from its terminal session. */
+  recoveredFromSessionId?: number;
   assignmentId?: string;
   controlVersion?: string | null;
   taskId: number;

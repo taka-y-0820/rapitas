@@ -21,6 +21,7 @@
  * statistical proof first would keep it injected longer.
  */
 import { readTrialManifest, trialPrefix } from './comparison/prompt-comparison-trial-manifest';
+import { reconcileTrialOutcomes } from './comparison/prompt-comparison-reconcile';
 import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
 import { passesSequentialSignificance } from './comparison/prompt-comparison-adoption-gate';
@@ -62,6 +63,10 @@ export async function evaluateStagedCandidates(result: AutoApproveResult): Promi
 
   for (const candidate of staged) {
     const evidence = parseEvidence(candidate.evidenceJson);
+    const recovery = await reconcileTrialOutcomes(candidate.id);
+    if (recovery.recovered || recovery.pending || recovery.issues.length)
+      evidence.comparisonRecovery = recovery;
+    else delete evidence.comparisonRecovery;
     const status = readComparisonRecordStatus(candidate.id);
     if (status.kind !== 'ok') {
       // Evidence we cannot READ is not evidence of anything. The candidate

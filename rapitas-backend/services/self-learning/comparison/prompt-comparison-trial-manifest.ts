@@ -5,7 +5,19 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { withAlphaLedgerLock, writeAlphaLedger } from './prompt-comparison-alpha-storage';
 import { assignArm } from './prompt-comparison-randomization';
-import type { ComparisonArm, ComparisonCell, ComparisonRecord } from './prompt-comparison-types';
+import type {
+  ComparisonArm,
+  ComparisonCell,
+  ComparisonRecord,
+  ComparisonAssignment,
+} from './prompt-comparison-types';
+
+export interface TrialInjectionProof {
+  sessionId: number;
+  injected: boolean;
+  injectedVersion: string | null;
+  controlVersion: string | null;
+}
 
 export interface TrialSlot {
   id: string;
@@ -13,6 +25,7 @@ export interface TrialSlot {
   arm: ComparisonArm;
   createdAt: string;
   sessionIds: number[];
+  injectionProofs?: TrialInjectionProof[];
 }
 export interface TrialManifest {
   schemaVersion: 1;
@@ -64,6 +77,18 @@ function validManifest(value: unknown, id: number): value is TrialManifest {
       !Array.isArray(slot.sessionIds) ||
       slot.sessionIds.some((id) => !Number.isSafeInteger(id) || id < 1) ||
       new Set(slot.sessionIds).size !== slot.sessionIds.length ||
+      (slot.injectionProofs !== undefined &&
+        (!Array.isArray(slot.injectionProofs) ||
+          new Set(slot.injectionProofs.map((proof) => proof?.sessionId)).size !==
+            slot.injectionProofs.length ||
+          slot.injectionProofs.some(
+            (proof) =>
+              !proof ||
+              !slot.sessionIds.includes(proof.sessionId) ||
+              typeof proof.injected !== 'boolean' ||
+              !(proof.injectedVersion === null || typeof proof.injectedVersion === 'string') ||
+              !(proof.controlVersion === null || typeof proof.controlVersion === 'string'),
+          ))) ||
       slot.arm !== assignArm(m.seed, index)
     )
       return false;
@@ -129,15 +154,38 @@ export function reserveTrialSlot(
 }
 
 /** Persist the session before execution so interrupted result recording can be replayed. */
-export function bindTrialSession(id: number, slotId: string, sessionId: number): boolean {
+export function bindTrialSession(
+  id: number,
+  slotId: string,
+  sessionId: number,
+  injection?: Pick<ComparisonAssignment, 'injected' | 'injectedVersion' | 'controlVersion'>,
+): boolean {
   if (!Number.isSafeInteger(sessionId) || sessionId < 1) return false;
   return (
     withAlphaLedgerLock(fileFor(id), () => {
       const manifest = readTrialManifest(id);
       const slot = manifest?.slots.find((s) => s.id === slotId);
       if (!manifest || !slot) return false;
-      if (slot.sessionIds.includes(sessionId)) return true;
+      if (slot.sessionIds.includes(sessionId)) {
+        if (!injection) return true;
+        const existing = slot.injectionProofs?.find((p) => p.sessionId === sessionId);
+        return (
+          !!existing &&
+          existing.injected === injection.injected &&
+          existing.injectedVersion === injection.injectedVersion &&
+          existing.controlVersion === injection.controlVersion
+        );
+      }
       slot.sessionIds.push(sessionId);
+      if (injection && injection.controlVersion !== undefined) {
+        slot.injectionProofs ??= [];
+        slot.injectionProofs.push({
+          sessionId,
+          injected: injection.injected,
+          injectedVersion: injection.injectedVersion,
+          controlVersion: injection.controlVersion,
+        });
+      }
       return writeAlphaLedger(fileFor(id), manifest);
     }) === true
   );

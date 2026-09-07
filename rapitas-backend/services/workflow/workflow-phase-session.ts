@@ -25,10 +25,11 @@ const log = createLogger('workflow-phase-session');
  *
  * @param sessionId - Session opened for this phase. / このフェーズのセッションID
  * @param success - Whether the phase succeeded. / フェーズが成功したか
+ * @returns True only when this call committed the terminal session state.
  */
-export async function finalizePhaseSession(sessionId: number, success: boolean): Promise<void> {
+export async function finalizePhaseSession(sessionId: number, success: boolean): Promise<boolean> {
   try {
-    await prisma.agentSession.updateMany({
+    const result = await prisma.agentSession.updateMany({
       where: {
         id: sessionId,
         status: { in: ['active', 'running'] },
@@ -44,7 +45,9 @@ export async function finalizePhaseSession(sessionId: number, success: boolean):
         lastActivityAt: new Date(),
       },
     });
+    return result.count === 1;
   } catch (err) {
     log.warn({ err, sessionId }, 'Failed to persist phase session outcome');
+    return false;
   }
 }

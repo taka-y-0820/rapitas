@@ -147,6 +147,11 @@ describe('executeCLIAgent — 限定試行の比較サンプル記録', () => {
     await run(assignment());
     expect(readComparisonRecord(55)!.arms).toEqual([]);
   });
+  test('losing session finalization cannot immediately credit a successful sample', async () => {
+    spies.agentSessionUpdateMany.mockImplementationOnce(() => Promise.resolve({ count: 0 }));
+    await run(assignment());
+    expect(readComparisonRecord(55)!.arms).toEqual([]);
+  });
 
   test('割当を受け取ったフェーズは実行ID・コスト・注入版を比較記録に残す', async () => {
     await run(assignment());
