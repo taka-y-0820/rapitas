@@ -13,6 +13,35 @@ function run(id: number, success: boolean): ComparisonRun {
   };
 }
 
+it('fallback models and reused contributing executions cannot hide behind the final model', () => {
+  const cells: ComparisonCell[] = [
+    {
+      arm: 'current',
+      knowledge: 'with',
+      runs: [
+        {
+          ...run(2, true),
+          role: 'implementer',
+          modelName: 'last-model',
+          executionIds: [2, 1],
+          executionModels: ['last-model', 'earlier-model'],
+        },
+      ],
+    },
+  ];
+  expect(comparisonCohortIssue(cells, 'implementer', 'v1')).toBe('mixed_actual_models');
+  cells[0].runs[0].executionModels = ['last-model', 'last-model'];
+  expect(comparisonCohortIssue(cells, 'implementer', 'v1')).toBeNull();
+  cells[0].runs.push({
+    ...run(3, true),
+    role: 'implementer',
+    modelName: 'last-model',
+    executionIds: [3, 1],
+    executionModels: ['last-model', 'last-model'],
+  });
+  expect(comparisonCohortIssue(cells, 'implementer', 'v1')).toBe('invalid_run');
+});
+
 it('unknown execution model and invalid outcomes are not treated as comparable evidence', () => {
   const cells: ComparisonCell[] = [
     {

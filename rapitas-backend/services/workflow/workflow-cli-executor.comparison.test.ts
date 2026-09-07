@@ -79,6 +79,10 @@ beforeEach(() => {
     role: 'implementer',
     createdAt: new Date(0).toISOString(),
   });
+  spies.agentExecutionFindMany.mockImplementation(async () => {
+    const row = await spies.agentExecutionFindFirst();
+    return row ? [row] : [];
+  });
   spies.agentExecutionFindFirst.mockImplementation(() =>
     Promise.resolve({
       id: 7788,
@@ -98,6 +102,22 @@ afterEach(() => {
 });
 
 describe('executeCLIAgent — 限定試行の比較サンプル記録', () => {
+  test('live recording includes the entire fallback attempt', async () => {
+    const latest = await spies.agentExecutionFindFirst();
+    spies.agentExecutionFindMany.mockImplementation(() =>
+      Promise.resolve([
+        latest,
+        { ...latest, id: 7787, status: 'failed', costUsd: 0.75, executionTimeMs: 7000 },
+      ]),
+    );
+    await run(assignment());
+    expect(readComparisonRecord(55)!.arms[0].runs[0]).toMatchObject({
+      costUsd: 2,
+      durationMs: 130000,
+      executionIds: [7788, 7787],
+      executionModels: ['reported-model', 'reported-model'],
+    });
+  });
   test('the actual execution preserves its prospective assignment and control version', async () => {
     const reservation = reserveTrialSlot(
       {
@@ -203,6 +223,7 @@ describe('executeCLIAgent — 限定試行の比較サンプル記録', () => {
         id: 7789,
         status: 'failed',
         errorMessage: 'agent crashed',
+        modelName: 'reported-model',
         costUsd: 0.5,
         executionTimeMs: 1000,
       }),

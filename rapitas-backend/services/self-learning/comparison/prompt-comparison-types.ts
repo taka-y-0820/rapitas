@@ -35,6 +35,9 @@ export interface ComparisonRun {
   controlVersion?: string | null;
   taskId: number;
   executionId: number;
+  /** All executions contributing to session cost/time, in newest-first order. */
+  executionIds?: number[];
+  executionModels?: string[];
   success: boolean;
   costUsd: number;
   durationMs: number;

@@ -90,6 +90,41 @@ function outcomes() {
   return readComparisonRecord(1)!.arms.flatMap((c) => c.runs);
 }
 
+it('recovery includes failed fallback costs and durations with execution provenance', async () => {
+  prepare();
+  const session = snapshot();
+  session.agentExecutions.push({
+    ...session.agentExecutions[0],
+    id: 999,
+    status: 'failed',
+    costUsd: '0.4',
+    executionTimeMs: 3000,
+    modelName: 'fallback-source',
+  });
+  sessions = [session];
+  expect((await reconcileTrialOutcomes(1)).recovered).toBe(1);
+  expect(outcomes()[0].costUsd).toBeCloseTo(0.6, 12);
+  expect(outcomes()[0]).toMatchObject({
+    durationMs: 8000,
+    executionIds: [1000, 999],
+    executionModels: ['reported-model', 'fallback-source'],
+  });
+});
+
+it('an unknown earlier cost cannot become a zero-cost fallback', async () => {
+  prepare();
+  const session = snapshot();
+  session.agentExecutions.push({
+    ...session.agentExecutions[0],
+    id: 999,
+    status: 'failed',
+    costUsd: null,
+  });
+  sessions = [session];
+  expect((await reconcileTrialOutcomes(1)).issues[0].reason).toBe('execution_metadata_incomplete');
+  expect(outcomes()).toHaveLength(0);
+});
+
 it('replays a missed terminal outcome once with real cost, model, and injection provenance', async () => {
   const slot = prepare();
   sessions = [snapshot()];

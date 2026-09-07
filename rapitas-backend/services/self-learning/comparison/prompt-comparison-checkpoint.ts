@@ -31,10 +31,27 @@ export function comparisonCohortIssue(
         run.durationMs < 0
       )
         return 'invalid_run';
-      executions.add(run.executionId);
+      const contributingIds = run.executionIds ?? [run.executionId];
+      if (!Array.isArray(contributingIds) || !contributingIds.includes(run.executionId))
+        return 'invalid_run';
+      for (const id of contributingIds) {
+        if (!Number.isSafeInteger(id) || id < 1 || executions.has(id)) return 'invalid_run';
+        executions.add(id);
+      }
       if (run.role !== role) return 'role_mismatch';
       if (typeof run.modelName !== 'string' || !run.modelName.trim()) return 'actual_model_unknown';
       models.add(run.modelName.trim());
+      if (run.executionModels !== undefined) {
+        if (
+          !Array.isArray(run.executionModels) ||
+          run.executionModels.length !== contributingIds.length
+        )
+          return 'actual_model_unknown';
+        for (const model of run.executionModels) {
+          if (typeof model !== 'string' || !model.trim()) return 'actual_model_unknown';
+          models.add(model.trim());
+        }
+      }
       if (cell.arm === 'candidate' && (!run.injected || run.injectedVersion !== candidateVersion)) {
         return 'candidate_version_mismatch';
       }

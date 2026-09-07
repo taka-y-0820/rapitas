@@ -1,3 +1,4 @@
+import { trialExecutionTotals } from './prompt-comparison-execution-totals';
 /** Recover missed outcome appends from authoritative terminal sessions, never from assignment alone. */
 import { prisma } from '../../../config/database';
 import { classifyFailureCause } from './prompt-comparison-metrics';
@@ -124,20 +125,8 @@ export async function reconcileTrialOutcomes(
       fail('execution_missing');
       continue;
     }
-    const durationMs =
-      execution.executionTimeMs ??
-      (execution.completedAt && execution.startedAt
-        ? execution.completedAt.getTime() - execution.startedAt.getTime()
-        : NaN);
-    const costUsd = Number(execution.costUsd);
-    if (
-      !execution.modelName?.trim() ||
-      execution.costUsd == null ||
-      !Number.isFinite(costUsd) ||
-      costUsd < 0 ||
-      !Number.isFinite(durationMs) ||
-      durationMs < 0
-    ) {
+    const totals = trialExecutionTotals(session.agentExecutions);
+    if (!totals) {
       fail('execution_metadata_incomplete');
       continue;
     }
@@ -148,8 +137,7 @@ export async function reconcileTrialOutcomes(
       executionId: execution.id,
       recoveredFromSessionId: sid,
       success,
-      costUsd,
-      durationMs,
+      ...totals,
       failureCause: success
         ? null
         : classifyFailureCause({

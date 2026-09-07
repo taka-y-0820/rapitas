@@ -1,3 +1,4 @@
+import { trialExecutionTotals } from '../self-learning/comparison/prompt-comparison-execution-totals';
 /**
  * Workflow CLI Executor
  *
@@ -37,24 +38,23 @@ export { canReuseWorktree } from '../agents/orchestrator/git-operations/worktree
  * failure cause) rather than on the arm assignment alone.
  *
  * Best-effort: a missing record, an unreadable execution row or a write failure
- * costs one sample and never the phase.
+ * defers the sample to reconciliation and never fails the phase.
  *
  * @param assignment - Arm this phase ran under, or null when nothing is staged. / 実行したアーム
  * @param taskId - Task the phase belongs to. / 対象タスクID
  * @param sessionId - Session opened for this phase. / このフェーズのセッションID
  * @param success - Whether the phase succeeded. / フェーズが成功したか
- * @param phaseStartedAt - When the phase began, for the duration fallback. / フェーズ開始時刻
+ * Timing sums stored execution durations, with fixed timestamps as fallback.
  */
 async function recordTrialRun(
   assignment: ComparisonAssignment | null,
   taskId: number,
   sessionId: number,
   success: boolean,
-  phaseStartedAt: Date,
 ): Promise<void> {
   if (!assignment) return;
   try {
-    const execution = await prisma.agentExecution.findFirst({
+    const executions = await prisma.agentExecution.findMany({
       where: { sessionId },
       orderBy: { createdAt: 'desc' },
       select: {
@@ -63,14 +63,14 @@ async function recordTrialRun(
         errorMessage: true,
         costUsd: true,
         executionTimeMs: true,
+        startedAt: true,
+        completedAt: true,
         modelName: true,
       },
     });
-    if (
-      !execution ||
-      !['completed', 'failed', 'cancelled', 'interrupted'].includes(execution.status)
-    )
-      return;
+    const totals = trialExecutionTotals(executions);
+    if (!totals) return;
+    const execution = executions[0];
     const actualSuccess = success && execution.status === 'completed';
     const { classifyFailureCause } =
       await import('../self-learning/comparison/prompt-comparison-metrics');
@@ -80,9 +80,7 @@ async function recordTrialRun(
       taskId,
       executionId: execution.id,
       success: actualSuccess,
-      // costUsd is a Prisma Decimal — Number() is the documented conversion.
-      costUsd: Number(execution.costUsd ?? 0),
-      durationMs: execution.executionTimeMs ?? Date.now() - phaseStartedAt.getTime(),
+      ...totals,
       failureCause: actualSuccess
         ? null
         : classifyFailureCause({ status: execution.status, errorMessage: execution.errorMessage }),
@@ -280,13 +278,7 @@ export async function executeCLIAgent(
     // as successful. The reconciler can recover it once the actual owner has
     // committed a terminal session outcome.
     if (await finalizePhaseSession(session.id, sessionSucceeded)) {
-      await recordTrialRun(
-        comparisonAssignment,
-        taskId,
-        session.id,
-        sessionSucceeded,
-        phaseStartedAt,
-      );
+      await recordTrialRun(comparisonAssignment, taskId, session.id, sessionSucceeded);
     }
   }
 }
