@@ -41,6 +41,8 @@ import { selectAndEnqueueNextTask } from './auto-run-advance-select';
 import { isOverlapHeld } from '../workflow-orchestrator-overlap-guard';
 import { recordTransition } from '../transition-recorder';
 
+import { resolveResumedTenureStart } from './resume-tenure';
+
 const log = createLogger('theme-auto-run-scheduler');
 
 /**
@@ -72,7 +74,11 @@ export async function advanceActiveTask(
   // EXEMPT a task that is waiting for the USER'S ANSWER: it burns no tokens,
   // and force-stopping it runs revertChanges — destroying the agent's
   // uncommitted work just because the user was away for 45 min.
-  const tenureMs = lastRunAt ? Date.now() - new Date(lastRunAt).getTime() : 0;
+  let tenureStart = lastRunAt ? new Date(lastRunAt).getTime() : Date.now();
+  if (lastRunAt && Date.now() - tenureStart >= MAX_TASK_WALL_MS) {
+    tenureStart = await resolveResumedTenureStart(prisma, currentTaskId, tenureStart);
+  }
+  const tenureMs = Date.now() - tenureStart;
   if (lastRunAt && tenureMs >= MAX_TASK_WALL_MS) {
     if (await isAwaitingUserAnswer(prisma, currentTaskId)) {
       await notifyAwaitingUserAnswer(themeId, currentTaskId);
@@ -98,11 +104,7 @@ export async function advanceActiveTask(
     // was killed there, 8 seconds after its implementer committed a complete
     // implementation. Transitions and heartbeats are the actual evidence of
     // movement; only their absence means wedged.
-    const lastProgressAt = await resolveLastProgressAt(
-      prisma,
-      currentTaskId,
-      new Date(lastRunAt).getTime(),
-    );
+    const lastProgressAt = await resolveLastProgressAt(prisma, currentTaskId, tenureStart);
     const sinceProgressMs = Date.now() - lastProgressAt;
     // Liveness exemption: a running execution with a fresh heartbeat is
     // SLOW, not wedged — killing it destroys legitimate long work (task
