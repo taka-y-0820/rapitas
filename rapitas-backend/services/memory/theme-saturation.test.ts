@@ -5,14 +5,19 @@
  */
 import { describe, expect, mock, test } from 'bun:test';
 
-let pool: Array<{ id: number; title: string }> = [];
+let pool: Array<{ id: number; title: string; forgettingStage?: string }> = [];
 let lastWhere: Record<string, unknown> | null = null;
 mock.module('../../config/database', () => ({
   prisma: {
     knowledgeEntry: {
       findMany: ({ where }: { where: Record<string, unknown> }) => {
         lastWhere = where;
-        return Promise.resolve(pool);
+        return Promise.resolve(
+          pool.filter(
+            (row) =>
+              !where.forgettingStage || (row.forgettingStage ?? 'active') === where.forgettingStage,
+          ),
+        );
       },
     },
   },
@@ -64,6 +69,15 @@ describe('bigramJaccard / charBigrams', () => {
 });
 
 describe('findNearDuplicate', () => {
+  test('archived concern cannot swallow a new filing, but an active duplicate still can', async () => {
+    pool = [
+      { id: 77, title: 'Codex command execution output is missing', forgettingStage: 'archived' },
+    ];
+    const options = { sourceType: 'concern', openConcernOnly: true };
+    expect(await findNearDuplicate(pool[0].title, options, 0.45)).toBeNull();
+    pool[0].forgettingStage = 'active';
+    expect(await findNearDuplicate(pool[0].title, options, 0.45)).toBe(77);
+  });
   test('閾値以上の近重複が存在 → その id を返す', async () => {
     pool = [
       { id: 21, title: 'ゲート登録APIの宣言的・汎用フレームワーク化' },
@@ -91,6 +105,19 @@ describe('findNearDuplicate', () => {
 });
 
 describe('findSaturatedTheme', () => {
+  test('hidden concerns do not saturate the visible backlog', async () => {
+    pool = Array.from({ length: 3 }, (_, id) => ({
+      id,
+      title: `Codex process runner repair ${id}`,
+      forgettingStage: 'archived',
+    }));
+    pool.push({ id: 100, title: 'Codex process runner output', forgettingStage: 'active' });
+    const options = { sourceType: 'concern', openConcernOnly: true, cap: 3, salient: 8 };
+    expect(await findSaturatedTheme('Codex process runner events', options)).toBeNull();
+    pool.push({ id: 101, title: 'Codex process runner timing', forgettingStage: 'active' });
+    pool.push({ id: 102, title: 'Codex process runner errors', forgettingStage: 'active' });
+    expect(await findSaturatedTheme('Codex process runner events', options)).toBe(100);
+  });
   test('CAP件以上が salient 部分文字列を共有 → anchor id を返す（飽和）', async () => {
     pool = Array.from({ length: 3 }, (_, i) => ({
       id: 10 + i,
@@ -103,7 +130,11 @@ describe('findSaturatedTheme', () => {
       openConcernOnly: true,
     });
     expect(r).toBe(10);
-    expect(lastWhere).toEqual({ sourceType: 'concern', sourceId: 'open' });
+    expect(lastWhere).toEqual({
+      sourceType: 'concern',
+      sourceId: 'open',
+      forgettingStage: 'active',
+    });
   });
 
   test('新規テーマ（共有なし）→ null（許可）', async () => {
