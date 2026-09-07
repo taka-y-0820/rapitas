@@ -12,14 +12,31 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 // mock が衝突するため、このファイルは単体（bun test <this file>）で実行する。
 
 const taskUpdateMock = mock(async () => ({}));
+let taskRow: { status: string; workflowStatus: string | null };
+const taskUpdateManyMock = mock(
+  async (args: {
+    where: { id: number; status: { in: string[] }; workflowStatus?: string };
+    data: { status: string };
+  }) => {
+    if (!args.where.status.in.includes(taskRow.status)) return { count: 0 };
+    if (args.where.workflowStatus && args.where.workflowStatus !== taskRow.workflowStatus)
+      return { count: 0 };
+    taskRow.status = args.data.status;
+    return { count: 1 };
+  },
+);
 const agentSessionUpdateMock = mock(async () => ({}));
 const notificationCreateMock = mock(async () => ({}));
-const taskFindUniqueMock = mock(async () => ({ workflowStatus: 'in_progress' }));
+const taskFindUniqueMock = mock(async () => taskRow);
 
 mock.module('../../../config', () => ({
   prisma: {
-    task: { update: taskUpdateMock, findUnique: taskFindUniqueMock },
-    agentSession: { update: agentSessionUpdateMock },
+    task: {
+      update: taskUpdateMock,
+      updateMany: taskUpdateManyMock,
+      findUnique: taskFindUniqueMock,
+    },
+    agentSession: { updateMany: agentSessionUpdateMock },
     notification: { create: notificationCreateMock },
   },
   ensureDatabaseConnection: mock(async () => {}),
@@ -68,10 +85,66 @@ async function flush(): Promise<void> {
 }
 
 beforeEach(() => {
+  taskRow = { status: 'in-progress', workflowStatus: 'in_progress' };
+  resumeInterruptedExecutionMock = mock(async () => ({ success: true, waitingForInput: false }));
   taskUpdateMock.mockClear();
+  taskUpdateManyMock.mockClear();
   agentSessionUpdateMock.mockClear();
   notificationCreateMock.mockClear();
   taskFindUniqueMock.mockClear();
+});
+
+describe('resume completion respects task completion gates', () => {
+  test.each([
+    'draft',
+    'research_done',
+    'plan_created',
+    'plan_approved',
+    'in_progress',
+    'verify_done',
+    'awaiting_question',
+    null,
+  ])('successful CLI with workflow %s does not complete the task', async (workflowStatus) => {
+    taskRow.workflowStatus = workflowStatus;
+    handleResumeCompletion(10, EXECUTION, TASK, TASK.theme.workingDirectory, 900_000);
+    await flush();
+    expect(taskUpdateMock).not.toHaveBeenCalled();
+    expect(taskRow.status).toBe('in-progress');
+    expect(taskUpdateManyMock).not.toHaveBeenCalled();
+  });
+
+  test('only a completed workflow may complete an active task', async () => {
+    taskRow.workflowStatus = 'completed';
+    handleResumeCompletion(10, EXECUTION, TASK, TASK.theme.workingDirectory, 900_000);
+    await flush();
+    expect(taskRow.status).toBe('done');
+    expect(taskUpdateMock).not.toHaveBeenCalled();
+  });
+
+  test.each(['cancelled', 'blocked', 'done', 'todo'])(
+    'a late success does not overwrite task status %s',
+    async (status) => {
+      taskRow = { status, workflowStatus: 'completed' };
+      handleResumeCompletion(10, EXECUTION, TASK, TASK.theme.workingDirectory, 900_000);
+      await flush();
+      expect(taskRow.status).toBe(status);
+      expect(taskUpdateMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(['cancelled', 'blocked', 'done', 'todo'])(
+    'a late error does not requeue task status %s',
+    async (status) => {
+      taskRow.status = status;
+      resumeInterruptedExecutionMock = mock(async () => {
+        throw new Error('late failure');
+      });
+      handleResumeCompletion(10, EXECUTION, TASK, TASK.theme.workingDirectory, 900_000);
+      await flush();
+      expect(taskRow.status).toBe(status);
+      expect(taskUpdateMock).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('handleResumeCompletion() — ResumeLockConflictError', () => {
@@ -111,15 +184,15 @@ describe('handleResumeCompletion() — 通常エラーの既存挙動（回帰�
     handleResumeCompletion(10, EXECUTION, TASK, TASK.theme.workingDirectory, 900_000);
     await flush();
 
-    expect(taskUpdateMock).toHaveBeenCalledWith(
+    expect(taskUpdateManyMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: TASK.id },
+        where: { id: TASK.id, status: { in: ['in-progress'] } },
         data: { status: 'todo' },
       }),
     );
     expect(agentSessionUpdateMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: EXECUTION.sessionId },
+        where: { id: EXECUTION.sessionId, status: { in: ['pending', 'running'] } },
         data: expect.objectContaining({ status: 'failed' }),
       }),
     );

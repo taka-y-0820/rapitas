@@ -90,32 +90,28 @@ async function updateTaskStatusOnSuccess(
   const currentTask = await prisma.task.findUnique({ where: { id: task.id } });
   const wfStatus = currentTask?.workflowStatus;
 
-  if (wfStatus && ['plan_created', 'research_done', 'verify_done'].includes(wfStatus)) {
-    await prisma.task.update({
-      where: { id: task.id },
-      data: { status: 'in-progress' },
-    });
-    log.info(`[resume] Task ${task.id} kept as in-progress (workflow: ${wfStatus})`);
-  } else if (wfStatus === 'in_progress' || wfStatus === 'plan_approved') {
-    log.info(`[resume] Task ${task.id} kept as in-progress (workflow: ${wfStatus})`);
-  } else if (wfStatus === 'completed') {
-    await prisma.task.update({
-      where: { id: task.id },
+  if (wfStatus === 'completed') {
+    // A CLI exit only completes this execution. The workflow owns acceptance,
+    // verification and PR/merge gates; unknown/draft cannot establish success.
+    // CAS also preserves a stop or newer task state arriving after the read.
+    const updated = await prisma.task.updateMany({
+      where: {
+        id: task.id,
+        workflowStatus: 'completed',
+        status: { in: ['in-progress'] },
+      },
       data: { status: 'done', completedAt: new Date() },
     });
-    log.info(`[resume] Updated task ${task.id} status to 'done'`);
+    if (updated.count > 0) log.info(`[resume] Updated task ${task.id} status to 'done'`);
   } else {
-    // draft or unknown — treat as done
-    await prisma.task.update({
-      where: { id: task.id },
-      data: { status: 'done', completedAt: new Date() },
-    });
-    log.info(`[resume] Updated task ${task.id} status to 'done' (workflow: ${wfStatus ?? 'none'})`);
+    log.info(
+      `[resume] Execution ended; task ${task.id} awaits workflow gates (${wfStatus ?? 'unknown'})`,
+    );
   }
 
   await prisma.agentSession
-    .update({
-      where: { id: execution.sessionId },
+    .updateMany({
+      where: { id: execution.sessionId, status: { in: ['pending', 'running'] } },
       data: { status: 'completed', completedAt: new Date() },
     })
     .catch((err: unknown) => {
@@ -149,12 +145,15 @@ async function handleResumeFailure(
   execution: ExecutionInfo,
   errorMessage: string | undefined,
 ): Promise<void> {
-  await prisma.task.update({ where: { id: task.id }, data: { status: 'todo' } });
+  await prisma.task.updateMany({
+    where: { id: task.id, status: { in: ['in-progress'] } },
+    data: { status: 'todo' },
+  });
   log.info(`[resume] Reverted task ${task.id} status to 'todo' due to failure`);
 
   await prisma.agentSession
-    .update({
-      where: { id: execution.sessionId },
+    .updateMany({
+      where: { id: execution.sessionId, status: { in: ['pending', 'running'] } },
       data: {
         status: 'failed',
         completedAt: new Date(),
@@ -182,15 +181,18 @@ async function handleResumeError(
   error: Error,
 ): Promise<void> {
   await prisma.task
-    .update({ where: { id: task.id }, data: { status: 'todo' } })
+    .updateMany({
+      where: { id: task.id, status: { in: ['in-progress'] } },
+      data: { status: 'todo' },
+    })
     .catch((err: unknown) => {
       log.warn({ err, taskId: task.id }, "[resume] Failed to revert task status to 'todo'");
     });
   log.info(`[resume] Reverted task ${task.id} status to 'todo' due to error`);
 
   await prisma.agentSession
-    .update({
-      where: { id: execution.sessionId },
+    .updateMany({
+      where: { id: execution.sessionId, status: { in: ['pending', 'running'] } },
       data: {
         status: 'failed',
         completedAt: new Date(),
