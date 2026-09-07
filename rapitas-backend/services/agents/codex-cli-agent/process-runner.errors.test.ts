@@ -83,6 +83,9 @@ function makeState(overrides: Partial<ProcessRunnerState> = {}): ProcessRunnerSt
     codexSessionId: null,
     actualModel: null,
     status: 'running',
+    turnFailed: false,
+    turnFailureMessage: null,
+    activeCodexCommands: new Map(),
     ...overrides,
   };
 }
@@ -418,5 +421,127 @@ describe('spawnCodexProcess — close handling', () => {
     spawnedChildren[0].emit('close', 0);
     const result = await resultPromise;
     expect(result.modelName).toBe('gpt-5');
+  });
+
+  test('turn.failed followed by exit code 0 resolves success:false with a Codex-turn-failed message', async () => {
+    const state = makeState();
+    const callbacks = makeCallbacks();
+    const resultPromise = spawnCodexProcess(
+      {},
+      'C:/work',
+      'prompt',
+      state,
+      callbacks,
+      Date.now(),
+      noArtifacts,
+      noCommits,
+    );
+    await flush();
+    const child = spawnedChildren[0];
+    child.stdout.emit(
+      'data',
+      `${JSON.stringify({ type: 'turn.failed', error: { message: 'context window exceeded' } })}\n`,
+    );
+    child.emit('close', 0);
+    const result = await resultPromise;
+    expect(result.success).toBe(false);
+    expect(result.errorMessage).toContain('Codexターンが失敗しました');
+    expect(result.errorMessage).toContain('context window exceeded');
+    expect(state.status).toBe('failed');
+    expect(callbacks.onStatusChange).toHaveBeenCalledWith('failed');
+  });
+
+  test('turn.failed followed by non-zero exit code does not duplicate the failure message', async () => {
+    const state = makeState();
+    const resultPromise = spawnCodexProcess(
+      {},
+      'C:/work',
+      'prompt',
+      state,
+      makeCallbacks(),
+      Date.now(),
+      noArtifacts,
+      noCommits,
+    );
+    await flush();
+    const child = spawnedChildren[0];
+    child.stdout.emit(
+      'data',
+      `${JSON.stringify({ type: 'turn.failed', error: { message: 'context window exceeded' } })}\n`,
+    );
+    child.emit('close', 1);
+    const result = await resultPromise;
+    expect(result.success).toBe(false);
+    expect(result.errorMessage).toContain('プロセスがコード 1 で終了しました');
+    expect(result.errorMessage).not.toContain('Codexターンが失敗しました');
+  });
+
+  test('turn.failed does not override a pending question at close', async () => {
+    const state = makeState();
+    const callbacks = makeCallbacks();
+    const resultPromise = spawnCodexProcess(
+      {},
+      'C:/work',
+      'prompt',
+      state,
+      callbacks,
+      Date.now(),
+      noArtifacts,
+      noCommits,
+    );
+    await flush();
+    const child = spawnedChildren[0];
+    child.stdout.emit(
+      'data',
+      `${JSON.stringify({ type: 'turn.failed', error: { message: 'context window exceeded' } })}\n`,
+    );
+    const askEvent = {
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', id: 't1', name: 'AskUserQuestion', input: { question: 'どちら?' } },
+        ],
+      },
+    };
+    child.stdout.emit('data', `${JSON.stringify(askEvent)}\n`);
+    child.emit('close', 0);
+    const result = await resultPromise;
+    expect(result.waitingForInput).toBe(true);
+    expect(result.success).toBe(true);
+    expect(state.status).toBe('waiting_for_input');
+  });
+
+  test('stderr chunks mixed with item.* events accumulate only in errorBuffer, not outputBuffer/turnFailed', async () => {
+    const state = makeState();
+    const callbacks = makeCallbacks();
+    const resultPromise = spawnCodexProcess(
+      {},
+      'C:/work',
+      'prompt',
+      state,
+      callbacks,
+      Date.now(),
+      noArtifacts,
+      noCommits,
+    );
+    await flush();
+    const child = spawnedChildren[0];
+    child.stdout.emit(
+      'data',
+      `${JSON.stringify({ type: 'item.started', item: { type: 'command_execution', id: 'c1', command: 'ls' } })}\n`,
+    );
+    child.stderr.emit('data', 'a stray diagnostic line on stderr\n');
+    child.stdout.emit(
+      'data',
+      `${JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'command_execution', id: 'c1', command: 'ls', exit_code: 0 },
+      })}\n`,
+    );
+    child.emit('close', 0);
+    const result = await resultPromise;
+    expect(state.errorBuffer).toContain('a stray diagnostic line on stderr');
+    expect(result.success).toBe(true);
+    expect(state.turnFailed).toBe(false);
   });
 });

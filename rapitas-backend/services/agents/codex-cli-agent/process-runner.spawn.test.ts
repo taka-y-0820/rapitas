@@ -12,7 +12,7 @@
  * handling lives in process-runner.errors.test.ts.
  */
 import { describe, test, expect, beforeEach } from 'bun:test';
-import { buildSpawnCommand, buildProcessEnv, normalizeCodexModel } from './process-runner';
+import { buildSpawnCommand, buildProcessEnv, normalizeCodexModel } from './process-runner-args';
 
 // ── buildSpawnCommand ────────────────────────────────────────────────────────
 
