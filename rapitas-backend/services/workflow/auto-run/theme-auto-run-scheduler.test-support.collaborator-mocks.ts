@@ -41,6 +41,7 @@ export const mockQueueItemFindFirst = mock(() =>
 );
 export const mockQueueItemUpdateMany = mock(() => Promise.resolve({ count: 0 }));
 /** Counts `actor:'user'` transitions after a failure — the revival check. */
+export const mockResumeTransition = mock(() => Promise.resolve<{ createdAt: Date } | null>(null));
 export const mockTransitionCount = mock(() => Promise.resolve(0));
 /** Resource-contention gate hold record (task 725) — default unused (gate off in tests). */
 export const mockActivityLogCreate = mock(() => Promise.resolve({}));
@@ -72,6 +73,7 @@ mock.module('../../../config', () => ({
     },
     workflowTransition: {
       count: mockTransitionCount,
+      findFirst: mockResumeTransition,
     },
     activityLog: {
       create: mockActivityLogCreate,

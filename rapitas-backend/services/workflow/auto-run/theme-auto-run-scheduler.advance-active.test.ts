@@ -1,3 +1,4 @@
+import { mockResumeTransition } from './theme-auto-run-scheduler.test-support.collaborator-mocks';
 /**
  * theme-auto-run-scheduler.advance-active.test
  *
@@ -51,6 +52,7 @@ function freshLastRunAt(): string {
 
 beforeEach(() => {
   resetAllMocks();
+  mockResumeTransition.mockReset().mockResolvedValue(null);
   resetSchedulerSingleton();
   scheduler = ThemeAutoRunScheduler.getInstance();
   // Default: no active queue item and no terminal item, so tests that only
@@ -594,4 +596,42 @@ describe('advanceTheme — vanished queue item (neither active nor terminal)', (
       internal(scheduler).advanceTheme(1, 100, 'priority', 0, freshLastRunAt()),
     ).resolves.toBeUndefined();
   });
+});
+
+it('uses the durable answer time even when the scheduler holds an old tenure snapshot', async () => {
+  mockResumeTransition.mockResolvedValue({ createdAt: new Date() });
+  mockGetThemeActiveQueueItems.mockResolvedValue([{ id: 1, taskId: 100, status: 'running' }]);
+  await internal(scheduler).advanceTheme(
+    1,
+    100,
+    'priority',
+    1,
+    new Date(Date.now() - TEST_MAX_TASK_WALL_MS * 4).toISOString(),
+  );
+  expect(mockNotifyHangBackstop).not.toHaveBeenCalled();
+  expect(mockTaskUpdate).not.toHaveBeenCalled();
+  expect(mockResumeTransition).toHaveBeenCalledWith(
+    expect.objectContaining({
+      where: expect.objectContaining({
+        taskId: 100,
+        fromStatus: 'awaiting_question',
+        cause: { in: ['intake_question_answered', 'question_resolved'] },
+      }),
+    }),
+  );
+});
+
+it('a resumed run still reaches the hard ceiling after its own budget expires', async () => {
+  mockResumeTransition.mockResolvedValue({
+    createdAt: new Date(Date.now() - TEST_MAX_TASK_WALL_MS * 3 - 500),
+  });
+  mockHasLiveExecution.mockResolvedValue(true);
+  await internal(scheduler).advanceTheme(
+    1,
+    100,
+    'priority',
+    1,
+    new Date(Date.now() - TEST_MAX_TASK_WALL_MS * 4).toISOString(),
+  );
+  expect(mockNotifyHangBackstop).toHaveBeenCalled();
 });
