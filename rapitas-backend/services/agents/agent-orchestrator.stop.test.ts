@@ -131,7 +131,10 @@ function internals(o: InstanceType<typeof AgentOrchestrator>): OrchestratorInter
 }
 
 const mockPrisma = {
-  agentExecution: { update: mock(() => Promise.resolve({})) },
+  agentExecution: {
+    update: mock(() => Promise.resolve({})),
+    updateMany: mock(() => Promise.resolve({ count: 1 })),
+  },
   userSettings: { findFirst: mock(() => Promise.resolve(null)) },
 };
 
@@ -172,6 +175,7 @@ beforeEach(() => {
   internals(orchestrator).activeExecutions.clear();
   internals(orchestrator).activeAgents.clear();
   mockPrisma.agentExecution.update.mockClear();
+  mockPrisma.agentExecution.updateMany.mockReset().mockResolvedValue({ count: 1 });
   getAgentMock.mockClear();
   getAgentMock.mockReturnValue(undefined);
   removeAgentMock.mockClear();
@@ -362,4 +366,29 @@ describe('stopAllForTasks', () => {
     expect(stopped).toEqual([20, 21]);
     expect(internals(orchestrator).activeAgents.size).toBe(0);
   });
+});
+
+test('persists cancellation before attempting the CLI stop and retains intent if stop fails', async () => {
+  const orchestrator = getOrchestrator();
+  const state = makeExecutionState({ executionId: 99, agentId: 'agent-99' });
+  internals(orchestrator).activeExecutions.set(99, state);
+  let persistedBeforeStop = false;
+  getAgentMock.mockReturnValue({
+    stop: async () => {
+      persistedBeforeStop = mockPrisma.agentExecution.updateMany.mock.calls.length === 1;
+      expect(mockPrisma.agentExecution.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 99,
+          status: {
+            in: ['pending', 'running', 'waiting_for_input', 'post_processing', 'canceling'],
+          },
+        },
+        data: { status: 'canceling', errorMessage: 'Cancellation requested' },
+      });
+      throw new Error('CLI stop failed');
+    },
+  });
+  expect(await orchestrator.stopExecution(99)).toBe(false);
+  expect(persistedBeforeStop).toBe(true);
+  expect(state.status).toBe('canceling');
 });

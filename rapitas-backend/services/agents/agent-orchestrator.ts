@@ -1,3 +1,4 @@
+import { persistCancellationIntent } from './orchestrator/cancellation-intent';
 /**
  * AgentOrchestrator (Facade)
  *
@@ -324,6 +325,7 @@ export class AgentOrchestrator {
 
     // Establish cancellation intent before awaiting the CLI, including failed stops.
     state.status = 'canceling';
+    await persistCancellationIntent(this.prisma, executionId);
     try {
       await agent.stop();
     } catch (error) {

@@ -16,7 +16,7 @@ import { releaseTaskExecutionLock } from './task-execution-lock';
 const log = createLogger('stop-task-agents');
 
 /** Execution statuses that represent an agent that is still alive. */
-const ACTIVE_EXECUTION_STATUSES = ['running', 'pending', 'waiting_for_input'] as const;
+const ACTIVE_EXECUTION_STATUSES = ['running', 'pending', 'waiting_for_input', 'canceling'] as const;
 
 export interface StopTaskAgentsResult {
   /** Number of agent executions that were asked to stop. / 停止要求した実行数 */
