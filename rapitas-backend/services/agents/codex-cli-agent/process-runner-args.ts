@@ -10,11 +10,17 @@
 import type { CodexCliAgentConfig } from './types';
 import { createLogger } from '../../../config/logger';
 import { buildSanitizedSpawnEnv } from '../../../utils/agent';
+import { escapeWindowsShellArg } from '../../../utils/common';
 
 const logger = createLogger('codex-cli-agent/process-runner-args');
 
 /**
  * Build the final spawn command and args for the given platform.
+ *
+ * On Windows, `codexPath` resolves to a `.cmd` shim whose body re-expands
+ * `%*` into a second command line that `cmd.exe` parses again, so `args`
+ * (unlike `codexPath` itself) needs the meta-character escape applied
+ * twice — see `escapeWindowsShellArg`'s `doubleEscapeMetaChars` parameter.
  */
 export function buildSpawnCommand(
   codexPath: string,
@@ -23,16 +29,8 @@ export function buildSpawnCommand(
 ): [string, string[]] {
   if (!isWindows) return [codexPath, args];
 
-  const argsString = args
-    .map((arg) => {
-      if (arg.includes(' ') || arg.includes('&') || arg.includes('|') || arg.includes('\n')) {
-        return `"${arg.replace(/"/g, '\\"')}"`;
-      }
-      return arg;
-    })
-    .join(' ');
-
-  const quotedPath = codexPath.includes(' ') ? `"${codexPath}"` : codexPath;
+  const argsString = args.map((arg) => escapeWindowsShellArg(arg, true)).join(' ');
+  const quotedPath = escapeWindowsShellArg(codexPath, false);
   return [`chcp 65001 >NUL 2>&1 && ${quotedPath} ${argsString}`, []];
 }
 

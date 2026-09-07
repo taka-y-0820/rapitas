@@ -305,7 +305,14 @@ describe('countHumanOriginTodo', () => {
     mockTaskCount.mockResolvedValue(2);
     expect(await countHumanOriginTodo(7)).toBe(2);
     expect(mockTaskCount).toHaveBeenCalledWith({
-      where: { themeId: 7, status: 'todo', parentId: null, autoCreatedFromBacklog: false },
+      where: {
+        themeId: 7,
+        status: 'todo',
+        parentId: null,
+        workflowDisabled: false,
+        OR: [{ workflowStatus: null }, { workflowStatus: { not: 'awaiting_question' } }],
+        autoCreatedFromBacklog: false,
+      },
     });
 
     mockTaskCount.mockRejectedValue(new Error('db down'));
