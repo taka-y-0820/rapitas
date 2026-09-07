@@ -126,8 +126,9 @@ ${trouble || '(記録なし)'}
  * When the addendum's comparison record carries a non-null `stagedTaskIds`
  * (set via the `/stage` endpoint after a passing comparison), the addendum is
  * a LIMITED-APPLICATION candidate: it is only returned for tasks in that
- * list, so it can be measured on a handful of tasks before wider rollout. No
- * comparison record, or `stagedTaskIds: null`, falls back to the original
+ * list, so it can be measured on a handful of tasks before wider rollout. An
+ * omitted task id cannot establish membership, so staged addenda are withheld.
+ * No comparison record, or `stagedTaskIds: null`, falls back to the original
  * apply-to-every-task behavior.
  *
  * @param role - Workflow role name. / ロール名
@@ -149,10 +150,10 @@ export async function getApprovedRoleAddendum(
     const text = row?.afterPrompt?.trim();
     if (!text) return null;
 
-    if (row && taskId !== undefined) {
+    if (row) {
       const comparison = readComparisonRecord(row.id);
       const stagedTaskIds = comparison?.stagedTaskIds ?? null;
-      if (stagedTaskIds !== null && !stagedTaskIds.includes(taskId)) {
+      if (stagedTaskIds !== null && (taskId === undefined || !stagedTaskIds.includes(taskId))) {
         return null;
       }
     }
