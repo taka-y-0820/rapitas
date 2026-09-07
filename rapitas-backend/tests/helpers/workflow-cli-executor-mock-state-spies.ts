@@ -80,6 +80,8 @@ export const spies = {
   taskUpdateMany: mock(() => Promise.resolve({ count: 0 })),
   taskFindUnique: mock(() => Promise.resolve(wf.taskHasLinkedPrRow)),
   agentSessionCreate: mock(() => Promise.resolve({ id: 100 })),
+  // Session finalization (executeCLIAgent's `finally`) — terminal status write.
+  agentSessionUpdate: mock(() => Promise.resolve({})),
   gitHubPrFindFirst: mock(() => Promise.resolve(wf.linkedPrRow)),
   agentExecutionUpdateMany: mock(() => Promise.resolve({ count: 0 })),
   agentExecutionFindFirst: mock(() => Promise.resolve(null)),

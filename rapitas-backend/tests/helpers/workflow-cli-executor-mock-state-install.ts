@@ -212,7 +212,7 @@ const prismaMock = {
     updateMany: spies.taskUpdateMany,
     findUnique: spies.taskFindUnique,
   },
-  agentSession: { create: spies.agentSessionCreate },
+  agentSession: { create: spies.agentSessionCreate, update: spies.agentSessionUpdate },
   gitHubPullRequest: { findFirst: spies.gitHubPrFindFirst },
   agentExecution: {
     updateMany: spies.agentExecutionUpdateMany,
