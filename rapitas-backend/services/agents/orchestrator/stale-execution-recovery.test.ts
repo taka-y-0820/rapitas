@@ -539,6 +539,78 @@ describe('recoverStaleExecutions() — 孤児セッションの終端整合', ()
     expect(result.updatedSessions).toBe(0);
   });
 
+  test('post_processing 中の実行を持つセッションは孤児と誤判定されない', async () => {
+    // 実測(session 3886〜3893): CLI 終了直後・後処理中のセッションが live 判定から
+    // 漏れて interrupted 化され、評価母集団から消えていた。
+    const prisma = makeMockPrisma({
+      agentExecution: {
+        findMany: mock(async () => []),
+        findFirst: mock(async () => null),
+        update: mock(async () => ({})),
+        count: mock(async (args: { where: { status: { in: string[] } } }) =>
+          args.where.status.in.includes('post_processing') ? 1 : 0,
+        ),
+      },
+      agentSession: {
+        findMany: mock(async () => [{ id: 3886 }]),
+        update: mock(async () => ({})),
+      },
+    });
+    const ctx = makeCtx(prisma);
+
+    const result = await recoverStaleExecutions(ctx);
+
+    expect(prisma.agentSession.update).not.toHaveBeenCalled();
+    expect(result.updatedSessions).toBe(0);
+  });
+
+  test('canceling 中の実行を持つセッションも孤児と誤判定されない', async () => {
+    const prisma = makeMockPrisma({
+      agentExecution: {
+        findMany: mock(async () => []),
+        findFirst: mock(async () => null),
+        update: mock(async () => ({})),
+        count: mock(async (args: { where: { status: { in: string[] } } }) =>
+          args.where.status.in.includes('canceling') ? 1 : 0,
+        ),
+      },
+      agentSession: {
+        findMany: mock(async () => [{ id: 3887 }]),
+        update: mock(async () => ({})),
+      },
+    });
+    const ctx = makeCtx(prisma);
+
+    expect((await recoverStaleExecutions(ctx)).updatedSessions).toBe(0);
+    expect(prisma.agentSession.update).not.toHaveBeenCalled();
+  });
+
+  test('全実行が終端なら従来どおり interrupted 化される(真の孤児は回収を続ける)', async () => {
+    const prisma = makeMockPrisma({
+      agentExecution: {
+        findMany: mock(async () => []),
+        findFirst: mock(async () => null),
+        update: mock(async () => ({})),
+        count: mock(async () => 0), // 未終端の実行が1件も無い = 真の孤児
+      },
+      agentSession: {
+        findMany: mock(async () => [{ id: 3888 }]),
+        update: mock(async () => ({})),
+      },
+    });
+    const ctx = makeCtx(prisma);
+
+    const result = await recoverStaleExecutions(ctx);
+
+    expect(result.updatedSessions).toBe(1);
+    expect(prisma.agentSession.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 3888 },
+        data: expect.objectContaining({ status: 'interrupted' }),
+      }),
+    );
+  });
+
   test('stale 実行ありの経路でも孤児セッション是正が実行され updatedSessions に合算される', async () => {
     const exec = makeStaleExecution({ id: 24, sessionId: 600 });
     const prisma = makeMockPrisma({
