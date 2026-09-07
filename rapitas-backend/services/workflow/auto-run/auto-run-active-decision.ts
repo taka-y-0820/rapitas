@@ -36,7 +36,8 @@ import {
 } from './auto-run-notifications';
 import { isTaskVanishedMessage } from '../queue-vanished-task-policy';
 import { releaseStaleActiveItems } from './auto-run-stall-guard';
-import { stopThemeExecutionImpl, broadcastAutoRunUpdateImpl } from './auto-run-lifecycle';
+import { broadcastAutoRunUpdateImpl } from './auto-run-lifecycle';
+import { stopTaskTreeAgents } from '../../agents/stop-task-agents';
 import { selectAndEnqueueNextTask } from './auto-run-advance-select';
 import { isOverlapHeld } from '../workflow-orchestrator-overlap-guard';
 import { recordTransition } from '../transition-recorder';
@@ -150,10 +151,7 @@ export async function advanceActiveTaskLocked(
       // surfaces in the NotificationBell (same pattern as the other auto-run
       // lifecycle notifications above).
       await notifyHangBackstop(themeId, currentTaskId, Math.round(MAX_TASK_WALL_MS / 60000));
-      await stopThemeExecutionImpl(prisma, themeId, currentTaskId, {
-        recordRevertTransition: false,
-        preserveChanges: true,
-      });
+      await stopTaskTreeAgents(currentTaskId);
       // Read the row BEFORE the blocked write so the transition below can
       // carry the pre-stop task.status (resolveTaskWorkflowState is the
       // existing task-resolver helper; it returns null on a DB miss).

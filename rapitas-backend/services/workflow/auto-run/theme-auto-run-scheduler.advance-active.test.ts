@@ -1,4 +1,7 @@
-import { mockResumeTransition } from './theme-auto-run-scheduler.test-support.collaborator-mocks';
+import {
+  mockStopTaskTreeAgents,
+  mockResumeTransition,
+} from './theme-auto-run-scheduler.test-support.collaborator-mocks';
 /**
  * theme-auto-run-scheduler.advance-active.test
  *
@@ -22,7 +25,6 @@ import {
   mockTaskUpdate,
   mockRevertChanges,
   mockResolveTaskWorkingDirectory,
-  mockStopThemeAgents,
   mockTransitionCount,
   mockOnTaskFailed,
   mockOnTaskCompleted,
@@ -56,6 +58,7 @@ function freshLastRunAt(): string {
 beforeEach(() => {
   resetAllMocks();
   mockResumeTransition.mockReset().mockResolvedValue(null);
+  mockStopTaskTreeAgents.mockClear();
   resetSchedulerSingleton();
   scheduler = ThemeAutoRunScheduler.getInstance();
   // Default: no active queue item and no terminal item, so tests that only
@@ -646,7 +649,7 @@ it('a hang timeout stops execution but preserves uncommitted work for diagnosis 
     theme: null,
   });
   await internal(scheduler).advanceTheme(1, 100, 'priority', 1, staleLastRunAt());
-  expect(mockStopThemeAgents).toHaveBeenCalledWith(1, 100, { errorMessage: 'Auto-run stopped' });
+  expect(mockStopTaskTreeAgents).toHaveBeenCalledWith(100);
   expect(mockRevertChanges).not.toHaveBeenCalled();
   expect(mockTaskUpdate).toHaveBeenCalledWith({ where: { id: 100 }, data: { status: 'blocked' } });
 });
