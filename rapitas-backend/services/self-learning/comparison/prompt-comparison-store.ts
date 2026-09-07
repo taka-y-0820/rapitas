@@ -224,7 +224,7 @@ export interface ComparisonInitResult {
  * @param seed - Identity of the candidate entering the trial. / 試行開始する候補の識別情報
  * @returns The usable record, or the reason staging must be held back. / 記録、または保留理由
  */
-export function initComparisonRecordForStaging(seed: {
+function initializeComparisonRecord(seed: {
   promptEvolutionId: number;
   role: string;
   modelName?: string | null;
@@ -337,4 +337,14 @@ function appendComparisonRun(
 /** Serialize all live outcome appends; a retry can never overwrite another result. */
 export function recordComparisonRun(id: number, arm: ComparisonArm, run: ComparisonRun): boolean {
   return withAlphaLedgerLock(recordFile(id), () => appendComparisonRun(id, arm, run)) === true;
+}
+
+/** Serialize first creation with appends and scope changes, preserving existing evidence. */
+export function initComparisonRecordForStaging(
+  seed: Parameters<typeof initializeComparisonRecord>[0],
+): ComparisonInitResult {
+  const result = withAlphaLedgerLock(recordFile(seed.promptEvolutionId), () =>
+    initializeComparisonRecord(seed),
+  );
+  return 'record' in result ? result : { record: null, issue: result.issue };
 }

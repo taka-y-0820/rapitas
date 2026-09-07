@@ -419,6 +419,12 @@ describe('autoApproveEligibleProposals — 既存比較記録の保護', () => {
 
   test('保留は繰り返し試行され、回復すれば staged へ進む', async () => {
     rows = [proposedRow(42, '- 提出前にlintを実行する')];
+    initComparisonRecordForStaging({
+      promptEvolutionId: 42,
+      role: 'implementer',
+      createdAt: new Date(0).toISOString(),
+    });
+    const backup = readFileSync(recordPath(42), 'utf8');
     writeRawRecord(42, '{ broken json');
 
     await autoApproveEligibleProposals();
@@ -426,8 +432,13 @@ describe('autoApproveEligibleProposals — 既存比較記録の保護', () => {
     expect(rows[0].status).toBe('proposed');
     expect(evidenceOf(42).comparisonInitRetries).toBe(2);
 
-    // 運用者が壊れたファイルを取り除いた後は自然に再開する。
+    // Deletion cannot establish that the measured evidence was empty.
     rmSync(recordPath(42));
+    const held = await autoApproveEligibleProposals();
+    expect(rows[0].status).toBe('proposed');
+    expect(held.staged).toBe(0);
+    // Restore the known record before retrying initialization.
+    writeRawRecord(42, backup);
     const result = await autoApproveEligibleProposals();
 
     expect(rows[0].status).toBe('staged');

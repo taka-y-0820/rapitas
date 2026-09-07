@@ -8,7 +8,7 @@
  * records instead of overwriting measured evidence with an empty one.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -306,3 +306,51 @@ describe('updateComparisonScope', () => {
     expect(readComparisonRecordStatus(504).kind).toBe('not_found');
   });
 });
+
+it('holds staging when a previously initialized evidence file disappears', () => {
+  expect(stage(601).issue).toBeNull();
+  expect(recordComparisonRun(601, 'current', trialRun())).toBe(true);
+  unlinkSync(join(tmpDir, '.prompt-comparisons', '601.json'));
+  expect(stage(601)).toEqual({ record: null, issue: 'corrupted' });
+  expect(readComparisonRecordStatus(601).kind).toBe('not_found');
+});
+
+it('concurrent processes initialize once and retain all measured outcomes', async () => {
+  const store = join(import.meta.dir, 'prompt-comparison-store.ts');
+  const children = Array.from({ length: 4 }, (_, worker) =>
+    Bun.spawn(
+      [
+        process.execPath,
+        '--eval',
+        `
+      const {initComparisonRecordForStaging, recordComparisonRun} = await import(${JSON.stringify(store)});
+      const seed = {promptEvolutionId:602,role:'implementer',createdAt:new Date(0).toISOString()};
+      for(let n=0;n<10;n++) {
+        const initialized=initComparisonRecordForStaging(seed);
+        if(initialized.issue) throw new Error(initialized.issue);
+        const run=${JSON.stringify(trialRun())};
+        run.executionId=${worker}*10+n+1;
+        run.taskId=run.executionId;
+        if(!recordComparisonRun(602,'current',run)) throw new Error('append failed');
+      }
+    `,
+      ],
+      { env: { ...process.env, RAPITAS_DATA_DIR: tmpDir }, stdout: 'pipe', stderr: 'pipe' },
+    ),
+  );
+  try {
+    const results = await Promise.all(
+      children.map(async (child) => ({
+        exit: await child.exited,
+        stderr: await new Response(child.stderr).text(),
+      })),
+    );
+    expect(results).toEqual(Array.from({ length: 4 }, () => ({ exit: 0, stderr: '' })));
+    const runs = readComparisonRecord(602)!.arms.flatMap((cell) => cell.runs);
+    expect(runs).toHaveLength(40);
+    expect(new Set(runs.map((run) => run.executionId)).size).toBe(40);
+  } finally {
+    for (const child of children) if (child.exitCode === null) child.kill();
+    await Promise.all(children.map((child) => child.exited));
+  }
+}, 20000);
