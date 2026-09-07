@@ -139,6 +139,62 @@ describe('generateProposalsForPending', () => {
   });
 });
 
+describe('generateProposalsForPending 品質ゲート', () => {
+  test('コードフェンスだけの生成結果はproposedに昇格しない', async () => {
+    rows = [pendingRow(10, 'implementer')];
+    aiResponse = '```\n\n```';
+    const n = await generateProposalsForPending();
+    expect(n).toBe(0);
+    expect(rows[0].status).toBe('pending');
+    expect(rows[0].afterPrompt).toBe('');
+  });
+
+  test('指示ファイルを要求する生成結果もproposedに昇格しない', async () => {
+    rows = [pendingRow(11, 'verifier')];
+    aiResponse = '- 判定基準を明記した指示ファイルを提供してください。';
+    expect(await generateProposalsForPending()).toBe(0);
+    expect(rows[0].status).toBe('pending');
+  });
+
+  test('不合格1〜2回目はpendingのままqualityRetriesが増える', async () => {
+    rows = [pendingRow(12, 'planner')];
+    aiResponse = '- どこを直せばよいですか？';
+
+    await generateProposalsForPending();
+    expect(rows[0].status).toBe('pending');
+    expect(JSON.parse(rows[0].evidenceJson ?? '{}').qualityRetries).toBe(1);
+
+    await generateProposalsForPending();
+    expect(rows[0].status).toBe('pending');
+    expect(JSON.parse(rows[0].evidenceJson ?? '{}').qualityRetries).toBe(2);
+  });
+
+  test('3回目の不合格でrejectedに確定し理由が記録される', async () => {
+    rows = [pendingRow(13, 'planner')];
+    aiResponse = '- どこを直せばよいですか？';
+
+    await generateProposalsForPending();
+    await generateProposalsForPending();
+    await generateProposalsForPending();
+
+    expect(rows[0].status).toBe('rejected');
+    const evidence = JSON.parse(rows[0].evidenceJson ?? '{}');
+    expect(evidence.qualityRetries).toBe(3);
+    expect(evidence.rejectionReason).toBe('question_only');
+  });
+
+  test('再試行で正常な追記が生成されればproposedに昇格する', async () => {
+    rows = [pendingRow(14, 'implementer')];
+    aiResponse = '```\n```';
+    await generateProposalsForPending();
+    expect(rows[0].status).toBe('pending');
+
+    aiResponse = '- 提出前にlintを実行する';
+    expect(await generateProposalsForPending()).toBe(1);
+    expect(rows[0].status).toBe('proposed');
+  });
+});
+
 describe('reviewProposal', () => {
   test('承認でapprovedになり、同ロールの旧承認はsupersededになる', async () => {
     rows = [

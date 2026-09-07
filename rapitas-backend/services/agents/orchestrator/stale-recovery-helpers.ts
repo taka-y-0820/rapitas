@@ -16,6 +16,22 @@ import { recordTransition } from '../../workflow/transition-recorder';
 const logger = createLogger('stale-recovery-helpers');
 
 /**
+ * Execution statuses that mean "this session is still doing something".
+ *
+ * NOTE: `post_processing` and `canceling` were missing, so a sweep that landed
+ * between the CLI exiting and post-processing finishing saw zero live rows and
+ * declared a healthy, nearly-finished session `interrupted` (task 893). Both
+ * are non-terminal, so neither may count as "no work left".
+ */
+const LIVE_EXECUTION_STATUSES = [
+  'running',
+  'pending',
+  'waiting_for_input',
+  'post_processing',
+  'canceling',
+] as const;
+
+/**
  * Marks affected sessions as interrupted when they have no remaining active executions.
  *
  * @param ctx - Orchestrator context / オーケストレーターコンテキスト
@@ -32,7 +48,7 @@ export async function updateAffectedSessions(
       const activeCount = await ctx.prisma.agentExecution.count({
         where: {
           sessionId,
-          status: { in: ['running', 'pending', 'waiting_for_input'] },
+          status: { in: [...LIVE_EXECUTION_STATUSES] },
         },
       });
 
@@ -56,9 +72,9 @@ export async function updateAffectedSessions(
 
 /**
  * Marks orphaned active/running sessions as interrupted when every one of
- * their executions is already terminal (no running/pending/waiting_for_input
- * row left). These sessions are invisible to the execution-keyed startup scan
- * and previously lingered forever as fake "active" state.
+ * their executions is already terminal (no LIVE_EXECUTION_STATUSES row left).
+ * These sessions are invisible to the execution-keyed startup scan and
+ * previously lingered forever as fake "active" state.
  *
  * @param ctx - Orchestrator context / オーケストレーターコンテキスト
  * @returns Number of sessions marked interrupted / 中断済みにしたセッション数
@@ -75,7 +91,7 @@ export async function reconcileOrphanedActiveSessions(ctx: OrchestratorContext):
         const liveCount = await ctx.prisma.agentExecution.count({
           where: {
             sessionId: session.id,
-            status: { in: ['running', 'pending', 'waiting_for_input'] },
+            status: { in: [...LIVE_EXECUTION_STATUSES] },
           },
         });
         if (liveCount === 0) {
