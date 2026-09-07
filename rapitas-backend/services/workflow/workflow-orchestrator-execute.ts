@@ -15,6 +15,7 @@ import {
 import { isShutdownError } from '../agents/orchestrator/shutdown-error';
 import { tryProviderFallback, hasProviderErrorInOutput } from './workflow-provider-fallback';
 import type { RoleTransition, WorkflowStatus } from './workflow-types';
+import type { ComparisonAssignment } from '../self-learning/comparison/prompt-comparison-types';
 import { resolveExecutableAgentConfig } from './workflow-orchestrator-agent-config';
 import type { ResolvedTask } from './workflow-orchestrator-preflight';
 
@@ -35,6 +36,8 @@ export async function executeAgentWithFallback(params: {
   transition: RoleTransition;
   systemPromptContent: string;
   context: string;
+  /** Prompt-comparison arm this phase was assigned to, carried to the run recorder. */
+  comparisonAssignment: ComparisonAssignment | null;
   language: 'ja' | 'en';
   agentConfig: {
     id: number;
@@ -55,6 +58,7 @@ export async function executeAgentWithFallback(params: {
     transition,
     systemPromptContent,
     context,
+    comparisonAssignment,
     language,
     agentConfig,
     effectiveModelId,
@@ -82,6 +86,7 @@ export async function executeAgentWithFallback(params: {
         language,
         advanceFn,
         devConfigFn,
+        comparisonAssignment,
       );
     }
     return await executeAPIAgent(

@@ -324,3 +324,43 @@ describe('settleApprovedEvolutions — staged scope + auto-promote', () => {
     expect(readComparisonRecord(14)?.stagedTaskIds).toEqual([810, 812]);
   });
 });
+
+describe('settleApprovedEvolutions — staged 行との相互排他', () => {
+  test('status=staged の行は問い合わせ対象に入らず、昇格判定も発火しない', async () => {
+    // 限定試行中(staged)と承認済み(approved)を混在させ、where を実際に評価する。
+    const all = [
+      {
+        id: 1,
+        status: 'staged',
+        basePromptKey: 'workflow_role_implementer',
+        evidenceJson: '{"successRate":0.5,"approvedAt":"2026-08-01T00:00:00.000Z"}',
+        afterPrompt: '- lintを実行する',
+      },
+      {
+        id: 2,
+        status: 'approved',
+        basePromptKey: 'workflow_role_verifier',
+        evidenceJson: '{"successRate":0.5,"approvedAt":"2026-08-01T00:00:00.000Z"}',
+        afterPrompt: '- 型チェックを通す',
+      },
+    ];
+    const updates: Array<{ where: { id: number } }> = [];
+    const prisma = {
+      promptEvolution: {
+        findMany: (args: { where: { status: string } }) =>
+          Promise.resolve(all.filter((r) => r.status === args.where.status)),
+        update: (args: { where: { id: number } }) => {
+          updates.push(args);
+          return Promise.resolve(args);
+        },
+      },
+    };
+    const evaluate = mock(() => Promise.resolve({ totalRuns: 10, successRate: 0.9 }));
+
+    const settled = await settleApprovedEvolutions(prisma, evaluate, () => new Date());
+
+    expect(settled).toBe(1);
+    // staged 行(id:1)には一切触れない = auto-approve 側の昇格判定と二重発火しない。
+    expect(updates.map((u) => u.where.id)).toEqual([2]);
+  });
+});

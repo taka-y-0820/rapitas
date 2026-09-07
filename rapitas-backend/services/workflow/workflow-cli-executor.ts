@@ -7,6 +7,10 @@
  * post-processing modules. Not responsible for prompt text, worktree
  * resolution, or phase-status gating — see the sibling
  * workflow-cli-executor-* modules.
+ *
+ * Session finalization is delegated to workflow-phase-session (conditional
+ * write — a stopped session is never overwritten); this module only decides
+ * WHEN the phase is over.
  */
 import { prisma } from '../../config';
 import { AgentOrchestrator } from '../agents/agent-orchestrator';
@@ -18,6 +22,8 @@ import { buildCliAgentPrompt } from './workflow-cli-executor-prompt';
 import { harvestInvestigationOutput, runPhaseEpilogue } from './workflow-cli-executor-epilogue';
 import { runPostProcessing } from './workflow-cli-executor-postprocess';
 import { resumeSessionIdFor } from './phase-session-resume';
+import { finalizePhaseSession } from './workflow-phase-session';
+import type { ComparisonAssignment } from '../self-learning/comparison/prompt-comparison-types';
 
 // Disk-existence guard for reusing a recorded worktree. Re-exported here so the
 // existing worktree-reuse.test.ts import path keeps working; the single source
@@ -26,25 +32,60 @@ import { resumeSessionIdFor } from './phase-session-resume';
 export { canReuseWorktree } from '../agents/orchestrator/git-operations/worktree/worktree-usable';
 
 /**
- * Drive the AgentSession this phase created to a terminal status.
+ * Append this phase's outcome to the comparison record of the candidate under
+ * limited trial, so the trial is judged on REAL executions (id, cost, duration,
+ * failure cause) rather than on the arm assignment alone.
  *
- * NOTE: the session was created 'active' and nothing ever updated it, so every
- * CLI-driven role left its session 'active' until the orphan sweep relabelled
- * it 'interrupted'. That erased the population every outcome measurement reads
- * (prompt-evolution, role evidence) — task 893. Best-effort by design: a
- * bookkeeping write must never change the phase's own result.
+ * Best-effort: a missing record, an unreadable execution row or a write failure
+ * costs one sample and never the phase.
  *
+ * @param assignment - Arm this phase ran under, or null when nothing is staged. / 実行したアーム
+ * @param taskId - Task the phase belongs to. / 対象タスクID
  * @param sessionId - Session opened for this phase. / このフェーズのセッションID
  * @param success - Whether the phase succeeded. / フェーズが成功したか
+ * @param phaseStartedAt - When the phase began, for the duration fallback. / フェーズ開始時刻
  */
-async function finalizeAgentSession(sessionId: number, success: boolean): Promise<void> {
+async function recordTrialRun(
+  assignment: ComparisonAssignment | null,
+  taskId: number,
+  sessionId: number,
+  success: boolean,
+  phaseStartedAt: Date,
+): Promise<void> {
+  if (!assignment) return;
   try {
-    await prisma.agentSession.update({
-      where: { id: sessionId },
-      data: { status: success ? 'completed' : 'failed', lastActivityAt: new Date() },
+    const execution = await prisma.agentExecution.findFirst({
+      where: { sessionId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        status: true,
+        errorMessage: true,
+        costUsd: true,
+        executionTimeMs: true,
+      },
+    });
+    if (!execution) return;
+    const { classifyFailureCause } =
+      await import('../self-learning/comparison/prompt-comparison-metrics');
+    const { recordComparisonRun } =
+      await import('../self-learning/comparison/prompt-comparison-store');
+    recordComparisonRun(assignment.promptEvolutionId, assignment.arm, {
+      taskId,
+      executionId: execution.id,
+      success,
+      // costUsd is a Prisma Decimal — Number() is the documented conversion.
+      costUsd: Number(execution.costUsd ?? 0),
+      durationMs: execution.executionTimeMs ?? Date.now() - phaseStartedAt.getTime(),
+      failureCause: success
+        ? null
+        : classifyFailureCause({ status: execution.status, errorMessage: execution.errorMessage }),
+      role: assignment.role,
+      injected: assignment.injected,
+      injectedVersion: assignment.injectedVersion,
     });
   } catch {
-    /* session bookkeeping is never worth failing (or delaying) the phase for */
+    /* a lost comparison sample is never worth failing (or delaying) the phase for */
   }
 }
 
@@ -65,6 +106,7 @@ async function finalizeAgentSession(sessionId: number, success: boolean): Promis
  * @param language - Output language. / 出力言語
  * @param advanceWorkflow - Callback to start the next phase (for auto-advance). / 次フェーズを開始するコールバック
  * @param getOrCreateDevConfig - Callback to resolve the dev config record. / devConfigレコードを解決するコールバック
+ * @param comparisonAssignment - Prompt-comparison arm this phase runs under, if any. / このフェーズの比較アーム割当
  * @returns Phase execution result. / フェーズ実行結果
  */
 export async function executeCLIAgent(
@@ -77,6 +119,7 @@ export async function executeCLIAgent(
   language: 'ja' | 'en',
   advanceWorkflow: (taskId: number, language: 'ja' | 'en') => Promise<WorkflowAdvanceResult>,
   getOrCreateDevConfig: (taskId: number) => Promise<{ id: number }>,
+  comparisonAssignment: ComparisonAssignment | null = null,
 ): Promise<WorkflowAdvanceResult> {
   const orchestrator = AgentOrchestrator.getInstance(prisma);
 
@@ -212,6 +255,16 @@ export async function executeCLIAgent(
 
     return finalResult;
   } finally {
-    await finalizeAgentSession(session.id, sessionSucceeded);
+    // The comparison sample is recorded BEFORE the session is finalized: the
+    // run's own outcome is what the trial measures, and it must not be skipped
+    // when the finalization write races another owner and no-ops.
+    await recordTrialRun(
+      comparisonAssignment,
+      taskId,
+      session.id,
+      sessionSucceeded,
+      phaseStartedAt,
+    );
+    await finalizePhaseSession(session.id, sessionSucceeded);
   }
 }

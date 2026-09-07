@@ -89,7 +89,8 @@ mock.module('../../config/database', () => ({
 
 const { generateProposalsForPending, getApprovedRoleAddendum, reviewProposal, listProposals } =
   await import('./prompt-evolution-worker');
-const { writeComparisonRecord } = await import('./comparison/prompt-comparison-store');
+const { readComparisonRecord, writeComparisonRecord } =
+  await import('./comparison/prompt-comparison-store');
 
 function pendingRow(id: number, role: string): EvoRow {
   return {
@@ -215,9 +216,52 @@ describe('reviewProposal', () => {
     expect(rows[0].status).toBe('rejected');
   });
 
-  test('proposed以外の行はレビューできない', async () => {
+  test('proposed / staged 以外の行はレビューできない', async () => {
     rows = [{ ...pendingRow(4, 'verifier'), status: 'approved' }];
     expect(await reviewProposal(4, true)).toBe(false);
+    rows = [{ ...pendingRow(5, 'verifier'), status: 'completed' }];
+    expect(await reviewProposal(5, true)).toBe(false);
+    rows = [{ ...pendingRow(6, 'verifier'), status: 'rejected' }];
+    expect(await reviewProposal(6, false)).toBe(false);
+  });
+});
+
+describe('reviewProposal — 限定試行(staged)行', () => {
+  let tmpDir: string;
+  let savedDataDir: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'rapitas-review-staged-'));
+    savedDataDir = process.env.RAPITAS_DATA_DIR;
+    process.env.RAPITAS_DATA_DIR = tmpDir;
+  });
+
+  afterEach(() => {
+    if (savedDataDir === undefined) delete process.env.RAPITAS_DATA_DIR;
+    else process.env.RAPITAS_DATA_DIR = savedDataDir;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('採用時は限定スコープ(stagedTaskIds)を解除して全体適用にする', async () => {
+    rows = [{ ...pendingRow(30, 'implementer'), status: 'staged', afterPrompt: '追記テキスト' }];
+    writeComparisonRecord(comparisonRecord({ promptEvolutionId: 30, stagedTaskIds: [810] }));
+
+    expect(await reviewProposal(30, true)).toBe(true);
+
+    expect(rows[0].status).toBe('approved');
+    expect(readComparisonRecord(30)?.stagedTaskIds).toBeNull();
+    // 解除されていないと、全体採用したはずの追記が試行対象タスクだけに残る。
+    expect(await getApprovedRoleAddendum('implementer', 999)).toBe('追記テキスト');
+  });
+
+  test('撤回時は限定スコープを触らずrejectedにする', async () => {
+    rows = [{ ...pendingRow(31, 'implementer'), status: 'staged', afterPrompt: '追記テキスト' }];
+    writeComparisonRecord(comparisonRecord({ promptEvolutionId: 31, stagedTaskIds: [810] }));
+
+    expect(await reviewProposal(31, false)).toBe(true);
+
+    expect(rows[0].status).toBe('rejected');
+    expect(readComparisonRecord(31)?.stagedTaskIds).toEqual([810]);
   });
 });
 

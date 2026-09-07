@@ -1,10 +1,9 @@
 /**
  * Workflow Orchestrator — Execution Context
  *
- * Fourth stage of runAdvanceWorkflow: role context assembly (with approved and
- * experimental prompt addenda), effective model resolution via Smart Router,
- * and task-status reconciliation right before the run. Moved verbatim from
- * workflow-orchestrator.ts (file-size ratchet, task 627); behavior is unchanged.
+ * Fourth stage of runAdvanceWorkflow: role context assembly (with approved,
+ * limited-trial and experimental prompt addenda), effective model resolution
+ * via Smart Router, and task-status reconciliation right before the run.
  */
 import { prisma } from '../../config';
 import { createLogger } from '../../config/logger';
@@ -12,18 +11,25 @@ import { buildRoleContext } from './workflow-context-builder';
 import type { RoleTransition, WorkflowMode, WorkflowStatus } from './workflow-types';
 import type { ResolvedTask } from './workflow-orchestrator-preflight';
 import { routeModelForRole, shouldAutoSelectModel } from './role-route-inputs';
+import type { ComparisonAssignment } from '../self-learning/comparison/prompt-comparison-types';
 
 const log = createLogger('workflow-orchestrator');
 
 /**
- * Builds the role context and appends the approved / experimental addenda.
+ * Builds the role context and appends the approved / trial / experimental
+ * addenda.
+ *
+ * At most ONE prompt-evolution addendum is appended: an approved rollout wins,
+ * and only when there is none does a `staged` candidate get its limited-trial
+ * assignment. Stacking both would make the resulting run unattributable to
+ * either.
  *
  * @param taskId - The task whose workflow should advance. / ワークフローを進めるタスクID
  * @param transition - Transition about to execute. / 実行予定の遷移
  * @param task - Resolved task row. / 解決済みタスク行
  * @param language - Language for generated content. / 生成コンテンツの言語
  * @param workflowMode - Effective workflow mode. / 有効なワークフローモード
- * @returns Assembled context string. / 組み立てたコンテキスト
+ * @returns Context string plus the comparison arm this phase was assigned to. / コンテキストと比較アーム割当
  */
 export async function buildExecutionContext(
   taskId: number,
@@ -31,22 +37,33 @@ export async function buildExecutionContext(
   task: ResolvedTask,
   language: 'ja' | 'en',
   workflowMode: WorkflowMode,
-): Promise<string> {
+): Promise<{ context: string; comparisonAssignment: ComparisonAssignment | null }> {
   let context = await buildRoleContext(taskId, transition.role, task, language, workflowMode);
+  let comparisonAssignment: ComparisonAssignment | null = null;
 
-  // Human-approved prompt-evolution addendum for this role (proposed by the
-  // weekly evolution pipeline, approved on /system-prompts). Appended at the
-  // single orchestration call site so every workflow role gets it without
-  // touching each buildRoleContext case. Best-effort.
+  // Human-approved (or trial-adopted) prompt-evolution addendum for this role.
+  // Appended at the single orchestration call site so every workflow role gets
+  // it without touching each buildRoleContext case. Best-effort.
+  let approved: { promptEvolutionId: number; text: string } | null = null;
   try {
-    const { getApprovedRoleAddendum } = await import('../self-learning/prompt-evolution-worker');
-    const addendum = await getApprovedRoleAddendum(transition.role, taskId);
-    if (addendum) {
-      context += `\n\n## 承認済みの改善ガイダンス(プロンプト進化)\n\n${addendum}`;
-      // Observability: role-evidence success rates before/after this line
-      // starts appearing are the evolution's measured effect.
+    const { getApprovedRoleAddendumDetail } =
+      await import('../self-learning/prompt-evolution-worker');
+    approved = await getApprovedRoleAddendumDetail(transition.role, taskId);
+    if (approved) {
+      context += `\n\n## 承認済みの改善ガイダンス(プロンプト進化)\n\n${approved.text}`;
+      // Observability: the candidate id and text checksum make the injection
+      // attributable to an exact version — logging taskId/role alone left no
+      // way to tell WHICH addendum a run actually saw.
+      const { addendumVersionHash } =
+        await import('../self-learning/comparison/prompt-comparison-store');
       log.info(
-        { taskId, role: transition.role },
+        {
+          taskId,
+          role: transition.role,
+          promptEvolutionId: approved.promptEvolutionId,
+          version: addendumVersionHash(approved.text),
+          arm: 'approved',
+        },
         '[prompt-evolution] Approved addendum injected into role context',
       );
     }
@@ -54,19 +71,63 @@ export async function buildExecutionContext(
     // Addendum injection must never block the run.
   }
 
+  // Limited trial for a `staged` candidate — only when no approved addendum
+  // occupies this role. The arm is decided here, but `injected` is only set
+  // after the text is actually appended: an assignment alone is not evidence
+  // that the intervention reached the prompt.
+  if (!approved) {
+    try {
+      const { getStagedRoleAddendumForTrial } =
+        await import('../self-learning/prompt-evolution-staged-trial');
+      const trial = await getStagedRoleAddendumForTrial(transition.role, taskId);
+      if (trial) {
+        comparisonAssignment = trial.assignment;
+        if (trial.addendum) {
+          context += `\n\n## 限定試行中の改善ガイダンス(効果測定中)\n\n${trial.addendum}`;
+          comparisonAssignment.injected = true;
+          comparisonAssignment.injectedVersion = trial.version;
+        }
+        log.info(
+          {
+            taskId,
+            role: transition.role,
+            promptEvolutionId: comparisonAssignment.promptEvolutionId,
+            arm: comparisonAssignment.arm,
+            injected: comparisonAssignment.injected,
+            version: comparisonAssignment.injectedVersion,
+          },
+          '[prompt-evolution] Limited-trial arm resolved for this phase',
+        );
+      }
+    } catch {
+      // A failed trial assignment costs one sample, never the run.
+    }
+  }
+
   // Active-experiment intervention (hypothesis-driven self-experiment loop).
-  // Deliberately a SEPARATE path from the approved addendum above: the text
-  // is unapproved and under measurement, so it carries its own heading and
-  // never touches getApprovedRoleAddendum's status='approved' semantics.
+  // Deliberately a SEPARATE path from the addenda above: the text is
+  // unapproved and under a different measurement, so it carries its own
+  // heading and never touches getApprovedRoleAddendum's status semantics.
   // Best-effort.
   try {
-    const { getActiveExperimentAddendum } =
+    const { getActiveExperimentInjection } =
       await import('../self-learning/experiment-loop/experiment-store');
-    const experimentAddendum = await getActiveExperimentAddendum(transition.role);
-    if (experimentAddendum) {
-      context += `\n\n## 実験中の改善ガイダンス(未承認・効果測定中)\n\n${experimentAddendum}`;
+    const experiment = await getActiveExperimentInjection(transition.role);
+    if (experiment) {
+      context += `\n\n## 実験中の改善ガイダンス(未承認・効果測定中)\n\n${experiment.addendum}`;
+      // Same audit fields as the two paths above, so one log query answers
+      // "which text did task X's role Y actually run under" for every path.
+      const { addendumVersionHash } =
+        await import('../self-learning/comparison/prompt-comparison-store');
       log.info(
-        { taskId, role: transition.role },
+        {
+          taskId,
+          role: transition.role,
+          experimentId: experiment.experimentId,
+          hypothesisId: experiment.hypothesisId,
+          version: addendumVersionHash(experiment.addendum),
+          arm: 'experiment',
+        },
         '[experiment] Active-experiment addendum injected into role context',
       );
     }
@@ -74,7 +135,7 @@ export async function buildExecutionContext(
     // Experiment injection must never block the run.
   }
 
-  return context;
+  return { context, comparisonAssignment };
 }
 
 /**

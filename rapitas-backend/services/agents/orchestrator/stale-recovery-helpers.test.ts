@@ -2,7 +2,10 @@
  * stale-recovery-helpers unit tests
  *
  * Covers updateAffectedTasks — the todo-revert path that must also record a
- * WorkflowTransition so the self-incident watcher's recovery grace applies.
+ * WorkflowTransition so the self-incident watcher's recovery grace applies —
+ * plus the session-recovery guards: non-terminal executions keep a session
+ * live, and the conditional write refuses to relabel a session that reached a
+ * terminal status between the count and the update.
  */
 import { describe, test, expect, mock } from 'bun:test';
 
@@ -15,8 +18,61 @@ mock.module('../../workflow/transition-recorder', () => ({
   recordTransition: mockRecordTransition,
 }));
 
-const { updateAffectedTasks } = await import('./stale-recovery-helpers');
+const { updateAffectedTasks, updateAffectedSessions, reconcileOrphanedActiveSessions } =
+  await import('./stale-recovery-helpers');
 import type { OrchestratorContext } from './types';
+
+for (const status of ['post_processing', 'canceling', 'waiting_for_input']) {
+  test(`session recovery preserves ${status} executions`, async () => {
+    const update = mock(async () => ({}));
+    const ctx = {
+      serverStartedAt: new Date(),
+      prisma: {
+        agentSession: { findMany: async () => [{ id: 1 }], update },
+        agentExecution: {
+          count: async (args: { where: { status: { in: string[] } } }) =>
+            args.where.status.in.includes(status) ? 1 : 0,
+        },
+      },
+    } as unknown as OrchestratorContext;
+    expect(await updateAffectedSessions(ctx, new Set([1]))).toBe(0);
+    expect(await reconcileOrphanedActiveSessions(ctx)).toBe(0);
+    expect(update).not.toHaveBeenCalled();
+  });
+}
+
+test('session completion between count and update is protected by the conditional write', async () => {
+  const update = mock(async (args: { where: { status?: { in: string[] } } }) => {
+    // The phase finished after the recovery count returned zero.
+    if (args.where.status && !args.where.status.in.includes('completed')) {
+      throw new Error('P2025: conditional update matched no session');
+    }
+    return {};
+  });
+  const ctx = {
+    prisma: { agentExecution: { count: async () => 0 }, agentSession: { update } },
+  } as unknown as OrchestratorContext;
+  expect(await updateAffectedSessions(ctx, new Set([1]))).toBe(0);
+  expect(update).toHaveBeenCalledTimes(1);
+});
+
+test('orphan reconciliation ignores sessions created after this process started', async () => {
+  const findMany = mock(async (_args: unknown) => []);
+  const ctx = {
+    serverStartedAt: new Date('2026-09-08T00:00:00Z'),
+    prisma: { agentSession: { findMany }, agentExecution: { count: async () => 0 } },
+  } as unknown as OrchestratorContext;
+
+  await reconcileOrphanedActiveSessions(ctx);
+
+  expect(findMany).toHaveBeenCalledWith({
+    where: {
+      status: { in: ['active', 'running'] },
+      createdAt: { lt: ctx.serverStartedAt },
+    },
+    select: { id: true },
+  });
+});
 
 function makeCtx(
   taskFindUnique: ReturnType<typeof mock>,

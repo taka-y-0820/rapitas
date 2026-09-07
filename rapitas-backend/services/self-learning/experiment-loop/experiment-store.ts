@@ -154,8 +154,38 @@ export function listExperimentHistory(limit = 50): ExperimentHistoryEntry[] {
  * @returns Addendum text or null. / 介入文 or null
  */
 export async function getActiveExperimentAddendum(role: string): Promise<string | null> {
+  return (await getActiveExperimentInjection(role))?.addendum ?? null;
+}
+
+/** An active experiment's intervention text together with the experiment it belongs to. */
+export interface ExperimentInjection {
+  /** Active experiment id (`exp_<hypothesisId>_<startedAtEpoch>`). */
+  experimentId: string;
+  /** Hypothesis under test. */
+  hypothesisId: number;
+  /** Intervention text to append to the role prompt. */
+  addendum: string;
+}
+
+/**
+ * Same selection as getActiveExperimentAddendum, but also reports WHICH
+ * experiment the text belongs to.
+ *
+ * The orchestrator logs the injection from this, so the experiment path leaves
+ * the same audit trail as the prompt-evolution paths — which candidate, which
+ * version, which task. Recording only taskId/role left no way to tell what a
+ * given run actually saw. Kept as a separate reader so this module stays
+ * dependency-free (no logger import), same policy as experiment-types.ts.
+ *
+ * @param role - Workflow role about to run. / 実行直前のロール
+ * @returns Injection detail or null. / 注入情報 or null
+ */
+export async function getActiveExperimentInjection(
+  role: string,
+): Promise<ExperimentInjection | null> {
   const experiment = readActiveExperiment();
   if (!experiment || experiment.role !== role) return null;
-  const text = experiment.addendum.trim();
-  return text || null;
+  const addendum = experiment.addendum.trim();
+  if (!addendum) return null;
+  return { experimentId: experiment.id, hypothesisId: experiment.hypothesisId, addendum };
 }

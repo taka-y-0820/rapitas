@@ -267,11 +267,16 @@ describe('executeCLIAgent — AgentSession の終端化', () => {
   test('成功したフェーズはセッションを completed にする', async () => {
     await run(implementerTransition(), noopAdvance);
 
-    expect(spies.agentSessionUpdate).toHaveBeenCalledTimes(1);
-    const [call] = spies.agentSessionUpdate.mock.calls[0] as [
-      { where: { id: number }; data: { status: string; lastActivityAt: Date } },
+    expect(spies.agentSessionUpdateMany).toHaveBeenCalledTimes(1);
+    const [call] = spies.agentSessionUpdateMany.mock.calls[0] as [
+      {
+        where: { id: number; status: { in: string[] } };
+        data: { status: string; lastActivityAt: Date };
+      },
     ];
-    expect(call.where).toEqual({ id: 100 });
+    expect(call.where.id).toBe(100);
+    // 停止済み状態を上書きしないための条件付き書き込みであること。
+    expect(call.where.status).toEqual({ in: ['active', 'running'] });
     expect(call.data.status).toBe('completed');
     expect(call.data.lastActivityAt).toBeInstanceOf(Date);
   });
@@ -286,7 +291,7 @@ describe('executeCLIAgent — AgentSession の終端化', () => {
     const result = await run(implementerTransition(), noopAdvance);
 
     expect(result.success).toBe(false);
-    const [call] = spies.agentSessionUpdate.mock.calls[0] as [{ data: { status: string } }];
+    const [call] = spies.agentSessionUpdateMany.mock.calls[0] as [{ data: { status: string } }];
     expect(call.data.status).toBe('failed');
   });
 
@@ -297,17 +302,28 @@ describe('executeCLIAgent — AgentSession の終端化', () => {
 
     await expect(run(implementerTransition(), noopAdvance)).rejects.toThrow('epilogue exploded');
 
-    expect(spies.agentSessionUpdate).toHaveBeenCalledTimes(1);
-    const [call] = spies.agentSessionUpdate.mock.calls[0] as [{ data: { status: string } }];
+    expect(spies.agentSessionUpdateMany).toHaveBeenCalledTimes(1);
+    const [call] = spies.agentSessionUpdateMany.mock.calls[0] as [{ data: { status: string } }];
     // 例外時点では effectiveSuccess が確定していない — active のまま放置せず failed に落とす。
     expect(call.data.status).toBe('failed');
   });
 
   test('セッション更新の失敗はフェーズ結果に影響しない', async () => {
-    spies.agentSessionUpdate.mockImplementationOnce(() => Promise.reject(new Error('db down')));
+    spies.agentSessionUpdateMany.mockImplementationOnce(() => Promise.reject(new Error('db down')));
 
     const result = await run(implementerTransition(), noopAdvance);
 
+    expect(result.success).toBe(true);
+  });
+
+  test('停止済みセッションは条件不一致で更新0件になり上書きされない', async () => {
+    // 実DBの updateMany セマンティクス: where 不一致は例外ではなく count:0。
+    spies.agentSessionUpdateMany.mockImplementationOnce(() => Promise.resolve({ count: 0 }));
+
+    const result = await run(implementerTransition(), noopAdvance);
+
+    // 再試行して無条件に上書きし直したりしないこと。
+    expect(spies.agentSessionUpdateMany).toHaveBeenCalledTimes(1);
     expect(result.success).toBe(true);
   });
 });

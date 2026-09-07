@@ -20,9 +20,14 @@ const log = createLogger('self-learning:prompt-evolution-settle');
 /**
  * Environment escape hatch for low-risk auto-promotion (default OFF — a
  * human must always clear `stagedTaskIds` manually unless this is set).
+ * Shared with prompt-evolution-auto-approve so the limited trial's adoption
+ * step and this module's staged promotion are gated by the SAME switch rather
+ * than two copies that can drift apart.
  * / 低リスク自動昇格の有効化フラグ（既定オフ）
+ *
+ * @returns True when unattended promotion is enabled. / 無人昇格が有効なら true
  */
-function autoPromoteEnabled(): boolean {
+export function autoPromoteEnabled(): boolean {
   return process.env.RAPITAS_PROMPT_AUTO_PROMOTE === 'true';
 }
 

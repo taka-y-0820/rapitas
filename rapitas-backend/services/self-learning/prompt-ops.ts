@@ -122,8 +122,11 @@ export function summarizePromptEvolution(
     const completed = sorted.filter((r) => r.status === 'completed');
     // NOTE: pending used to be "everything not completed", which counted
     // approved and rejected rows as still waiting (audit 2026-09-06).
+    // 'staged' (candidate under a limited trial, task 894) is still waiting on
+    // a verdict, so it belongs here — otherwise a candidate under measurement
+    // is counted in entryCount but appears in no bucket at all.
     const pendingCount = sorted.filter(
-      (r) => r.status === 'pending' || r.status === 'proposed',
+      (r) => r.status === 'pending' || r.status === 'proposed' || r.status === 'staged',
     ).length;
     const approvedCount = sorted.filter((r) => r.status === 'approved').length;
     const rejectedCount = sorted.filter((r) => r.status === 'rejected').length;

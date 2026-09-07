@@ -1,0 +1,139 @@
+/**
+ * prompt-evolution-staged-trial テスト
+ *
+ * 限定試行のアーム割当を検証する。対照/介入が決定的に交互配分されること、
+ * カウンタが永続化され再起動後も継続すること、同一ロールに複数の staged 候補が
+ * あっても最新1件のみが使われること、割当時点では injected=false であること。
+ * Own file — mock.module is process-global.
+ */
+import { describe, test, expect, mock, beforeEach } from 'bun:test';
+
+const noopLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
+mock.module('../../config/logger', () => ({
+  createLogger: () => noopLogger,
+  logger: noopLogger,
+  getBackendLogFilePath: () => '',
+}));
+
+interface EvoRow {
+  id: number;
+  basePromptKey: string;
+  afterPrompt: string;
+  evidenceJson: string | null;
+  status: string;
+}
+
+let rows: EvoRow[] = [];
+let findFirstArgs: unknown = null;
+
+mock.module('../../config/database', () => ({
+  ensureDatabaseConnection: mock(async () => {}),
+  prisma: {
+    promptEvolution: {
+      findFirst: mock((args: { where: { basePromptKey: string; status: string } }) => {
+        findFirstArgs = args;
+        const matched = rows
+          .filter(
+            (r) => r.basePromptKey === args.where.basePromptKey && r.status === args.where.status,
+          )
+          .sort((a, b) => b.id - a.id);
+        return Promise.resolve(matched[0] ?? null);
+      }),
+      update: mock((args: { where: { id: number }; data: Partial<EvoRow> }) => {
+        const row = rows.find((r) => r.id === args.where.id);
+        if (row) Object.assign(row, args.data);
+        return Promise.resolve(row);
+      }),
+    },
+  },
+}));
+
+const { getStagedRoleAddendumForTrial } = await import('./prompt-evolution-staged-trial');
+
+function stagedRow(id: number, evidenceJson: string | null = '{}'): EvoRow {
+  return {
+    id,
+    basePromptKey: 'workflow_role_implementer',
+    afterPrompt: '- 提出前にlintを実行する',
+    evidenceJson,
+    status: 'staged',
+  };
+}
+
+function counterOf(id: number): unknown {
+  return (
+    JSON.parse(rows.find((r) => r.id === id)?.evidenceJson ?? '{}') as Record<string, unknown>
+  ).stagedSampleCount;
+}
+
+beforeEach(() => {
+  rows = [];
+  findFirstArgs = null;
+});
+
+describe('getStagedRoleAddendumForTrial', () => {
+  test('staged候補が無ければnull(承認済み経路には一切触れない)', async () => {
+    rows = [{ ...stagedRow(1), status: 'approved' }];
+    expect(await getStagedRoleAddendumForTrial('implementer', 10)).toBeNull();
+    expect(findFirstArgs).toMatchObject({ where: { status: 'staged' } });
+  });
+
+  test('カウンタの偶奇で current/candidate を交互に配分する', async () => {
+    rows = [stagedRow(1)];
+    const arms: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const trial = await getStagedRoleAddendumForTrial('implementer', 100 + i);
+      arms.push(trial!.assignment.arm);
+    }
+    expect(arms).toEqual(['current', 'candidate', 'current', 'candidate']);
+    expect(counterOf(1)).toBe(4);
+  });
+
+  test('カウンタはDBに永続化され、再起動後も同じ列を継続する', async () => {
+    // 3回分の割当済み状態から再開 = 次は candidate。
+    rows = [stagedRow(1, '{"stagedSampleCount":3}')];
+
+    const trial = await getStagedRoleAddendumForTrial('implementer', 200);
+
+    expect(trial?.assignment.arm).toBe('candidate');
+    expect(counterOf(1)).toBe(4);
+  });
+
+  test('介入アームは追記文と版を返し、割当時点では injected=false のまま', async () => {
+    rows = [stagedRow(1, '{"stagedSampleCount":1}')];
+
+    const trial = await getStagedRoleAddendumForTrial('implementer', 300);
+
+    expect(trial?.addendum).toBe('- 提出前にlintを実行する');
+    expect(trial?.version).toBeString();
+    // 実際に注入できたかは呼び出し側が確定させる（割当だけで介入済みとしない）。
+    expect(trial?.assignment.injected).toBe(false);
+    expect(trial?.assignment.injectedVersion).toBeNull();
+  });
+
+  test('対照アームは追記文も版も返さない', async () => {
+    rows = [stagedRow(1, '{"stagedSampleCount":0}')];
+
+    const trial = await getStagedRoleAddendumForTrial('implementer', 400);
+
+    expect(trial?.assignment.arm).toBe('current');
+    expect(trial?.addendum).toBeNull();
+    expect(trial?.version).toBeNull();
+  });
+
+  test('同一ロールに複数staged候補があっても最新1件のみを対象にする', async () => {
+    rows = [stagedRow(1, '{"stagedSampleCount":1}'), stagedRow(9, '{"stagedSampleCount":1}')];
+
+    const trial = await getStagedRoleAddendumForTrial('implementer', 500);
+
+    expect(trial?.assignment.promptEvolutionId).toBe(9);
+    // 旧候補のカウンタは進まない = 同一ロールに2候補が混入しない。
+    expect(counterOf(1)).toBe(1);
+    expect(counterOf(9)).toBe(2);
+  });
+
+  test('追記文が空の候補は割当を作らない', async () => {
+    rows = [{ ...stagedRow(1), afterPrompt: '   ' }];
+    expect(await getStagedRoleAddendumForTrial('implementer', 600)).toBeNull();
+  });
+});

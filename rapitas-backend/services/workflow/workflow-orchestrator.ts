@@ -162,7 +162,13 @@ export class WorkflowOrchestrator {
     const probe = await runPreflightProbe(taskId, transition.role, agentConfig, currentStatus);
     if (probe.done) return probe.result;
 
-    const context = await buildExecutionContext(taskId, transition, task, language, workflowMode);
+    const { context, comparisonAssignment } = await buildExecutionContext(
+      taskId,
+      transition,
+      task,
+      language,
+      workflowMode,
+    );
     const effectiveModelId = await resolveEffectiveModel(
       taskId,
       transition,
@@ -178,6 +184,7 @@ export class WorkflowOrchestrator {
       transition,
       systemPromptContent,
       context,
+      comparisonAssignment,
       language,
       agentConfig,
       effectiveModelId,

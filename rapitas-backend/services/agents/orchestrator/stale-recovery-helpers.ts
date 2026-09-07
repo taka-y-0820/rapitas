@@ -53,8 +53,16 @@ export async function updateAffectedSessions(
       });
 
       if (activeCount === 0) {
+        // Conditional write: the count above is a snapshot, and the phase can
+        // finish (or be stopped) between it and this update. Re-stating both
+        // preconditions in the `where` turns that lost race into a no-op
+        // instead of relabelling a session someone else already terminated.
         await ctx.prisma.agentSession.update({
-          where: { id: sessionId },
+          where: {
+            id: sessionId,
+            status: { in: ['active', 'running'] },
+            agentExecutions: { none: { status: { in: [...LIVE_EXECUTION_STATUSES] } } },
+          },
           data: {
             status: 'interrupted',
             lastActivityAt: new Date(),
@@ -83,7 +91,13 @@ export async function reconcileOrphanedActiveSessions(ctx: OrchestratorContext):
   let updated = 0;
   try {
     const candidates = await ctx.prisma.agentSession.findMany({
-      where: { status: { in: ['active', 'running'] } },
+      // Sessions created by THIS process instance are still being driven by
+      // it — sweeping them races the phase that owns them. Only sessions that
+      // predate this start-up can be orphans of a previous process.
+      where: {
+        status: { in: ['active', 'running'] },
+        createdAt: { lt: ctx.serverStartedAt },
+      },
       select: { id: true },
     });
     for (const session of candidates) {
@@ -96,7 +110,12 @@ export async function reconcileOrphanedActiveSessions(ctx: OrchestratorContext):
         });
         if (liveCount === 0) {
           await ctx.prisma.agentSession.update({
-            where: { id: session.id },
+            where: {
+              id: session.id,
+              status: { in: ['active', 'running'] },
+              createdAt: { lt: ctx.serverStartedAt },
+              agentExecutions: { none: { status: { in: [...LIVE_EXECUTION_STATUSES] } } },
+            },
             data: { status: 'interrupted', lastActivityAt: new Date() },
           });
           updated++;

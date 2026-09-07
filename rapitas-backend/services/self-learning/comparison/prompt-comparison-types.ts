@@ -36,6 +36,37 @@ export interface ComparisonRun {
   durationMs: number;
   /** null when the run succeeded. */
   failureCause: FailureCause | null;
+  /** Workflow role the run executed, for live (non-shadow) trial runs. */
+  role?: string;
+  /**
+   * Whether the candidate addendum text was ACTUALLY appended to the prompt.
+   * An assignment alone does not prove intervention: the injection can fail
+   * (unreadable row, empty text) after the arm was picked, and counting such a
+   * run as `candidate` would credit the intervention arm with a run that never
+   * saw the intervention.
+   */
+  injected?: boolean;
+  /** Checksum of the addendum text actually injected; null on the control arm. */
+  injectedVersion?: string | null;
+}
+
+/**
+ * One task-phase's assignment to a comparison arm, produced when the role
+ * context is built and carried through to the phase's completion so the run
+ * can be attributed to the arm (and the exact injected version) it actually
+ * ran under.
+ */
+export interface ComparisonAssignment {
+  /** PromptEvolution candidate under trial. */
+  promptEvolutionId: number;
+  /** Workflow role the candidate targets. */
+  role: string;
+  /** Arm this phase was assigned to. */
+  arm: ComparisonArm;
+  /** True only when the addendum text reached the prompt (always false on `current`). */
+  injected: boolean;
+  /** Checksum of the injected text; null on the control arm or a failed injection. */
+  injectedVersion: string | null;
 }
 
 /** All shadow runs for one (arm, knowledge) cell. */
