@@ -3,7 +3,7 @@
  *
  * 限定試行のアーム割当を検証する。ブロックサイズ2の並べ替えブロック法で
  * バランスを保ちつつ順序がシード依存になること、カウンタが永続化され再起動後も
- * 継続すること、同一ロールに複数の staged 候補があっても最新1件のみが使われる
+ * 継続すること、同一ロールに複数の staged 候補がある場合は古い候補から進める
  * こと、割当時点では injected=false であること。
  * Own file — mock.module is process-global.
  */
@@ -37,15 +37,17 @@ mock.module('../../config/database', () => ({
   ensureDatabaseConnection: mock(async () => {}),
   prisma: {
     promptEvolution: {
-      findFirst: mock((args: { where: { basePromptKey: string; status: string } }) => {
-        findFirstArgs = args;
-        const matched = rows
-          .filter(
-            (r) => r.basePromptKey === args.where.basePromptKey && r.status === args.where.status,
-          )
-          .sort((a, b) => b.id - a.id);
-        return Promise.resolve(matched[0] ?? null);
-      }),
+      findFirst: mock(
+        (args: { where: { basePromptKey: string; status: string }; orderBy: { id: string } }) => {
+          findFirstArgs = args;
+          const matched = rows
+            .filter(
+              (r) => r.basePromptKey === args.where.basePromptKey && r.status === args.where.status,
+            )
+            .sort((a, b) => (args.orderBy.id === 'asc' ? a.id - b.id : b.id - a.id));
+          return Promise.resolve(matched[0] ?? null);
+        },
+      ),
       update: mock((args: { where: { id: number }; data: Partial<EvoRow> }) => {
         const row = rows.find((r) => r.id === args.where.id);
         if (row) Object.assign(row, args.data);
@@ -219,7 +221,7 @@ describe('getStagedRoleAddendumForTrial', () => {
     expect(trial?.version).toBeNull();
   });
 
-  test('同一ロールに複数staged候補があっても最新1件のみを対象にする', async () => {
+  test('既存の複数staged候補は古い順に進み、新着候補に追い越されない', async () => {
     const seed = seedWhereCandidateIsFirst();
     rows = [
       stagedRow(1, JSON.stringify({ stagedSampleCount: 1, trialRandomSeed: seed })),
@@ -228,10 +230,17 @@ describe('getStagedRoleAddendumForTrial', () => {
 
     const trial = await getStagedRoleAddendumForTrial('implementer', 500);
 
-    expect(trial?.assignment.promptEvolutionId).toBe(9);
-    // 旧候補のカウンタは進まない = 同一ロールに2候補が混入しない。
-    expect(counterOf(1)).toBe(1);
-    expect(counterOf(9)).toBe(2);
+    expect(trial?.assignment.promptEvolutionId).toBe(1);
+    expect(counterOf(1)).toBe(2);
+    expect(counterOf(9)).toBe(1);
+    rows.push(stagedRow(10));
+    expect(
+      (await getStagedRoleAddendumForTrial('implementer', 501))?.assignment.promptEvolutionId,
+    ).toBe(1);
+    rows[0].status = 'rejected';
+    expect(
+      (await getStagedRoleAddendumForTrial('implementer', 502))?.assignment.promptEvolutionId,
+    ).toBe(9);
   });
 
   test('追記文が空の候補は割当を作らない', async () => {

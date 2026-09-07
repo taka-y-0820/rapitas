@@ -39,6 +39,27 @@ const statusMatches = (status: string, where: StatusWhere): boolean =>
 
 // NOTE: mock.module はプロセスグローバル。config/index.ts が再エクスポートする
 // ensureDatabaseConnection まで含めて実モジュールの全exportをミラーする。
+type TrialWhere = {
+  status?: StatusWhere;
+  basePromptKey?: string | null | { not: string | null };
+  AND?: TrialWhere[];
+  OR?: TrialWhere[];
+};
+function matchesTrial(row: EvoRow, where: TrialWhere = {}): boolean {
+  const key = where.basePromptKey;
+  const roleMatches =
+    key === undefined ||
+    (key !== null && typeof key === 'object'
+      ? row.basePromptKey !== key.not
+      : row.basePromptKey === key);
+  return (
+    roleMatches &&
+    statusMatches(row.status, where.status) &&
+    (!where.AND || where.AND.every((w) => matchesTrial(row, w))) &&
+    (!where.OR || where.OR.some((w) => matchesTrial(row, w)))
+  );
+}
+
 const fakePrisma = {
   agentSession: {
     findMany: mock((args: { where: { id: { in: number[] } } }) =>
@@ -55,8 +76,8 @@ const fakePrisma = {
       rows.push(row);
       return row;
     }),
-    findMany: mock((args: { where?: { status?: StatusWhere }; take?: number }) => {
-      const filtered = rows.filter((r) => statusMatches(r.status, args?.where?.status));
+    findMany: mock((args: { where?: TrialWhere; take?: number }) => {
+      const filtered = rows.filter((r) => matchesTrial(r, args?.where));
       return Promise.resolve(args?.take ? filtered.slice(0, args.take) : filtered);
     }),
     findUnique: mock((args: { where: { id: number } }) =>
@@ -563,7 +584,10 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
   });
 
   test('取得失敗の種別(破損/未作成)を区別して記録する', async () => {
-    rows = [proposedRow(26, '- 提出前にlintを実行する'), proposedRow(27, '- 型チェックを通す')];
+    rows = [
+      proposedRow(26, '- 提出前にlintを実行する'),
+      { ...proposedRow(27, '- 型チェックを通す'), basePromptKey: 'workflow_role_planner' },
+    ];
     await autoApproveEligibleProposals();
     expect(rows.every((r) => r.status === 'staged')).toBe(true);
 
@@ -742,7 +766,10 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
   });
 
   test('staging時に候補ごとのアルファ予算とランダム化シードが固定される', async () => {
-    rows = [proposedRow(53, '- 提出前にlintを実行する'), proposedRow(54, '- 型チェックを通す')];
+    rows = [
+      proposedRow(53, '- 提出前にlintを実行する'),
+      { ...proposedRow(54, '- 型チェックを通す'), basePromptKey: 'workflow_role_planner' },
+    ];
 
     await autoApproveEligibleProposals();
 
@@ -878,4 +905,24 @@ test('evaluation retires an old orphan prospectively and retains its original ma
   expect(evidenceOf(rows[1].id).retryOfId).toBe(910);
   expect(evidenceOf(rows[1].id).alphaBudgetK).toBeUndefined();
   expect(readFileSync(path, 'utf8')).toBe(original);
+});
+
+test('one staged candidate per role; occupied queue heads do not block another role', async () => {
+  rows = [1, 2, 3, 4].map((id) =>
+    proposedRow(id, 'Before editing, inspect tests and preserve cancellation guards.'),
+  );
+  rows.push({
+    ...proposedRow(5, 'Before editing, inspect tests and preserve cancellation guards.'),
+    basePromptKey: 'workflow_role_planner',
+  });
+  const first = await autoApproveEligibleProposals(3);
+  expect(first.staged).toBe(1);
+  expect(rows.filter((r) => r.status === 'staged').map((r) => r.id)).toEqual([1]);
+  const second = await autoApproveEligibleProposals(1);
+  expect(second.staged).toBe(1);
+  expect(rows.filter((r) => r.status === 'staged').map((r) => r.id)).toEqual([1, 5]);
+  expect(rows.filter((r) => r.status === 'proposed').map((r) => r.id)).toEqual([2, 3, 4]);
+  rows[0].status = 'rejected';
+  await autoApproveEligibleProposals(1);
+  expect(rows.find((r) => r.id === 2)!.status).toBe('staged');
 });

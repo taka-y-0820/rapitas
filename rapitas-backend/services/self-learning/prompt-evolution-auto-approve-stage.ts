@@ -14,6 +14,7 @@
  * seed, so both are fixed before a single sample exists.
  */
 import { randomBytes } from 'crypto';
+import { claimStagedRole } from './prompt-evolution-stage-claim';
 import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
 import { assignCandidateBudget } from './comparison/prompt-comparison-alpha-ledger';
@@ -107,14 +108,31 @@ export async function stageProposedCandidates(
   result: AutoApproveResult,
   limit: number,
 ): Promise<void> {
+  const active = await prisma.promptEvolution.findMany({
+    where: { status: 'staged' },
+    select: { basePromptKey: true },
+  });
+  const occupied = new Set(active.map((row) => row.basePromptKey));
+  // Exclude occupied roles before applying the batch limit, so their waiting
+  // proposals do not hide an available trial for another role. Preserve null
+  // semantics explicitly rather than depending on SQL NOT IN with NULL.
+  const availableRoles = [...occupied].map((key) =>
+    key === null
+      ? { basePromptKey: { not: null } }
+      : { OR: [{ basePromptKey: null }, { basePromptKey: { not: key } }] },
+  );
   const proposals = (await prisma.promptEvolution.findMany({
-    where: { status: 'proposed' },
+    where: { status: 'proposed', AND: availableRoles },
     orderBy: { createdAt: 'asc' },
     take: limit,
     select: CANDIDATE_SELECT,
   })) as CandidateRow[];
 
   for (const proposal of proposals) {
+    if (occupied.has(proposal.basePromptKey)) {
+      result.withheld++;
+      continue;
+    }
     const addendum = proposal.afterPrompt?.trim() ?? '';
     const blocked = textGateFailure(addendum);
     if (blocked) {
@@ -182,10 +200,11 @@ export async function stageProposedCandidates(
       delete evidence.comparisonInitRetries;
       delete evidence.alphaLedgerIssue;
       delete evidence.alphaLedgerRetries;
-      await prisma.promptEvolution.update({
-        where: { id: proposal.id },
-        data: { status: 'staged', evidenceJson: JSON.stringify(evidence) },
-      });
+      if (!(await claimStagedRole(proposal, JSON.stringify(evidence)))) {
+        result.withheld++;
+        continue;
+      }
+      occupied.add(proposal.basePromptKey);
       result.staged++;
       log.info(
         { id: proposal.id, role: proposal.basePromptKey, k: budget.k, alphaK: budget.alphaK },

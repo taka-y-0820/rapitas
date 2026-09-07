@@ -69,7 +69,7 @@ function parseEvidence(raw: string | null): Record<string, unknown> {
  *
  * The manifest serializes prospective slots and preserves their seed and both
  * prompt versions. Repeated tasks reuse their slot. The old evidenceJson
- * counter is not authoritative and is never reset or overwritten here. Only the newest staged
+ * counter is not authoritative and is never reset or overwritten here. Legacy multiple-staged rows drain oldest first; one
  * candidate per role is used, so two candidates can never be mixed into the
  * same role's prompt.
  *
@@ -86,7 +86,7 @@ export async function getStagedRoleAddendumForTrial(
   try {
     const row = await prisma.promptEvolution.findFirst({
       where: { basePromptKey: `workflow_role_${role}`, status: 'staged' },
-      orderBy: { id: 'desc' },
+      orderBy: { id: 'asc' },
       select: { id: true, afterPrompt: true, evidenceJson: true },
     });
     const text = row?.afterPrompt?.trim().slice(0, MAX_ADDENDUM_CHARS);
