@@ -195,3 +195,28 @@ describe('handleRunVerification', () => {
     expect(res1).toMatchObject({ success: true, ok: true });
   });
 });
+
+it('reserves verification before the session lookup yields', async () => {
+  let release!: (value: unknown) => void;
+  findFirstMock.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  const first = handleRunVerification(ctx('897'));
+  const secondContext = ctx('897');
+  try {
+    await handleRunVerification(secondContext);
+    expect(secondContext.set.status).toBe(429);
+    expect(runAutomatedVerificationMock).not.toHaveBeenCalled();
+  } finally {
+    release({ worktreePath: 'C:/wt/task-897' });
+    await first;
+  }
+});
+it('releases admission after a missing session', async () => {
+  findFirstMock.mockImplementationOnce(async () => null);
+  expect(await handleRunVerification(ctx('897'))).toMatchObject({ success: false });
+  expect(await handleRunVerification(ctx('897'))).toMatchObject({ success: true });
+});

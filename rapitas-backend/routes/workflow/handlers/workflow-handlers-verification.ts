@@ -51,24 +51,24 @@ export async function handleRunVerification(ctx: RunVerificationContext) {
     };
   }
 
-  const session = await prisma.agentSession
-    .findFirst({
-      where: { config: { taskId }, worktreePath: { not: null } },
-      // Same tie-break as the verifier context: newest session, id as tiebreaker.
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      select: { worktreePath: true },
-    })
-    .catch(() => null);
-  if (!session?.worktreePath) {
-    ctx.set.status = 404;
-    return {
-      success: false,
-      error: 'このタスクの worktree が見つかりません（エージェント実行前は検証できません）。',
-    };
-  }
-
   inFlight.add(taskId);
   try {
+    const session = await prisma.agentSession
+      .findFirst({
+        where: { config: { taskId }, worktreePath: { not: null } },
+        // Same tie-break as the verifier context: newest session, id as tiebreaker.
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        select: { worktreePath: true },
+      })
+      .catch(() => null);
+    if (!session?.worktreePath) {
+      ctx.set.status = 404;
+      return {
+        success: false,
+        error: 'このタスクの worktree が見つかりません（エージェント実行前は検証できません）。',
+      };
+    }
+
     const [planContent, preferredBaseBranch, taskRow] = await Promise.all([
       readWorkflowFile(taskId, 'plan'),
       resolvePreferredBaseBranch(taskId),
