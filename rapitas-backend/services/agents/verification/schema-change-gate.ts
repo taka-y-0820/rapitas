@@ -68,3 +68,26 @@ export function schemaChangeGateCheck(
         `このファイルを明記し、承認を得てから再実行してください:\n${unplanned.slice(0, 20).join('\n')}`,
   };
 }
+
+/**
+ * Combines the scope / tamper / schema-change HARD gates into one checks
+ * array. Factored out of automated-verifier.ts (rather than inlined there)
+ * to keep that already-oversized file from growing past its file-size
+ * ratchet baseline.
+ *
+ * @param scopeCheck - Scope-deviation check, or null in plan-less mode. / スコープ判定 or null
+ * @param tamper - Anti-tampering check. / 改ざん判定
+ * @param schemaGate - This module's schema-change check, or null. / スキーマ変更判定 or null
+ * @returns The non-null checks, in gate-evaluation order. / 非nullの判定一覧
+ */
+export function collectHardGateChecks(
+  scopeCheck: VerificationCheck | null,
+  tamper: VerificationCheck | null,
+  schemaGate: VerificationCheck | null,
+): VerificationCheck[] {
+  return [
+    ...(scopeCheck ? [scopeCheck] : []),
+    ...(tamper ? [tamper] : []),
+    ...(schemaGate ? [schemaGate] : []),
+  ];
+}
