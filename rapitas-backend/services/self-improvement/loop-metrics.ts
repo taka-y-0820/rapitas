@@ -129,6 +129,10 @@ export function bucketTransitions(
     const idx = Math.floor(age / windowMs);
     const counts = windows[idx]!.counts;
 
+    // NOTE: This counts WorkflowTransition rows, not distinct tasks — a
+    // reopened/resumed task's re-completion is counted again. Callers using
+    // this as a denominator for an "accepted success rate" must account for
+    // that (it is an execution-volume proxy, not a task count).
     if (row.toStatus === 'completed') counts.completed++;
     switch (row.cause) {
       case 'research_critic_failed':
