@@ -1,3 +1,4 @@
+import { withTaskLifecycleLock } from '../../../services/workflow/task-lifecycle-lock';
 /**
  * Workflow Handlers / Resume
  *
@@ -105,7 +106,7 @@ export interface ApplyIntakeAnswerParams {
  * @returns The task id and the status it was reset to. / 反映後の状態
  * @throws {NotFoundError} タスクが見つからない場合
  */
-export async function applyIntakeQuestionAnswer(params: ApplyIntakeAnswerParams): Promise<{
+async function applyIntakeQuestionAnswerLocked(params: ApplyIntakeAnswerParams): Promise<{
   taskId: number;
   ok: true;
   toStatus: WorkflowStatus;
@@ -325,7 +326,7 @@ export interface ApplyResumeAnswerParams {
  * @throws {ValidationError} status が awaiting_question でない場合
  * @throws {NotFoundError} タスクが見つからない場合
  */
-export async function applyResumeFromQuestionAnswer(params: ApplyResumeAnswerParams): Promise<{
+async function applyResumeFromQuestionAnswerLocked(params: ApplyResumeAnswerParams): Promise<{
   taskId: number;
   fromStatus: WorkflowStatus;
   toStatus: WorkflowStatus;
@@ -436,4 +437,16 @@ export async function handleResumeFromQuestion({ params, set }: ResumeContext): 
     else if (err instanceof ValidationError) set.status = 400;
     throw err;
   }
+}
+
+export function applyIntakeQuestionAnswer(
+  params: Parameters<typeof applyIntakeQuestionAnswerLocked>[0],
+) {
+  return withTaskLifecycleLock(params.taskId, () => applyIntakeQuestionAnswerLocked(params));
+}
+
+export function applyResumeFromQuestionAnswer(
+  params: Parameters<typeof applyResumeFromQuestionAnswerLocked>[0],
+) {
+  return withTaskLifecycleLock(params.taskId, () => applyResumeFromQuestionAnswerLocked(params));
 }
