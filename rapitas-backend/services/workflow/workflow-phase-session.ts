@@ -45,7 +45,37 @@ export async function finalizePhaseSession(sessionId: number, success: boolean):
         lastActivityAt: new Date(),
       },
     });
-    return result.count === 1;
+    if (result.count === 1) return true;
+    if (!success) return false;
+
+    // A successful retry may follow a failed execution. Read that exact
+    // terminal set; merely finding ANY completed child would credit stale
+    // success when a later attempt failed or is still running.
+    const executions = await prisma.agentExecution.findMany({
+      where: { sessionId },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { id: true, status: true },
+    });
+    if (
+      executions[0]?.status !== 'completed' ||
+      !executions.some((e) => e.status === 'failed') ||
+      executions.some((e) => !['completed', 'failed'].includes(e.status))
+    )
+      return false;
+
+    const snapshot = executions.map(({ id, status }) => ({ id, status }));
+    const retried = await prisma.agentSession.updateMany({
+      where: {
+        id: sessionId,
+        status: { in: ['active', 'running'] },
+        // No added, removed, or changed child can pass the second conditional
+        // write. A competing cancellation still wins through session status.
+        agentExecutions: { every: { OR: snapshot } },
+        AND: snapshot.map((child) => ({ agentExecutions: { some: child } })),
+      },
+      data: { status: 'completed', completedAt: new Date(), lastActivityAt: new Date() },
+    });
+    return retried.count === 1;
   } catch (err) {
     log.warn({ err, sessionId }, 'Failed to persist phase session outcome');
     return false;
