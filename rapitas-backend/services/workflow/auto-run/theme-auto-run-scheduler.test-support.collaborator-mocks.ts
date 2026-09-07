@@ -227,7 +227,11 @@ export const mockStopThemeAgents = mock(() =>
   Promise.resolve({ stoppedCount: 0, executionIds: [] }),
 );
 
+export const mockStopTaskTreeAgents = mock(() =>
+  Promise.resolve({ stoppedCount: 0, executionIds: [] }),
+);
 mock.module('../../agents/stop-task-agents', () => ({
+  stopTaskTreeAgents: mockStopTaskTreeAgents,
   stopTaskAgents: mockStopTaskAgents,
   stopThemeAgents: mockStopThemeAgents,
 }));
