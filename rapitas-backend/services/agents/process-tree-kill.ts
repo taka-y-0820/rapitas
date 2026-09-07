@@ -105,8 +105,18 @@ export function collectKillTargets(
     }
   }
 
-  targets.delete(rootPid);
-  targets.delete(process.pid); // never self-terminate the backend
+  // taskkill /T also terminates descendants of a selected ancestor. Excluding
+  // only process.pid still lets a matching invoking shell terminate this caller.
+  const parents = new Map(snapshot.map((entry) => [entry.pid, entry.ppid]));
+  for (const protectedPid of [rootPid, process.pid]) {
+    const visited = new Set<number>();
+    let current: number | undefined = protectedPid;
+    while (current !== undefined && current > 0 && !visited.has(current)) {
+      visited.add(current);
+      targets.delete(current);
+      current = parents.get(current);
+    }
+  }
   return targets;
 }
 

@@ -71,3 +71,24 @@ describe('collectKillTargets', () => {
     expect(() => collectKillTargets(s, 100)).not.toThrow();
   });
 });
+
+test('worktree matching cannot select caller or launch ancestors for recursive kill', () => {
+  const wd = 'C:/Projects/rapitas/.worktrees/task-897-test';
+  const snapshot = snap([
+    [40, 1, `outer shell ${wd}`],
+    [50, 40, `invoking shell ${wd}`],
+    [process.pid, 50, `verifier ${wd}`],
+    [100, process.pid, 'launched app'],
+    [101, 100, 'app child'],
+  ]);
+  expect([...collectKillTargets(snapshot, 100, wd)]).toEqual([101]);
+});
+test('launch ancestors remain protected when caller is outside the launch ancestry', () => {
+  const wd = 'C:/Projects/rapitas/.worktrees/task-897-test';
+  const snapshot = snap([
+    [50, 1, `launcher ${wd}`],
+    [100, 50, 'app'],
+    [101, 100, 'child'],
+  ]);
+  expect([...collectKillTargets(snapshot, 100, wd)]).toEqual([101]);
+});
