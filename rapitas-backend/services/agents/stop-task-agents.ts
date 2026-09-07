@@ -52,7 +52,7 @@ async function stopExecutions(executionIds: number[], reason: string): Promise<n
       // Ask BOTH orchestrators — only the owner can taskkill the CLI handle.
       await agentWorkerManager.stopExecution(executionId).catch(() => false);
       await mainOrchestrator.stopExecution(executionId).catch(() => false);
-      await prisma.agentExecutionLog.deleteMany({ where: { executionId } }).catch(() => {});
+      // Retain diagnostic output: cancellation must not erase evidence needed for recovery.
       await prisma.agentExecution
         .update({
           where: { id: executionId },

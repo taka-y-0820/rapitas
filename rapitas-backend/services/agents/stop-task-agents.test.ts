@@ -74,6 +74,15 @@ describe('stopTaskAgents', () => {
     expect(workerStopMock).toHaveBeenCalledTimes(3);
     expect(mainStopMock).toHaveBeenCalledTimes(3);
     expect(mockPrisma.agentExecution.update).toHaveBeenCalledTimes(3);
+    expect(mockPrisma.agentExecutionLog.deleteMany).not.toHaveBeenCalled();
+    expect(mockPrisma.agentExecution.update).toHaveBeenCalledWith({
+      where: { id: 11 },
+      data: {
+        status: 'cancelled',
+        completedAt: expect.any(Date),
+        errorMessage: 'Cancelled by user',
+      },
+    });
   });
 
   test('停止後にタスク実行ロックを解放する', async () => {
