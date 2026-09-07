@@ -1,3 +1,5 @@
+import { mergeFallbackSegmentTime } from './execution-attempt-metrics';
+import { runMeasuredAgentAttempt } from './measured-agent-attempt';
 /**
  * FallbackHandler
  *
@@ -135,7 +137,11 @@ export async function handleResumeFailureFallbacks(
     timestamp: new Date(),
   });
 
-  const retryResult = await retryAgent.execute(agentTask);
+  const retryResult = await runMeasuredAgentAttempt(
+    () => retryAgent.execute(agentTask),
+    fileLogger,
+    () => !ctx.isShuttingDown && !['cancelled', 'canceling', 'interrupted'].includes(state.status),
+  );
   if (!isSessionResumeFailure(retryResult, claudeSessionId)) {
     return retryResult;
   }
@@ -178,9 +184,13 @@ export async function handleResumeFailureFallbacks(
     timestamp: new Date(),
   });
 
-  const fallbackResult = await fallbackAgent.execute(agentTask);
+  const fallbackResult = await runMeasuredAgentAttempt(
+    () => fallbackAgent.execute(agentTask),
+    fileLogger,
+    () => !ctx.isShuttingDown && !['cancelled', 'canceling', 'interrupted'].includes(state.status),
+  );
   if (!isSessionResumeFailure(fallbackResult, claudeSessionId)) {
-    return fallbackResult;
+    return mergeFallbackSegmentTime(retryResult, fallbackResult);
   }
 
   // Final fallback: start new session with context
@@ -224,10 +234,19 @@ export async function handleResumeFailureFallbacks(
     timestamp: new Date(),
   });
 
-  return await newAgent.execute({
-    id: taskId,
-    title: contextPrompt,
-    description: contextPrompt,
-    workingDirectory: agentTask.workingDirectory,
-  });
+  const finalResult = await runMeasuredAgentAttempt(
+    () =>
+      newAgent.execute({
+        id: taskId,
+        title: contextPrompt,
+        description: contextPrompt,
+        workingDirectory: agentTask.workingDirectory,
+      }),
+    fileLogger,
+    () => !ctx.isShuttingDown && !['cancelled', 'canceling', 'interrupted'].includes(state.status),
+  );
+  return mergeFallbackSegmentTime(
+    mergeFallbackSegmentTime(retryResult, fallbackResult),
+    finalResult,
+  );
 }

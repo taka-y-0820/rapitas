@@ -1,3 +1,4 @@
+import { runMeasuredAgentAttempt } from './measured-agent-attempt';
 /**
  * fallback-executor
  *
@@ -191,7 +192,12 @@ export async function executeWithFallbackAgent(
     });
 
     const retryStartedMs = Date.now();
-    const retryResult = await newAgent.execute(taskWithAnalysis);
+    const retryResult = await runMeasuredAgentAttempt(
+      () => newAgent.execute(taskWithAnalysis),
+      fileLogger,
+      () =>
+        !ctx.isShuttingDown && !['cancelled', 'canceling', 'interrupted'].includes(state.status),
+    );
 
     // Check if retry also failed
     const retryBlob = `${retryResult.errorMessage ?? ''}\n${

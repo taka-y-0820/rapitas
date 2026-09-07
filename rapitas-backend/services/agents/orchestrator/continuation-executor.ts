@@ -1,3 +1,5 @@
+import { mergeFallbackSegmentTime } from './execution-attempt-metrics';
+import { runMeasuredAgentAttempt } from './measured-agent-attempt';
 /**
  * ContinuationExecutor
  *
@@ -288,22 +290,30 @@ export async function executeContinuationInternal(
     };
 
     let result = await withLlmCallScope(async () => {
-      let r = await agent.execute(agentTask);
+      let r = await runMeasuredAgentAttempt(
+        () => agent.execute(agentTask),
+        fileLogger,
+        () =>
+          !ctx.isShuttingDown && !['cancelled', 'canceling', 'interrupted'].includes(state.status),
+      );
 
       // Fallback on --resume failure
       if (isSessionResumeFailure(r, claudeSessionId)) {
-        r = await handleResumeFailureFallbacks(
-          ctx,
-          agent,
-          agentConfig,
-          agentTask,
-          agentInfo,
-          execution,
-          state,
-          fileLogger,
-          logManager,
-          taskId,
-          claudeSessionId!,
+        r = mergeFallbackSegmentTime(
+          r,
+          await handleResumeFailureFallbacks(
+            ctx,
+            agent,
+            agentConfig,
+            agentTask,
+            agentInfo,
+            execution,
+            state,
+            fileLogger,
+            logManager,
+            taskId,
+            claudeSessionId!,
+          ),
         );
       }
 

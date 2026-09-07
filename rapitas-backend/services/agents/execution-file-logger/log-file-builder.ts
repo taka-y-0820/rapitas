@@ -174,6 +174,9 @@ export function buildLogFileContent(
     JSON.stringify(
       {
         summary,
+        attemptJournal: entries
+          .filter((e) => e.message === 'execution_attempt_boundary' && e.eventType === 'recovery')
+          .map((e) => e.context),
         attemptMeasurements: entries
           .filter((e) => e.message === 'execution_attempt_metrics' && e.eventType === 'recovery')
           .map((e) => e.context),
