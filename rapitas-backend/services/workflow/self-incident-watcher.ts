@@ -25,6 +25,7 @@ import {
   REPEAT_LOOP_WINDOW_MS,
   REPEAT_LOOP_MIN_COUNT,
   INVARIANT_REPEAT_LOOP_MIN_COUNT,
+  MANUAL_STOP_WITHDRAW_CAUSE,
 } from './incident-signature-detectors';
 import { gatherTaskState, formatIncidentDetail } from './self-incident-evidence';
 import type { GatheredTaskState } from './self-incident-evidence';
@@ -186,6 +187,7 @@ async function inspectTask(
           ? false
           : true;
 
+  const manuallyWithdrawn = state.latestTransitionCause === MANUAL_STOP_WITHDRAW_CAUSE;
   const stagnation = detectStagnation({
     taskStatus: task.status,
     workflowStatus: task.workflowStatus,
@@ -196,6 +198,7 @@ async function inspectTask(
     hasAnyExecution: state.hasAnyExecution,
     hasActiveQueueItem: state.hasActiveQueueItem,
     isWorkflowManaged,
+    manuallyWithdrawn,
     nowMs,
   });
   if (stagnation) {
@@ -234,6 +237,7 @@ async function inspectTask(
     })),
     latestSessionUpdatedAtMs: state.latestSessionUpdatedAtMs,
     themeAutoRunEnabled: task.themeId != null ? !disabledAutoRunThemeIds.has(task.themeId) : null,
+    manuallyWithdrawn,
     nowMs,
   });
   if (desync) {

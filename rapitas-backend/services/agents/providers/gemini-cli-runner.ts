@@ -102,13 +102,13 @@ export async function runGeminiCli(
   log: LogFn,
 ): Promise<AgentExecutionResult> {
   const startTime = Date.now();
+  const isWindows = process.platform === 'win32';
+  const geminiPath = await resolveCliPath(
+    config.cliPath || process.env.GEMINI_CLI_PATH || (isWindows ? 'gemini.cmd' : 'gemini'),
+  );
 
   return new Promise((resolve) => {
     const timeout = context.timeout || config.timeout || 900000;
-    const isWindows = process.platform === 'win32';
-    const geminiPath = resolveCliPath(
-      config.cliPath || process.env.GEMINI_CLI_PATH || (isWindows ? 'gemini.cmd' : 'gemini'),
-    );
 
     const args = buildArgs(prompt, config, context);
     const env = buildEnv(config);

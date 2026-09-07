@@ -7,60 +7,18 @@
  * API. It is NOT responsible for agent/workflow execution — that path lives under
  * services/agents/claude-code and manages its own process lifecycle.
  */
-import { spawn, execSync, type ChildProcess } from 'child_process';
-import { existsSync } from 'fs';
+import { spawn, type ChildProcess } from 'child_process';
 import { tmpdir } from 'os';
 import { createLogger } from '../../config/logger';
 // NOTE: Deliberate utils→services exception (concern #1284): aux CLI children
 // must be visible to the shared process tracker so the task-boundary restart
 // can require "0 live aux CLI children" and post-crash cleanup can reap them.
 import { registerProcess, unregisterProcess } from '../../services/agents/agent-process-tracker';
+import { getClaudePathAsync } from '../common/cli-path-resolver';
 import { type AIMessage, type AIResponse } from './types';
 import { describeCliFailure, extractLastJsonObject } from './cli-failure-reason';
 
 const log = createLogger('ai-client:claude-cli');
-
-// ── CLI path resolution ────────────────────────────────────────────────────
-// Self-contained copies of the pure path helpers (mirrors
-// services/agents/claude-code/cli-utils). Kept local so utils/ does not depend
-// on services/ (folder policy) and to avoid dragging the agent module graph.
-
-const cliPathCache = new Map<string, string>();
-
-/** Resolve a CLI command to an absolute path on Windows; memoized per process. */
-function resolveCliPath(cliName: string): string {
-  if (process.platform !== 'win32') return cliName;
-  const cached = cliPathCache.get(cliName);
-  if (cached !== undefined) return cached;
-
-  const tryWhere = (name: string): string | null => {
-    try {
-      const resolved = execSync(`where ${name}`, {
-        encoding: 'utf8',
-        timeout: 5000,
-        windowsHide: true,
-      })
-        .trim()
-        .split(/\r?\n/)[0];
-      return resolved && existsSync(resolved) ? resolved : null;
-    } catch {
-      return null;
-    }
-  };
-
-  const resolved =
-    tryWhere(cliName) ?? (!cliName.endsWith('.cmd') ? tryWhere(`${cliName}.cmd`) : null);
-  const result = resolved ?? cliName;
-  cliPathCache.set(cliName, result);
-  return result;
-}
-
-/** Resolve the effective Claude Code CLI path from env or platform default. */
-function getClaudePath(): string {
-  const isWindows = process.platform === 'win32';
-  const base = process.env.CLAUDE_CODE_PATH || (isWindows ? 'claude.cmd' : 'claude');
-  return resolveCliPath(base);
-}
 
 /** Build the platform-specific spawn command/args (UTF-8 code page on Windows). */
 function buildSpawnCommand(claudePath: string, args: string[]): [string, string[]] {
@@ -73,9 +31,10 @@ function buildSpawnCommand(claudePath: string, args: string[]): [string, string[
 }
 
 /** Whether the CLI responds to `--version` within 10s. */
-function checkClaudeAvailable(): Promise<boolean> {
+async function checkClaudeAvailable(): Promise<boolean> {
+  const claudePath = await getClaudePathAsync();
   return new Promise((resolve) => {
-    const proc = spawn(getClaudePath(), ['--version'], { shell: true, windowsHide: true });
+    const proc = spawn(claudePath, ['--version'], { shell: true, windowsHide: true });
     const timeout = setTimeout(() => {
       proc.kill();
       resolve(false);
@@ -228,9 +187,9 @@ function trackAuxCliChild(child: ChildProcess): () => void {
 }
 
 /** Spawn the CLI with the given args, feed `prompt` on stdin, resolve stdout. */
-function spawnCli(args: string[], prompt: string): Promise<string> {
+async function spawnCli(args: string[], prompt: string): Promise<string> {
+  const claudePath = await getClaudePathAsync();
   return new Promise((resolve, reject) => {
-    const claudePath = getClaudePath();
     const [command, spawnArgs] = buildSpawnCommand(claudePath, args);
     const child: ChildProcess = spawn(command, spawnArgs, {
       cwd: tmpdir(), // isolate from the repo even if a tool slipped through
@@ -367,7 +326,7 @@ export async function callClaudeCliStream(
   ];
 
   await acquireSlot();
-  const claudePath = getClaudePath();
+  const claudePath = await getClaudePathAsync();
   const [command, spawnArgs] = buildSpawnCommand(claudePath, args);
   const child = spawn(command, spawnArgs, {
     cwd: tmpdir(),

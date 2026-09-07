@@ -2,8 +2,18 @@
  * Agent Models テスト
  * エージェントタイプ別モデル取得のテスト
  */
-import { describe, test, expect } from 'bun:test';
-import { getModelsForAgentType, getAllModels } from '../../utils/agent/agent-models';
+import { describe, test, expect, mock } from 'bun:test';
+
+// NOTE: 実装は静的フォールバックリストから discoverModels() 呼び出しへ変更済み。
+// モック未設定だと実際にCLIサブプロセス（claude/codex/gemini等）を起動しようとして
+// 環境依存の遅延・失敗を招くため、常に空配列を返して PROVIDER_FALLBACK_MODELS に
+// フォールバックさせる（agent-models.ts:96 の `discovered.length > 0 ? ... : PROVIDER_FALLBACK_MODELS[provider]`）。
+mock.module('../../services/ai/model-discovery', () => ({
+  discoverModels: () =>
+    Promise.resolve({ fetchedAt: new Date().toISOString(), providers: [], models: [] }),
+}));
+
+const { getModelsForAgentType, getAllModels } = await import('../../utils/agent/agent-models');
 
 describe('getModelsForAgentType', () => {
   test('claude-codeのモデル一覧を取得できること（フォールバック）', async () => {

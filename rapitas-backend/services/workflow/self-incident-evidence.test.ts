@@ -80,6 +80,7 @@ describe('gatherTaskState', () => {
     // Timeline is reversed into oldest-first reading order.
     expect(state.timeline.map((t) => t.toStatus)).toEqual(['research_done', 'plan_created']);
     expect(state.latestTransitionAtMs).toBe(NOW - 5 * 60 * 1000);
+    expect(state.latestTransitionCause).toBe('file_saved:research');
     expect(state.windowedCauses).toEqual([
       {
         cause: 'ci_repair',
@@ -103,6 +104,7 @@ describe('gatherTaskState', () => {
 
     expect(state.timeline).toEqual([]);
     expect(state.latestTransitionAtMs).toBeNull();
+    expect(state.latestTransitionCause).toBeNull();
     expect(state.windowedCauses).toEqual([]);
     expect(state.latestSessionId).toBeNull();
     expect(state.latestSessionStatus).toBeNull();
@@ -162,6 +164,19 @@ describe('gatherTaskState', () => {
         invariantViolation: true,
       },
     ]);
+  });
+
+  test('surfaces the newest transition cause of manual_execution_stop_withdraw (#875)', async () => {
+    transitionFindManyMock
+      .mockResolvedValueOnce([
+        transitionRow(1, { cause: 'manual_execution_stop_withdraw', toStatus: 'in_progress' }),
+        transitionRow(30),
+      ])
+      .mockResolvedValueOnce([]);
+
+    const state = await gatherTaskState(task, NOW, WINDOW_MS);
+
+    expect(state.latestTransitionCause).toBe('manual_execution_stop_withdraw');
   });
 
   test('queries the windowed causes with the window cutoff', async () => {

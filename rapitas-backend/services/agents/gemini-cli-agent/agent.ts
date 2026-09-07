@@ -112,6 +112,11 @@ export class GeminiCliAgent extends BaseAgent {
       };
     }
 
+    const isWindows = process.platform === 'win32';
+    const geminiPath = await resolveCliPath(
+      process.env.GEMINI_CLI_PATH || (isWindows ? 'gemini.cmd' : 'gemini'),
+    );
+
     return new Promise((resolve) => {
       const prompt = buildStructuredPrompt(task, this.logPrefix);
 
@@ -121,11 +126,6 @@ export class GeminiCliAgent extends BaseAgent {
       // NOTE: Prompt is now piped via stdin in spawnGeminiProcess to avoid
       // Windows shell truncation of long multi-line prompts.
       const args = buildCliArgs(this.config, resumeId);
-
-      const isWindows = process.platform === 'win32';
-      const geminiPath = resolveCliPath(
-        process.env.GEMINI_CLI_PATH || (isWindows ? 'gemini.cmd' : 'gemini'),
-      );
 
       logger.info(
         `${this.logPrefix} Platform: ${process.platform}, Path: ${geminiPath}, Dir: ${workDir}`,

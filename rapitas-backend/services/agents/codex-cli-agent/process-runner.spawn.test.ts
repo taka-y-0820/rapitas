@@ -107,17 +107,38 @@ describe('buildProcessEnv', () => {
   });
 
   test('adds Windows-only encoding vars only when isWindows=true', () => {
-    const winEnv = buildProcessEnv({}, true);
-    expect(winEnv.LANG).toBe('en_US.UTF-8');
-    expect(winEnv.PYTHONIOENCODING).toBe('utf-8');
-    expect(winEnv.PYTHONUTF8).toBe('1');
-    expect(winEnv.CHCP).toBe('65001');
+    // NOTE: buildProcessEnv only ever SETS these four vars on the
+    // isWindows=true branch — on isWindows=false it just inherits whatever
+    // the host shell already exports via buildSanitizedSpawnEnv's
+    // process.env spread (none of them are secrets, so the denylist never
+    // strips them). Some shells (observed: this repo's own dev machines)
+    // export LANG/PYTHONIOENCODING for every process, so asserting they are
+    // undefined on the non-Windows branch is only valid with a clean
+    // process.env — hence the isolate/restore below (task #869).
+    const keys = ['LANG', 'PYTHONIOENCODING', 'PYTHONUTF8', 'CHCP'] as const;
+    const originalValues: Record<string, string | undefined> = {};
+    for (const key of keys) {
+      originalValues[key] = process.env[key];
+      delete process.env[key];
+    }
+    try {
+      const winEnv = buildProcessEnv({}, true);
+      expect(winEnv.LANG).toBe('en_US.UTF-8');
+      expect(winEnv.PYTHONIOENCODING).toBe('utf-8');
+      expect(winEnv.PYTHONUTF8).toBe('1');
+      expect(winEnv.CHCP).toBe('65001');
 
-    const nonWinEnv = buildProcessEnv({}, false);
-    expect(nonWinEnv.LANG).toBeUndefined();
-    expect(nonWinEnv.PYTHONIOENCODING).toBeUndefined();
-    expect(nonWinEnv.PYTHONUTF8).toBeUndefined();
-    expect(nonWinEnv.CHCP).toBeUndefined();
+      const nonWinEnv = buildProcessEnv({}, false);
+      expect(nonWinEnv.LANG).toBeUndefined();
+      expect(nonWinEnv.PYTHONIOENCODING).toBeUndefined();
+      expect(nonWinEnv.PYTHONUTF8).toBeUndefined();
+      expect(nonWinEnv.CHCP).toBeUndefined();
+    } finally {
+      for (const key of keys) {
+        if (originalValues[key] === undefined) delete process.env[key];
+        else process.env[key] = originalValues[key];
+      }
+    }
   });
 });
 

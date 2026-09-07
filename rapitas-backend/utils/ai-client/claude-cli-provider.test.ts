@@ -39,12 +39,6 @@ class MockChild extends EventEmitter {
 
 let spawnCalls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
 let spawnedChildren: MockChild[] = [];
-// Default: simulate `where claude.cmd` failing to resolve so getClaudePath()
-// falls back to the raw command name — keeps the default path deterministic
-// without depending on the real filesystem.
-let execSyncImpl: (cmd: string) => string = () => {
-  throw new Error('not found');
-};
 
 const mockSpawn = mock((command: string, args: string[], options: Record<string, unknown>) => {
   spawnCalls.push({ command, args, options });
@@ -52,16 +46,24 @@ const mockSpawn = mock((command: string, args: string[], options: Record<string,
   spawnedChildren.push(child);
   return child as unknown as ChildProcess;
 });
-const mockExecSync = mock((cmd: string) => execSyncImpl(cmd));
 
 mock.module('child_process', () => ({
   spawn: mockSpawn,
-  execSync: mockExecSync,
-  exec: mock(() => {}),
-  execFile: mock(() => {}),
+  // NOTE: agent-process-tracker (imported transitively for process registration)
+  // statically imports execSync — must remain a valid named export even though
+  // these tests never exercise that path.
+  execSync: mock(() => ''),
   execFileSync: mock(() => Buffer.from('')),
   spawnSync: mock(() => ({ status: 0, stdout: '', stderr: '' })),
   fork: mock(() => {}),
+}));
+
+// CLI path resolution is delegated to utils/common/cli-path-resolver (see
+// cli-path-resolver.test.ts for its own coverage). Default: falls back to the
+// raw command name — keeps the default path deterministic without depending
+// on the real filesystem.
+mock.module('../common/cli-path-resolver', () => ({
+  getClaudePathAsync: mock(() => Promise.resolve('claude.cmd')),
 }));
 
 mock.module('../../config/logger', () => ({
@@ -132,11 +134,7 @@ async function readAllSSE(stream: ReadableStream): Promise<string> {
 beforeEach(() => {
   spawnCalls = [];
   spawnedChildren = [];
-  execSyncImpl = () => {
-    throw new Error('not found');
-  };
   mockSpawn.mockClear();
-  mockExecSync.mockClear();
 });
 
 // ── callClaudeCli: happy path ────────────────────────────────────────────────
@@ -378,8 +376,9 @@ describe('callClaudeCliStream — success', () => {
 describe('isClaudeCliAvailable', () => {
   test('probes with --version and memoizes the result across calls', async () => {
     const p = isClaudeCliAvailable();
-    // The spawn happens synchronously inside the Promise executor, before the
-    // first await inside isClaudeCliAvailable suspends — no flush needed.
+    // checkClaudeAvailable() awaits getClaudePathAsync() before spawning, so
+    // the spawn call lands after a microtask tick — flush before asserting.
+    await flush();
     expect(spawnCalls.length).toBe(1);
     expect(spawnCalls[0].args).toEqual(['--version']);
     expect(spawnCalls[0].options).toMatchObject({ shell: true, windowsHide: true });

@@ -43,14 +43,14 @@ export class ClaudeCodeProvider implements IAgentProvider {
    * @returns true if CLI exits with code 0 / CLIがコード0で終了する場合true
    */
   async isAvailable(): Promise<boolean> {
-    return new Promise((resolve) => {
-      const isWindows = process.platform === 'win32';
-      const baseClaudePath =
-        this.defaultConfig.cliPath ||
-        process.env.CLAUDE_CODE_PATH ||
-        (isWindows ? 'claude.cmd' : 'claude');
-      const claudePath = resolveCliPath(baseClaudePath);
+    const isWindows = process.platform === 'win32';
+    const baseClaudePath =
+      this.defaultConfig.cliPath ||
+      process.env.CLAUDE_CODE_PATH ||
+      (isWindows ? 'claude.cmd' : 'claude');
+    const claudePath = await resolveCliPath(baseClaudePath);
 
+    return new Promise((resolve) => {
       const proc = spawn(claudePath, ['--version'], { shell: true });
 
       const timeout = setTimeout(() => {

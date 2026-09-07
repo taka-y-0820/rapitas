@@ -65,7 +65,13 @@ export const PATTERN_A_SETTLE_MS =
  * `isWithinRecoveryGrace` had no row to find and Pattern B fired immediately
  * on a shape these paths create on purpose (task #602). `workflow_queue_
  * enqueue_failed` (786) / `auto_run_stop_revert` (830): ditto, via enqueue() / `stopThemeExecutionImpl`.
+ * `manual_execution_stop_withdraw` (#875): stop-execution({withdraw:true}) —
+ * same shape immediately after the call, but unlike the other causes here it
+ * is also PERMANENTLY excluded via `manuallyWithdrawn` once the grace window
+ * passes (see detectStagnation/detectTriStateDesync).
  */
+export const MANUAL_STOP_WITHDRAW_CAUSE = 'manual_execution_stop_withdraw';
+
 const RECOVERY_REQUEUE_CAUSES = new Set([
   'reconciler_requeue',
   'artifact_reuse_fastforward',
@@ -75,6 +81,7 @@ const RECOVERY_REQUEUE_CAUSES = new Set([
   'stale_execution_recovery_revert',
   'workflow_queue_enqueue_failed',
   'auto_run_stop_revert',
+  MANUAL_STOP_WITHDRAW_CAUSE,
 ]);
 
 /**
@@ -138,6 +145,14 @@ export interface StagnationInput {
    * silently widen suppression.
    */
   isWorkflowManaged?: boolean | null;
+  /**
+   * True when the task's newest relevant transition cause is
+   * MANUAL_STOP_WITHDRAW_CAUSE — the operator explicitly withdrew this task
+   * via stop-execution({withdraw:true}) and decided not to resume it (#875).
+   * `null`/`undefined` (unresolved) leaves the task subject to detection —
+   * mirrors the other optional gates' fail-open convention.
+   */
+  manuallyWithdrawn?: boolean | null;
   nowMs: number;
   thresholdMs?: number;
 }
@@ -147,6 +162,7 @@ export interface StagnationInput {
  * agent is running, nothing is queued, and no legitimate wait state applies.
  * Only in-flight tasks qualify — a pure todo backlog item that never started
  * (workflowStatus draft/null, no execution ever, not in-progress) is skipped.
+ * Deliberately withdrawn tasks are excluded (#875, see StagnationInput.manuallyWithdrawn).
  *
  * @param input - Task snapshot (see StagnationInput). / タスクの現在状態スナップショット
  * @returns Staleness in ms when stagnant, otherwise null. / 停滞時はstaleMs、非停滞はnull
@@ -160,6 +176,10 @@ export function detectStagnation(input: StagnationInput): { staleMs: number } | 
   // theme / theme auto-run disabled) → the wait is legitimate and
   // indefinite, not stagnation (#860).
   if (input.isWorkflowManaged === false) return null;
+  // Deliberately withdrawn via stop-execution({withdraw:true}) (#875) — the
+  // operator has already decided not to resume this task; repeating the
+  // same finding every watch pass forever is noise, not signal.
+  if (input.manuallyWithdrawn) return null;
   // NOTE: null must count as not-started — `null !== 'draft'` alone would
   // misclassify a workflowStatus-less task as advanced.
   const isInFlight =
@@ -201,6 +221,14 @@ export interface TriStateDesyncInput {
    * never silently widen suppression.
    */
   themeAutoRunEnabled?: boolean | null;
+  /**
+   * True when the task's newest relevant transition cause is
+   * MANUAL_STOP_WITHDRAW_CAUSE — the operator explicitly withdrew this task
+   * via stop-execution({withdraw:true}) and decided not to resume it (#875).
+   * `null`/`undefined` (unresolved) leaves the task subject to detection —
+   * mirrors themeAutoRunEnabled's fail-open convention.
+   */
+  manuallyWithdrawn?: boolean | null;
   /** Current time (ms) — the recovery grace guard needs it to age the transition. */
   nowMs?: number;
   /** Pattern B recovery grace override (default DESYNC_RECOVERY_SETTLE_MS). */
@@ -259,7 +287,8 @@ function isWithinPatternASettle(input: TriStateDesyncInput): boolean {
  * EXCEPT ALSO when the task's theme has auto-run disabled
  * (`themeAutoRunEnabled === false`), where the shape is an indefinite,
  * legitimate wait rather than a transient one (task #715, see
- * TriStateDesyncInput.themeAutoRunEnabled).
+ * TriStateDesyncInput.themeAutoRunEnabled) — EXCEPT ALSO when the task was
+ * deliberately withdrawn (#875, see TriStateDesyncInput.manuallyWithdrawn).
  *
  * @param input - Cross-entity state snapshot. / 三面の状態スナップショット
  * @returns Detected pattern + human-readable summary, or null. / 検出結果またはnull
@@ -290,6 +319,9 @@ export function detectTriStateDesync(
     // Theme auto-run disabled → nothing will ever dispatch this task, so the
     // wait is legitimate and indefinite, not a stuck/corrupted state (#715).
     if (input.themeAutoRunEnabled === false) return null;
+    // Deliberately withdrawn via stop-execution({withdraw:true}) (#875) —
+    // same rationale as detectStagnation's identically-named gate.
+    if (input.manuallyWithdrawn) return null;
     return {
       kind: 'todo_status_workflow_advanced',
       detail: `task.status=todo のまま workflowStatus が前進済み(${input.workflowStatus})`,

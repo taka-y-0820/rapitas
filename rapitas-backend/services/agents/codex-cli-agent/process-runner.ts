@@ -444,14 +444,14 @@ export async function spawnCodexProcess(
   // Ensure output directory exists
   await ensureOutputDirectory(config.outputLastMessageFile);
 
+  const isWindows = process.platform === 'win32';
+  const codexPath = await resolveCliPath(
+    process.env.CODEX_CLI_PATH || (isWindows ? 'codex.cmd' : 'codex'),
+  );
+
   return new Promise((resolve) => {
     // Build CLI arguments
     const { args, promptForStdin } = buildCodexArgs(config, workDir, prompt, logPrefix);
-
-    const isWindows = process.platform === 'win32';
-    const codexPath = resolveCliPath(
-      process.env.CODEX_CLI_PATH || (isWindows ? 'codex.cmd' : 'codex'),
-    );
 
     const argsForLog = args.map((a, i) =>
       i === args.length - 1 && a.length > 100 ? `<prompt:${a.length}chars>` : a,

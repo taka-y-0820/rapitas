@@ -20,6 +20,7 @@ import { releaseTaskExecutionLock } from '../shared/execution-lock';
 import { removeWorktree } from '../../../../services/agents/orchestrator/git-operations/worktree/worktree-ops';
 import { resolveTaskWorkingDirectory } from '../../../../services/task/task-resolver';
 import { recordTransition } from '../../../../services/workflow/transition-recorder';
+import { MANUAL_STOP_WITHDRAW_CAUSE } from '../../../../services/workflow/incident-signature-detectors';
 
 const log = createLogger('routes:agent-execution:stop');
 const agentWorkerManager = AgentWorkerManager.getInstance();
@@ -27,8 +28,9 @@ const agentWorkerManager = AgentWorkerManager.getInstance();
 export const stopRoute = new Elysia().post(
   '/tasks/:id/stop-execution',
   async (context) => {
-    const { params } = context;
+    const { params, body } = context;
     const taskId = parseInt(params.id);
+    const withdraw = body?.withdraw === true;
 
     try {
       const task = await resolveTaskWorkingDirectory(taskId);
@@ -150,8 +152,10 @@ export const stopRoute = new Elysia().post(
           fromStatus: workflowStatus,
           toStatus: workflowStatus ?? 'draft',
           actor: 'user',
-          cause: 'manual_execution_stop_revert',
-          metadata: { reason: 'manual_stop_execution' },
+          cause: withdraw ? MANUAL_STOP_WITHDRAW_CAUSE : 'manual_execution_stop_revert',
+          metadata: {
+            reason: withdraw ? 'manual_stop_execution_withdraw' : 'manual_stop_execution',
+          },
         }).catch(() => {});
       } catch (taskErr) {
         log.error({ err: taskErr }, `[stop-execution] Failed to reset task ${taskId} status`);
@@ -165,6 +169,7 @@ export const stopRoute = new Elysia().post(
         return {
           success: true,
           stoppedCount,
+          withdrawn: withdraw,
           message: 'No running execution found; cleaned up queue items and worktrees',
         };
       }
@@ -172,6 +177,7 @@ export const stopRoute = new Elysia().post(
       return {
         success: true,
         stoppedCount,
+        withdrawn: withdraw,
         message: 'Execution(s) stopped and changes reverted',
       };
     } catch (error) {
@@ -188,5 +194,10 @@ export const stopRoute = new Elysia().post(
     params: t.Object({
       id: t.String(),
     }),
+    body: t.Optional(
+      t.Object({
+        withdraw: t.Optional(t.Boolean()),
+      }),
+    ),
   },
 );

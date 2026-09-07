@@ -32,6 +32,8 @@ export interface GatheredTaskState {
   timeline: TransitionEvidenceRow[];
   /** createdAt of the newest transition, or null when the task has none. */
   latestTransitionAtMs: number | null;
+  /** cause of the newest transition, or null when the task has none. */
+  latestTransitionCause: string | null;
   /** Transitions inside the repeat-loop window, for detectRepeatLoop. */
   windowedCauses: RepeatLoopTransition[];
   latestSessionId: number | null;
@@ -155,6 +157,7 @@ export async function gatherTaskState(
       phase: t.phase,
     })),
     latestTransitionAtMs: recentTransitions[0]?.createdAt.getTime() ?? null,
+    latestTransitionCause: recentTransitions[0]?.cause ?? null,
     windowedCauses: windowed.map((t) => ({
       cause: t.cause,
       createdAtMs: t.createdAt.getTime(),

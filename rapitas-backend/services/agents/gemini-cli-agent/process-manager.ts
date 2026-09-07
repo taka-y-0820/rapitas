@@ -5,41 +5,18 @@
  * Not responsible for parsing CLI output or building prompts.
  */
 
-import { spawn, ChildProcess, execSync } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import { spawnLowPriority } from '../process-priority';
-import { existsSync } from 'fs';
 import type { GeminiCliAgentConfig } from './types';
 import { createLogger } from '../../../config/logger';
 import { buildSanitizedSpawnEnv } from '../../../utils/agent';
 import { registerProcess } from '../agent-process-tracker';
 import { startResourceSampling } from '../process-resource-sampler';
+import { resolveCliPathAsync } from '../../../utils/common/cli-path-resolver';
 
 const logger = createLogger('gemini-cli-agent:process-manager');
 
-/**
- * Resolve the full path to the Gemini CLI executable on Windows.
- *
- * @param cliName - Executable name to resolve / 解決するCLI名
- * @returns Resolved full path on Windows, or the original name on other platforms
- */
-export function resolveCliPath(cliName: string): string {
-  if (process.platform !== 'win32') return cliName;
-  try {
-    const resolved = execSync(`where ${cliName}`, {
-      encoding: 'utf8',
-      timeout: 5000,
-      windowsHide: true,
-    })
-      .trim()
-      .split(/\r?\n/)[0];
-    if (resolved && existsSync(resolved)) {
-      return resolved;
-    }
-  } catch {
-    // intentionally ignore - fallback to cliName if resolution fails
-  }
-  return cliName;
-}
+export { resolveCliPathAsync as resolveCliPath } from '../../../utils/common/cli-path-resolver';
 
 /**
  * Build the spawn arguments array for the Gemini CLI.
@@ -318,12 +295,13 @@ export async function stopGeminiProcess(proc: ChildProcess, logPrefix: string): 
  *
  * @returns true if `gemini --version` exits with code 0 / 利用可能な場合はtrue
  */
-export function checkGeminiAvailability(): Promise<boolean> {
+export async function checkGeminiAvailability(): Promise<boolean> {
+  const isWindows = process.platform === 'win32';
+  const geminiPath = await resolveCliPathAsync(
+    process.env.GEMINI_CLI_PATH || (isWindows ? 'gemini.cmd' : 'gemini'),
+  );
+
   return new Promise((resolve) => {
-    const isWindows = process.platform === 'win32';
-    const geminiPath = resolveCliPath(
-      process.env.GEMINI_CLI_PATH || (isWindows ? 'gemini.cmd' : 'gemini'),
-    );
     const proc = spawn(geminiPath, ['--version'], { shell: true });
 
     const timeout = setTimeout(() => {

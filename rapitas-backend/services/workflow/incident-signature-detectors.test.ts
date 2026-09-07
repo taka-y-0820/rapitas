@@ -69,8 +69,23 @@ describe('detectStagnation', () => {
       name: 'the task cannot structurally dispatch (isWorkflowManaged=false)',
       over: { isWorkflowManaged: false },
     },
+    {
+      name: 'the task was deliberately withdrawn (manuallyWithdrawn=true, #875)',
+      over: { manuallyWithdrawn: true },
+    },
   ])('does NOT detect when $name', ({ over }) => {
     expect(detectStagnation({ ...base, ...over })).toBeNull();
+  });
+
+  // #875: omitting manuallyWithdrawn (unresolved) must fail OPEN, mirroring
+  // isWorkflowManaged's contract above.
+  it('still detects when manuallyWithdrawn is omitted (fail-open)', () => {
+    expect(base.manuallyWithdrawn).toBeUndefined();
+    expect(detectStagnation(base)).not.toBeNull();
+  });
+
+  it('still detects when manuallyWithdrawn is explicitly false', () => {
+    expect(detectStagnation({ ...base, manuallyWithdrawn: false })).not.toBeNull();
   });
 
   // #860: omitting isWorkflowManaged (unresolved) must fail OPEN — detection
@@ -216,6 +231,31 @@ describe('detectTriStateDesync', () => {
         latestExecutionStatus: null,
       }),
     ).toBeNull();
+  });
+
+  // #875: a deliberately withdrawn task must not re-fire Pattern B, mirroring
+  // the themeAutoRunEnabled===false gate directly above it in the source.
+  it('does NOT detect pattern B when the task was deliberately withdrawn (manuallyWithdrawn=true)', () => {
+    expect(
+      detectTriStateDesync({
+        taskStatus: 'todo',
+        workflowStatus: 'plan_created',
+        latestSessionStatus: null,
+        latestExecutionStatus: null,
+        manuallyWithdrawn: true,
+      }),
+    ).toBeNull();
+  });
+
+  it('still detects pattern B when manuallyWithdrawn is omitted (fail-open)', () => {
+    expect(
+      detectTriStateDesync({
+        taskStatus: 'todo',
+        workflowStatus: 'plan_created',
+        latestSessionStatus: null,
+        latestExecutionStatus: null,
+      }),
+    ).not.toBeNull();
   });
 
   it('prefers pattern A when both patterns apply simultaneously', () => {

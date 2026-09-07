@@ -1,84 +1,31 @@
 /**
  * providers/cli-utils ユニットテスト
  *
- * resolveCliPath のWindows専用パス解決（`where`実行結果とfs.existsSyncの
- * モック）、buildPrompt のフォールバック連鎖、buildStructuredPrompt の
- * セクション構築を検証する。
+ * resolveCliPath は utils/common/cli-path-resolver への再エクスポートで
+ * あることのみ検証する（実際のWindowsパス解決ロジックは
+ * utils/common/cli-path-resolver.test.ts でカバー済み）。buildPrompt の
+ * フォールバック連鎖、buildStructuredPrompt のセクション構築も検証する。
  */
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, mock } from 'bun:test';
 import type { AgentTaskDefinition } from '../abstraction/types';
 
-let execSyncImpl: (cmd: string) => string = () => '';
-let existingPaths = new Set<string>();
+const mockResolveCliPathAsync = mock((cliName: string) => Promise.resolve(`resolved:${cliName}`));
 
-mock.module('child_process', () => ({
-  execSync: (cmd: string) => execSyncImpl(cmd),
-}));
-
-mock.module('fs', () => ({
-  existsSync: (p: string) => existingPaths.has(p),
+mock.module('../../../utils/common/cli-path-resolver', () => ({
+  resolveCliPathAsync: mockResolveCliPathAsync,
 }));
 
 const { resolveCliPath, buildPrompt, buildStructuredPrompt } = await import('./cli-utils');
-
-/** Temporarily overrides process.platform for the duration of `fn`. */
-async function withPlatform<T>(platform: NodeJS.Platform, fn: () => Promise<T> | T): Promise<T> {
-  const original = process.platform;
-  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
-  try {
-    return await fn();
-  } finally {
-    Object.defineProperty(process, 'platform', { value: original, configurable: true });
-  }
-}
 
 function makeTask(overrides: Partial<AgentTaskDefinition> = {}): AgentTaskDefinition {
   return { title: 'Title', ...overrides } as AgentTaskDefinition;
 }
 
 describe('resolveCliPath', () => {
-  beforeEach(() => {
-    existingPaths = new Set();
-    execSyncImpl = () => '';
-  });
-
-  test('returns the input unchanged on non-Windows platforms', async () => {
-    await withPlatform('linux', () => {
-      expect(resolveCliPath('claude')).toBe('claude');
-    });
-  });
-
-  test('returns the resolved path on Windows when `where` succeeds and the path exists', async () => {
-    await withPlatform('win32', () => {
-      execSyncImpl = () => 'C:\\tools\\claude.exe\n';
-      existingPaths = new Set(['C:\\tools\\claude.exe']);
-      expect(resolveCliPath('claude')).toBe('C:\\tools\\claude.exe');
-    });
-  });
-
-  test('takes only the first line when `where` returns multiple matches', async () => {
-    await withPlatform('win32', () => {
-      execSyncImpl = () => 'C:\\tools\\claude.exe\r\nC:\\other\\claude.exe\n';
-      existingPaths = new Set(['C:\\tools\\claude.exe', 'C:\\other\\claude.exe']);
-      expect(resolveCliPath('claude')).toBe('C:\\tools\\claude.exe');
-    });
-  });
-
-  test('falls back to the original name when the resolved path does not exist on disk', async () => {
-    await withPlatform('win32', () => {
-      execSyncImpl = () => 'C:\\ghost\\claude.exe\n';
-      existingPaths = new Set(); // resolved path not present
-      expect(resolveCliPath('claude')).toBe('claude');
-    });
-  });
-
-  test('falls back to the original name when `where` throws (command not found)', async () => {
-    await withPlatform('win32', () => {
-      execSyncImpl = () => {
-        throw new Error('not found');
-      };
-      expect(resolveCliPath('claude')).toBe('claude');
-    });
+  test('delegates to the shared cli-path-resolver', async () => {
+    const result = await resolveCliPath('claude');
+    expect(result).toBe('resolved:claude');
+    expect(mockResolveCliPathAsync).toHaveBeenCalledWith('claude');
   });
 });
 

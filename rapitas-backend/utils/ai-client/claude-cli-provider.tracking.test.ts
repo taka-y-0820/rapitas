@@ -42,14 +42,16 @@ const mockSpawn = mock((_command: string, _args: string[], _options: Record<stri
 
 mock.module('child_process', () => ({
   spawn: mockSpawn,
-  execSync: mock(() => {
-    throw new Error('not found');
-  }),
-  exec: mock(() => {}),
-  execFile: mock(() => {}),
   execFileSync: mock(() => Buffer.from('')),
   spawnSync: mock(() => ({ status: 0, stdout: '', stderr: '' })),
   fork: mock(() => {}),
+}));
+
+// CLI path resolution is delegated to utils/common/cli-path-resolver (see
+// cli-path-resolver.test.ts for its own coverage); stub it to a fixed path so
+// these tests exercise process tracking in isolation.
+mock.module('../common/cli-path-resolver', () => ({
+  getClaudePathAsync: mock(() => Promise.resolve('claude.cmd')),
 }));
 
 const registerMock = mock((_info: { pid: number; role: string }) => {});

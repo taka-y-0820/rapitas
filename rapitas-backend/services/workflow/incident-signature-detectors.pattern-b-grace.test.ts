@@ -284,3 +284,41 @@ describe('pattern B recovery grace scans the transition window, not just the lat
     expect(result?.kind).toBe('todo_status_workflow_advanced');
   });
 });
+
+// #875: stop-execution({withdraw:true}) records `manual_execution_stop_withdraw`.
+// Unlike the other RECOVERY_REQUEUE_CAUSES members (which only grant a
+// temporary settle window), a withdrawn task is ALSO permanently excluded via
+// manuallyWithdrawn once the grace window passes — the operator has already
+// decided not to resume it, so it must never re-fire.
+describe('pattern B recovery grace + permanent exclusion for manual_execution_stop_withdraw (#875)', () => {
+  const withdrawn: TriStateDesyncInput = {
+    taskStatus: 'todo',
+    workflowStatus: 'in_progress',
+    latestSessionStatus: null,
+    latestExecutionStatus: null,
+    latestTransitionCause: 'manual_execution_stop_withdraw',
+    latestTransitionAtMs: NOW - 60_000,
+    nowMs: NOW,
+  };
+
+  it('does NOT detect pattern B shortly after the withdraw (recovery grace)', () => {
+    expect(detectTriStateDesync(withdrawn)).toBeNull();
+  });
+
+  it('does NOT detect pattern B once the grace window passes, when manuallyWithdrawn is also set (permanent exclusion)', () => {
+    const result = detectTriStateDesync({
+      ...withdrawn,
+      latestTransitionAtMs: NOW - DESYNC_RECOVERY_SETTLE_MS,
+      manuallyWithdrawn: true,
+    });
+    expect(result).toBeNull();
+  });
+
+  it('detects again once the grace window passes, when manuallyWithdrawn is NOT set (regression guard)', () => {
+    const result = detectTriStateDesync({
+      ...withdrawn,
+      latestTransitionAtMs: NOW - DESYNC_RECOVERY_SETTLE_MS,
+    });
+    expect(result?.kind).toBe('todo_status_workflow_advanced');
+  });
+});

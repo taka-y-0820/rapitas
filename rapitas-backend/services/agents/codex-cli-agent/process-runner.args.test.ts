@@ -13,8 +13,16 @@
  * `child_process.spawn` is mocked end-to-end — no real Codex CLI process is
  * ever spawned. `./types` is mocked so `resolveCliPath` never shells out to
  * `where codex.cmd` for real on this Windows test machine.
+ *
+ * NOTE: spawnCodexProcess computes `isWindows = process.platform === 'win32'`
+ * internally and passes it to buildSpawnCommand, which only flattens args
+ * into a single chcp-prefixed command string when isWindows is true. Every
+ * assertion in this file checks `spawnCalls[0].command` as that flattened
+ * string, so process.platform is pinned to 'win32' for the whole file —
+ * without it, CI(Linux) got the unflattened `[codexPath, args]` array back
+ * and every `command.toContain(...)` assertion failed (task #869).
  */
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, beforeAll, afterAll } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'child_process';
 import { createInitialWaitingState } from '../question-detection';
@@ -112,6 +120,16 @@ function makeCallbacks() {
 
 const noArtifacts = () => [];
 const noCommits = () => [];
+
+const originalPlatform = process.platform;
+
+beforeAll(() => {
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+});
+
+afterAll(() => {
+  Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+});
 
 beforeEach(() => {
   spawnCalls = [];

@@ -37,25 +37,29 @@ class MockChild extends EventEmitter {
 }
 
 let spawnedChildren: MockChild[] = [];
-let execSyncImpl: (cmd: string) => string = () => {
-  throw new Error('not found');
-};
 
 const mockSpawn = mock((_command: string, _args: string[], _options: Record<string, unknown>) => {
   const child = new MockChild();
   spawnedChildren.push(child);
   return child as unknown as ChildProcess;
 });
-const mockExecSync = mock((cmd: string) => execSyncImpl(cmd));
 
 mock.module('child_process', () => ({
   spawn: mockSpawn,
-  execSync: mockExecSync,
-  exec: mock(() => {}),
-  execFile: mock(() => {}),
+  // NOTE: agent-process-tracker (imported transitively for process registration)
+  // statically imports execSync — must remain a valid named export even though
+  // these tests never exercise that path.
+  execSync: mock(() => ''),
   execFileSync: mock(() => Buffer.from('')),
   spawnSync: mock(() => ({ status: 0, stdout: '', stderr: '' })),
   fork: mock(() => {}),
+}));
+
+// CLI path resolution is delegated to utils/common/cli-path-resolver (see
+// cli-path-resolver.test.ts for its own coverage); stub it to a fixed path so
+// these tests exercise process-level failure handling in isolation.
+mock.module('../common/cli-path-resolver', () => ({
+  getClaudePathAsync: mock(() => Promise.resolve('claude.cmd')),
 }));
 
 mock.module('../../config/logger', () => ({
@@ -94,9 +98,6 @@ async function drainSSE(stream: ReadableStream): Promise<string> {
 
 beforeEach(() => {
   spawnedChildren = [];
-  execSyncImpl = () => {
-    throw new Error('not found');
-  };
   mockSpawn.mockClear();
 });
 

@@ -3,17 +3,38 @@
  *
  * Verifies the retrieval→outcome trace bookkeeping: entries used by a task are
  * counted once, merged across multiple retrievals, and the trace is cleared
- * after the outcome is applied. The decay primitives (boost/penalize) are no-ops
- * here for non-existent ids — forgetting.ts returns early when the entry is not
- * found — so no module mock (which would leak process-globally) is needed.
+ * after the outcome is applied.
+ *
+ * NOTE: The decay primitives (boost/penalize) and the durable timeline trace
+ * were originally left unmocked on the assumption that a reachable-but-empty
+ * DB returns `null`/`[]` quickly for these non-existent ids (forgetting.ts
+ * returns early on not-found). That assumption breaks when Postgres itself is
+ * unreachable (`localhost:5432` down in this worktree) — each call instead
+ * retries against a `PrismaClientInitializationError` and the cumulative delay
+ * exceeds the 5s test timeout (7 failures observed). `config/database` /
+ * `./forgetting` / `./timeline` are mocked to no-ops so the trace bookkeeping
+ * under test stays independent of DB reachability.
  */
-import { describe, test, expect, beforeEach } from 'bun:test';
-import {
-  recordRetrieval,
-  applyOutcomeReinforcement,
-  mergeKnowledgeUsage,
-  _resetTraces,
-} from './outcome-reinforcement';
+import { describe, test, expect, beforeEach, mock } from 'bun:test';
+
+mock.module('../../config/database', () => ({
+  prisma: {
+    knowledgeEntry: { updateMany: () => Promise.resolve({ count: 0 }) },
+    timelineEvent: { deleteMany: () => Promise.resolve({ count: 0 }) },
+  },
+  ensureDatabaseConnection: () => Promise.resolve(),
+}));
+mock.module('./forgetting', () => ({
+  boostDecayOnAccess: () => Promise.resolve(),
+  penalizeOnFailure: () => Promise.resolve(),
+}));
+mock.module('./timeline', () => ({
+  appendEvent: () => Promise.resolve({ id: 0 }),
+  queryEvents: () => Promise.resolve({ events: [], total: 0 }),
+}));
+
+const { recordRetrieval, applyOutcomeReinforcement, mergeKnowledgeUsage, _resetTraces } =
+  await import('./outcome-reinforcement');
 
 describe('outcome-reinforcement', () => {
   beforeEach(() => {

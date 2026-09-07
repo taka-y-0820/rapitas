@@ -334,12 +334,12 @@ export class CodexCliAgent extends BaseAgent {
     args: string[],
     timeoutMs: number = 10000,
   ): Promise<{ ok: boolean; stderr: string }> {
-    return new Promise((resolve) => {
-      const isWindows = process.platform === 'win32';
-      const codexPath = resolveCliPath(
-        process.env.CODEX_CLI_PATH || (isWindows ? 'codex.cmd' : 'codex'),
-      );
+    const isWindows = process.platform === 'win32';
+    const codexPath = await resolveCliPath(
+      process.env.CODEX_CLI_PATH || (isWindows ? 'codex.cmd' : 'codex'),
+    );
 
+    return new Promise((resolve) => {
       // NOTE: With `shell: true`, Node.js does NOT auto-quote arguments
       // containing spaces. e.g. ['debug', 'prompt-input', 'health check']
       // becomes the literal command line `codex debug prompt-input health

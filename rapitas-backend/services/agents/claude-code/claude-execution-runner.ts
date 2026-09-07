@@ -234,7 +234,7 @@ async function writePromptToStdin(agent: ClaudeCodeAgent, prompt: string): Promi
  * @param resolve - Promise resolver from execute().
  * @param buildResolveAfterParse - Bound `agent.buildResolveAfterParse`.
  */
-export function runClaudeExecution(
+export async function runClaudeExecution(
   agent: ClaudeCodeAgent,
   task: AgentTask,
   workDir: string,
@@ -248,7 +248,7 @@ export function runClaudeExecution(
     resolve: (result: AgentExecutionResult) => void,
     resourceStats?: { cpuTimeMs: number | null; peakRssKb: number | null },
   ) => () => void,
-): void {
+): Promise<void> {
   // In --resume or --continue mode, use the prompt (user response) as-is
   // Adding extra text would break the session resumption context
   const isResumeMode = !!(agent.config.resumeSessionId || agent.config.continueConversation);
@@ -275,7 +275,7 @@ export function runClaudeExecution(
   const { args, logExtras } = buildClaudeArgs(agent);
   for (const line of logExtras) logger.info(line);
 
-  const claudePath = getClaudePath();
+  const claudePath = await getClaudePath();
   const [finalCommand, finalArgs] = buildSpawnCommand(claudePath, args);
 
   logger.info(`${agent.logPrefix} Platform: ${process.platform} / Claude path: ${claudePath}`);

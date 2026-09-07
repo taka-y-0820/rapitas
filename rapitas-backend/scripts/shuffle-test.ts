@@ -29,8 +29,15 @@ import { parseGateManifest, validateManifestFiles } from './gate-manifest-parser
 /** Fixed fallback seed used when TEST_SHUFFLE_SEED is not set. */
 const DEFAULT_SEED = 20250101;
 
-/** Matches paths that belong to integration tests (DB-dependent, excluded from shuffle). */
-export const INTEGRATION_EXCLUDE_PATTERN = /[/\\]tests[/\\]integration[/\\]/;
+/**
+ * Matches paths that belong to integration tests (DB-dependent, excluded from
+ * shuffle), plus playwright-worker-client.test.ts — it spawns a real system
+ * browser (msedge/chrome) and there is no browser-install step in the
+ * `test-full-advisory` CI job, so it always fails there (task #869). See that
+ * file's own header NOTE for the full rationale.
+ */
+export const INTEGRATION_EXCLUDE_PATTERN =
+  /[/\\]tests[/\\]integration[/\\]|[/\\]runtime-smoke[/\\]playwright-worker-client\.test\.ts$/;
 
 /**
  * Creates a Linear Congruential Generator (LCG) seeded PRNG.

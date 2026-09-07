@@ -2,10 +2,19 @@
  * process-resource-sampler ユニットテスト
  *
  * CSV/`/proc` パース関数の境界値と、start/stopResourceSampling のライフサイクルを検証する。
- * 正常系(モックした生存PIDから値取得)は child_process.exec をモックして検証する
- * (このリポジトリの開発機は win32 のため readWindowsStats 経路をモック対象とする)。
+ * 正常系(モックした生存PIDから値取得)は child_process.exec をモックして検証する。
+ *
+ * NOTE: sampleOnce() (process-resource-sampler.ts) branches on
+ * process.platform === 'win32' to pick readWindowsStats (exec, mocked below)
+ * vs readPosixStats (real /proc/<pid> read). The start/stopResourceSampling
+ * describe block below pins process.platform to 'win32' for its duration so
+ * the exec mock is actually exercised on Linux CI too — without it, CI ran
+ * readPosixStats against fake PIDs (55555 etc.) whose /proc entries don't
+ * exist, so every "正常系" assertion failed there (task #869). The pure
+ * parser describes (parseTasklistCsvLine / parseProcStat*) are platform-
+ * independent and are left unpinned.
  */
-import { describe, test, expect, mock } from 'bun:test';
+import { describe, test, expect, mock, beforeAll, afterAll } from 'bun:test';
 import * as realChildProcess from 'child_process';
 import type { ExecOptions } from 'child_process';
 
@@ -82,6 +91,16 @@ describe('parseProcStatusRssKb()', () => {
 });
 
 describe('start/stopResourceSampling() — 正常系(モックした生存PID)', () => {
+  const originalPlatform = process.platform;
+
+  beforeAll(() => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  });
+
+  afterAll(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  });
+
   test('exec が有効な tasklist CSV を返す場合、stop で実測値を取得できる', async () => {
     const pid = 55555;
     execOverride = (_command, _options, callback) => {
@@ -107,6 +126,16 @@ describe('start/stopResourceSampling() — 正常系(モックした生存PID)',
 });
 
 describe('start/stopResourceSampling() — プロセス消滅後・未対応プラットフォーム', () => {
+  const originalPlatform = process.platform;
+
+  beforeAll(() => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  });
+
+  afterAll(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  });
+
   test('一度もサンプリングできなかった PID は stop で null/null を返す', async () => {
     const fakePid = 999999;
     execOverride = (_command, _options, callback) => {

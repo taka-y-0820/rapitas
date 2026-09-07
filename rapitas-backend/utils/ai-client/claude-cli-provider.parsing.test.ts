@@ -2,13 +2,16 @@
  * claude-cli-provider.parsing.test
  *
  * Coverage for the pure/internal plumbing of the Claude Code CLI provider
- * that isn't exported directly: CLI path resolution + caching
- * (resolveCliPath/getClaudePath), the Windows spawn-command builder
- * (buildSpawnCommand), the spawn env builder (buildCliEnv), non-Windows
- * platform branches, `extractLastJsonObject`, and the streaming NDJSON line
- * buffer (handleLine). These are exercised indirectly through the public
- * callClaudeCli/callClaudeCliStream entry points by inspecting what gets
- * passed to the mocked `spawn`/`execSync`.
+ * that isn't exported directly: the Windows spawn-command builder
+ * (buildSpawnCommand — including how it embeds whatever path
+ * getClaudePathAsync resolves to), the spawn env builder (buildCliEnv),
+ * non-Windows platform branches, `extractLastJsonObject`, and the streaming
+ * NDJSON line buffer (handleLine). These are exercised indirectly through the
+ * public callClaudeCli/callClaudeCliStream entry points by inspecting what
+ * gets passed to the mocked `spawn`. CLI path resolution itself
+ * (where/`.cmd` fallback/caching) is covered in
+ * utils/common/cli-path-resolver.test.ts — this file only stubs
+ * getClaudePathAsync.
  *
  * Happy-path / concurrency coverage lives in claude-cli-provider.test.ts;
  * error-classification coverage lives in claude-cli-provider.errors.test.ts.
@@ -36,9 +39,9 @@ class MockChild extends EventEmitter {
 
 let spawnCalls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
 let spawnedChildren: MockChild[] = [];
-let execSyncImpl: (cmd: string) => string = () => {
-  throw new Error('not found');
-};
+// Stubbed CLI path returned to the SUT on each call — override per-test to
+// exercise buildSpawnCommand's quoting/platform branches.
+let claudePathImpl: () => string = () => 'claude';
 
 const mockSpawn = mock((command: string, args: string[], options: Record<string, unknown>) => {
   spawnCalls.push({ command, args, options });
@@ -46,16 +49,21 @@ const mockSpawn = mock((command: string, args: string[], options: Record<string,
   spawnedChildren.push(child);
   return child as unknown as ChildProcess;
 });
-const mockExecSync = mock((cmd: string) => execSyncImpl(cmd));
+const mockGetClaudePathAsync = mock(() => Promise.resolve(claudePathImpl()));
 
 mock.module('child_process', () => ({
   spawn: mockSpawn,
-  execSync: mockExecSync,
-  exec: mock(() => {}),
-  execFile: mock(() => {}),
+  // NOTE: agent-process-tracker (imported transitively for process registration)
+  // statically imports execSync — must remain a valid named export even though
+  // these tests never exercise that path.
+  execSync: mock(() => ''),
   execFileSync: mock(() => Buffer.from('')),
   spawnSync: mock(() => ({ status: 0, stdout: '', stderr: '' })),
   fork: mock(() => {}),
+}));
+
+mock.module('../common/cli-path-resolver', () => ({
+  getClaudePathAsync: mockGetClaudePathAsync,
 }));
 
 mock.module('../../config/logger', () => ({
@@ -123,124 +131,39 @@ function fullCommand(i: number): string {
 beforeEach(() => {
   spawnCalls = [];
   spawnedChildren = [];
-  execSyncImpl = () => {
-    throw new Error('not found');
-  };
+  claudePathImpl = () => 'claude';
   mockSpawn.mockClear();
-  mockExecSync.mockClear();
+  mockGetClaudePathAsync.mockClear();
 });
 
 afterEach(() => {
   delete process.env.CLAUDE_CODE_PATH;
 });
 
-// ── resolveCliPath / getClaudePath (win32 branch, forced via withPlatform) ──
-// NOTE: these exercise the win32-only `where` resolution; without the
-// withPlatform wrapper they only passed when the REAL platform was Windows
-// and sat permanently red on Linux CI.
+// ── buildSpawnCommand embeds whatever getClaudePathAsync resolves to ────────
+// NOTE: `where`/`.cmd`-fallback/caching behavior lives in
+// utils/common/cli-path-resolver.test.ts. These only verify that this module
+// correctly plumbs the resolved path into the spawn command on Windows.
 
-describe('resolveCliPath / getClaudePath — Windows', () => {
-  test('resolves via `where` and caches the result across subsequent calls', async () => {
-    process.env.CLAUDE_CODE_PATH = 'rc-exists-test';
-    execSyncImpl = (cmd) => {
-      if (cmd === 'where rc-exists-test') return `${process.execPath}\n`;
-      throw new Error('unexpected command: ' + cmd);
-    };
+describe('buildSpawnCommand — Windows', () => {
+  test('embeds the resolved CLI path in the spawn command', async () => {
+    claudePathImpl = () => process.execPath;
 
     await withPlatform('win32', async () => {
-      const p1 = callClaudeCli(undefined, [{ role: 'user', content: 'hi' }], undefined, 100);
+      const p = callClaudeCli(undefined, [{ role: 'user', content: 'hi' }], undefined, 100);
       await flush();
       respondSuccess(spawnedChildren[0]);
-      await p1;
+      await p;
     });
+
     expect(spawnCalls[0].command).toContain(
-      spawnCalls[0].command.includes(' ') && process.execPath.includes(' ')
-        ? `"${process.execPath}"`
-        : process.execPath,
+      process.execPath.includes(' ') ? `"${process.execPath}"` : process.execPath,
     );
-    expect(mockExecSync).toHaveBeenCalledTimes(1);
-
-    await withPlatform('win32', async () => {
-      const p2 = callClaudeCli(undefined, [{ role: 'user', content: 'hi again' }], undefined, 100);
-      await flush();
-      respondSuccess(spawnedChildren[1]);
-      await p2;
-    });
-    expect(mockExecSync).toHaveBeenCalledTimes(1); // cached — no second `where`
+    expect(mockGetClaudePathAsync).toHaveBeenCalled();
   });
 
-  test('falls back to the raw command when `where` fails for both the bare name and .cmd variant', async () => {
-    process.env.CLAUDE_CODE_PATH = 'rc-notfound-test';
-    execSyncImpl = () => {
-      throw new Error('not found');
-    };
-
-    await withPlatform('win32', async () => {
-      const p = callClaudeCli(undefined, [{ role: 'user', content: 'hi' }], undefined, 100);
-      await flush();
-      respondSuccess(spawnedChildren[0]);
-      await p;
-    });
-
-    expect(spawnCalls[0].command).toContain('rc-notfound-test');
-    expect(mockExecSync).toHaveBeenCalledTimes(2); // bare name + .cmd variant
-  });
-
-  test('tries the .cmd-suffixed variant when the bare name lookup fails', async () => {
-    process.env.CLAUDE_CODE_PATH = 'rc-cmdfallback-test';
-    execSyncImpl = (cmd) => {
-      if (cmd === 'where rc-cmdfallback-test.cmd') return `${process.execPath}\n`;
-      throw new Error('not found');
-    };
-
-    await withPlatform('win32', async () => {
-      const p = callClaudeCli(undefined, [{ role: 'user', content: 'hi' }], undefined, 100);
-      await flush();
-      respondSuccess(spawnedChildren[0]);
-      await p;
-    });
-
-    expect(spawnCalls[0].command).toContain(process.execPath);
-    expect(mockExecSync).toHaveBeenCalledTimes(2);
-  });
-
-  test('does not attempt a .cmd fallback when the base name already ends in .cmd', async () => {
-    process.env.CLAUDE_CODE_PATH = 'rc-alreadycmd-test.cmd';
-    execSyncImpl = () => {
-      throw new Error('not found');
-    };
-
-    await withPlatform('win32', async () => {
-      const p = callClaudeCli(undefined, [{ role: 'user', content: 'hi' }], undefined, 100);
-      await flush();
-      respondSuccess(spawnedChildren[0]);
-      await p;
-    });
-
-    expect(spawnCalls[0].command).toContain('rc-alreadycmd-test.cmd');
-    expect(mockExecSync).toHaveBeenCalledTimes(1); // no second attempt
-  });
-
-  test('treats a `where` result that points at a nonexistent file as not-found', async () => {
-    process.env.CLAUDE_CODE_PATH = 'rc-noexist-test';
-    execSyncImpl = () => 'Z:\\definitely\\not\\a\\real\\path\\claude123.exe\n';
-
-    await withPlatform('win32', async () => {
-      const p = callClaudeCli(undefined, [{ role: 'user', content: 'hi' }], undefined, 100);
-      await flush();
-      respondSuccess(spawnedChildren[0]);
-      await p;
-    });
-
-    expect(spawnCalls[0].command).toContain('rc-noexist-test');
-    expect(spawnCalls[0].command).not.toContain('claude123.exe');
-  });
-
-  test('quotes a raw path containing spaces when building the spawn command', async () => {
-    process.env.CLAUDE_CODE_PATH = 'C:\\Program Files\\Claude\\claude.cmd';
-    execSyncImpl = () => {
-      throw new Error('not found');
-    };
+  test('quotes a resolved path containing spaces when building the spawn command', async () => {
+    claudePathImpl = () => 'C:\\Program Files\\Claude\\claude.cmd';
 
     await withPlatform('win32', async () => {
       const p = callClaudeCli(undefined, [{ role: 'user', content: 'hi' }], undefined, 100);
@@ -273,22 +196,34 @@ describe('buildCliEnv', () => {
 // ── non-Windows platform branches ────────────────────────────────────────────
 
 describe('non-Windows platform branches', () => {
-  test('resolveCliPath skips `where` entirely; buildSpawnCommand keeps a real argv array', async () => {
-    await withPlatform('darwin', async () => {
-      const p = callClaudeCli(undefined, [{ role: 'user', content: 'hi' }], undefined, 100);
-      await flush();
-      respondSuccess(spawnedChildren[0]);
-      await p;
-    });
+  test('buildSpawnCommand keeps a real argv array (no chcp/quoting wrapper)', async () => {
+    // buildCliEnv spreads ...process.env, so LANG/CHCP may already be present
+    // on the host (e.g. Git Bash sets LANG). Clear them for this test so the
+    // assertion checks buildCliEnv's own platform-conditional override, not
+    // ambient host state.
+    const savedLang = process.env.LANG;
+    const savedChcp = process.env.CHCP;
+    delete process.env.LANG;
+    delete process.env.CHCP;
+    try {
+      await withPlatform('darwin', async () => {
+        const p = callClaudeCli(undefined, [{ role: 'user', content: 'hi' }], undefined, 100);
+        await flush();
+        respondSuccess(spawnedChildren[0]);
+        await p;
+      });
 
-    expect(mockExecSync).not.toHaveBeenCalled();
-    const call = spawnCalls[0];
-    expect(call.command).toBe('claude'); // unsuffixed default binary name on non-Windows
-    expect(call.args.length).toBeGreaterThan(0);
-    expect(call.args).toContain('--model');
-    const env = call.options.env as NodeJS.ProcessEnv;
-    expect(env.LANG).toBeUndefined();
-    expect(env.CHCP).toBeUndefined();
+      const call = spawnCalls[0];
+      expect(call.command).toBe('claude'); // unsuffixed default binary name on non-Windows
+      expect(call.args.length).toBeGreaterThan(0);
+      expect(call.args).toContain('--model');
+      const env = call.options.env as NodeJS.ProcessEnv;
+      expect(env.LANG).toBeUndefined();
+      expect(env.CHCP).toBeUndefined();
+    } finally {
+      if (savedLang !== undefined) process.env.LANG = savedLang;
+      if (savedChcp !== undefined) process.env.CHCP = savedChcp;
+    }
   });
 });
 

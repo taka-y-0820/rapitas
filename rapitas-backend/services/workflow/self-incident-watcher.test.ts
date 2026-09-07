@@ -355,6 +355,79 @@ describe('runSelfIncidentWatch', () => {
     expect(keys).toContain('self-incident:stagnation');
   });
 
+  // #875: unlike other RECOVERY_REQUEUE_CAUSES, a deliberate withdraw
+  // (stop-execution({withdraw:true})) must stay permanently excluded past the
+  // grace window — neither Pattern B nor the stagnation backstop may re-fire.
+  test('does NOT file desync or stagnation once withdrawn past the grace window (#875)', async () => {
+    const now = nextPassTime();
+    const settledMs = now - 31 * 60 * 1000;
+    taskFindManyMock.mockResolvedValue([
+      stagnantTask(now, {
+        id: 867,
+        status: 'todo',
+        workflowStatus: 'in_progress',
+        updatedAt: new Date(settledMs),
+      }),
+    ]);
+    transitionFindManyMock.mockImplementation((args: unknown) => {
+      const where = (args as { where: { createdAt?: unknown } }).where;
+      if (where.createdAt) return Promise.resolve([]);
+      return Promise.resolve([
+        {
+          fromStatus: 'in_progress',
+          toStatus: 'in_progress',
+          actor: 'user',
+          cause: 'manual_execution_stop_withdraw',
+          phase: null,
+          createdAt: new Date(settledMs),
+        },
+      ]);
+    });
+
+    const filed = await runSelfIncidentWatch(now);
+
+    expect(filed).toBe(0);
+    expect(submitConcernMock).not.toHaveBeenCalled();
+  });
+
+  // Regression: an ordinary (non-withdraw) manual stop must keep re-arming
+  // past the grace window exactly as before #875.
+  test('still files stagnation + desync past the grace window for a plain manual_execution_stop_revert', async () => {
+    const now = nextPassTime();
+    const settledMs = now - 31 * 60 * 1000;
+    taskFindManyMock.mockResolvedValue([
+      stagnantTask(now, {
+        id: 868,
+        status: 'todo',
+        workflowStatus: 'in_progress',
+        updatedAt: new Date(settledMs),
+      }),
+    ]);
+    transitionFindManyMock.mockImplementation((args: unknown) => {
+      const where = (args as { where: { createdAt?: unknown } }).where;
+      if (where.createdAt) return Promise.resolve([]);
+      return Promise.resolve([
+        {
+          fromStatus: 'in_progress',
+          toStatus: 'in_progress',
+          actor: 'user',
+          cause: 'manual_execution_stop_revert',
+          phase: null,
+          createdAt: new Date(settledMs),
+        },
+      ]);
+    });
+
+    const filed = await runSelfIncidentWatch(now);
+
+    expect(filed).toBe(2);
+    const keys = submitConcernMock.mock.calls.map(
+      (c) => (c[0] as Record<string, unknown>).dedupKey,
+    );
+    expect(keys).toContain('self-incident:tristate-desync:todo-workflow-advanced');
+    expect(keys).toContain('self-incident:stagnation');
+  });
+
   test('files a repeat-loop concern keyed by the looping cause', async () => {
     const now = nextPassTime();
     taskFindManyMock.mockResolvedValue([

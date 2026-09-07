@@ -414,4 +414,58 @@ describe('stop-route worktree cleanup', () => {
       data: { worktreePath: null },
     });
   });
+
+  it('records manual_execution_stop_revert cause when withdraw is omitted (#875 regression)', async () => {
+    const taskId = 875;
+    mockResolveTaskWorkingDirectory.mockResolvedValue({ workingDirectory: null, themeId: null });
+    mockDb.task.findUnique.mockResolvedValue({ workflowStatus: 'in_progress' });
+
+    const res = await stopRoute.handle(
+      new Request(`${BASE}/${taskId}/stop-execution`, { method: 'POST' }),
+    );
+    const body = await res.json();
+
+    expect(body.success).toBe(true);
+    expect(body.withdrawn).toBe(false);
+    expect(mockRecordTransition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId,
+        cause: 'manual_execution_stop_revert',
+        metadata: { reason: 'manual_stop_execution' },
+      }),
+    );
+    expect(mockDb.task.update).toHaveBeenCalledWith({
+      where: { id: taskId },
+      data: { status: 'todo' },
+    });
+  });
+
+  it('records manual_execution_stop_withdraw cause when withdraw:true is sent (#875)', async () => {
+    const taskId = 876;
+    mockResolveTaskWorkingDirectory.mockResolvedValue({ workingDirectory: null, themeId: null });
+    mockDb.task.findUnique.mockResolvedValue({ workflowStatus: 'in_progress' });
+
+    const res = await stopRoute.handle(
+      new Request(`${BASE}/${taskId}/stop-execution`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ withdraw: true }),
+      }),
+    );
+    const body = await res.json();
+
+    expect(body.success).toBe(true);
+    expect(body.withdrawn).toBe(true);
+    expect(mockRecordTransition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId,
+        cause: 'manual_execution_stop_withdraw',
+        metadata: { reason: 'manual_stop_execution_withdraw' },
+      }),
+    );
+    expect(mockDb.task.update).toHaveBeenCalledWith({
+      where: { id: taskId },
+      data: { status: 'todo' },
+    });
+  });
 });

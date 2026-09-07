@@ -9,8 +9,17 @@
  * the real module's exports and only override the specific functions the
  * source file (agent-process-tracker.ts) actually calls, keeping every other
  * export intact for any other module that happens to load in this process.
+ *
+ * NOTE: agent-process-tracker.ts branches on process.platform === 'win32' for
+ * isProcessAlive/isListeningOnBackendPort/cleanupZombieProcesses/
+ * killProcessTreeSafely, and every mock above (tasklist/netstat/taskkill/
+ * PowerShell snapshot output) is shaped for the win32 branch only. Without
+ * pinning process.platform, this file passes locally (Windows dev machine)
+ * but on Linux CI it silently falls through to the POSIX branch — a REAL,
+ * unmocked process.kill(pid, 0/'SIGKILL') against test PIDs like 1000/2300 —
+ * which is both wrong (bypasses every mock) and unsafe (task #869).
  */
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, beforeAll, afterAll } from 'bun:test';
 import { join } from 'path';
 import * as realFs from 'fs';
 import * as realChildProcess from 'child_process';
@@ -81,6 +90,16 @@ const {
 } = await import('./agent-process-tracker');
 
 const PID_DIR = join(process.cwd(), '.agent-pids');
+
+const originalPlatform = process.platform;
+
+beforeAll(() => {
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+});
+
+afterAll(() => {
+  Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+});
 
 /** Marks a PID as alive to tasklist and NOT listening on port 3001 — the "normal zombie" shape. */
 function makePidAliveNotListening(pid: number): void {

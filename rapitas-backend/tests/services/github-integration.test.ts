@@ -12,6 +12,14 @@ mock.module('child_process', () => ({
       .then((r) => cb(null, r))
       .catch((e) => cb(e));
   },
+  // NOTE: gh-client.ts/git-exec.ts が `import { execFile } from 'child_process'` する。
+  // promisify は下でモック済みで引数を無視して mockExecAsync を返すため、ここは
+  // named export の欠落を防ぐダミーで十分（呼び出し実体は使われない）。
+  execFile: (_file: string, _args: string[], _opts: unknown, cb: Function) => {
+    mockExecAsync()
+      .then((r) => cb(null, r))
+      .catch((e) => cb(e));
+  },
 }));
 mock.module('util', () => ({
   promisify: () => mockExecAsync,
@@ -35,13 +43,19 @@ const mockPrisma = {
 
 // Note: Do not mock @prisma/client globally as it affects other test files.
 // The GitHubService accepts prisma as a constructor parameter, so we can inject the mock directly.
+const noopLogger = {
+  info: () => {},
+  error: () => {},
+  warn: () => {},
+  debug: () => {},
+};
+// NOTE: config/index.ts の `export { logger, createLogger } from './logger'` が
+// GitHubService → sync-webhook → concern-backlog-service → task-mutations →
+// task-calendar-sync 経由で読み込まれるため、createLogger だけでなく logger も必須
 mock.module('../../config/logger', () => ({
-  createLogger: () => ({
-    info: () => {},
-    error: () => {},
-    warn: () => {},
-    debug: () => {},
-  }),
+  createLogger: () => noopLogger,
+  logger: noopLogger,
+  getBackendLogFilePath: () => '/tmp/backend.log',
 }));
 mock.module('../../services/communication/realtime-service', () => ({
   realtimeService: { sendGitHubEvent: mock(() => {}) },

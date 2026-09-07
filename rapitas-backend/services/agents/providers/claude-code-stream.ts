@@ -114,13 +114,13 @@ export async function runClaudeCode(
   emitOutput: (output: string, isError: boolean) => Promise<void>,
 ): Promise<AgentExecutionResult> {
   const startTime = Date.now();
+  const isWindows = process.platform === 'win32';
+  const baseClaudePath =
+    config.cliPath || process.env.CLAUDE_CODE_PATH || (isWindows ? 'claude.cmd' : 'claude');
+  const claudePath = await resolveCliPath(baseClaudePath);
 
   return new Promise((resolve) => {
     const timeout = context.timeout || config.timeout || 900000;
-    const isWindows = process.platform === 'win32';
-    const baseClaudePath =
-      config.cliPath || process.env.CLAUDE_CODE_PATH || (isWindows ? 'claude.cmd' : 'claude');
-    const claudePath = resolveCliPath(baseClaudePath);
 
     const args: string[] = ['--print', '--verbose', '--output-format', 'stream-json'];
 

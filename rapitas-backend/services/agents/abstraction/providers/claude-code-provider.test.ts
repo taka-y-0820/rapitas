@@ -2,12 +2,16 @@
  * claude-code-provider.test
  *
  * Coverage for ClaudeCodeProvider: capabilities, isAvailable()'s CLI probe
- * (close/error/timeout paths and the win32-only `where`-based CLI resolution),
- * validateConfig(), healthCheck(), and createAgent()'s config-merge
- * precedence. `child_process` and `fs`/`fs/promises` are mocked end-to-end so
- * no real CLI process or filesystem access ever occurs; `ClaudeCodeAgentAdapter`
- * is mocked so createAgent() can be verified in isolation from adapter
- * internals (covered separately in claude-code-agent-adapter*.test.ts).
+ * (close/error/timeout paths), validateConfig(), healthCheck(), and
+ * createAgent()'s config-merge precedence. `child_process` and
+ * `fs`/`fs/promises` are mocked end-to-end so no real CLI process or
+ * filesystem access ever occurs; `ClaudeCodeAgentAdapter` is mocked so
+ * createAgent() can be verified in isolation from adapter internals (covered
+ * separately in claude-code-agent-adapter*.test.ts). CLI path resolution
+ * (win32-only `where` resolution/caching) is delegated to
+ * utils/common/cli-path-resolver — covered in its own cli-path-resolver.test.ts —
+ * and stubbed here via a static import so bun:test's mock.module() can
+ * intercept it (see the NOTE on the claude-code-provider.ts import).
  */
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { EventEmitter } from 'node:events';
@@ -22,9 +26,6 @@ class MockChild extends EventEmitter {
 let spawnCalls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
 let spawnedChildren: MockChild[] = [];
 let spawnShouldThrow = false;
-let execSyncImpl: (cmd: string) => string = () => {
-  throw new Error('not found');
-};
 
 const mockSpawn = mock((command: string, args: string[], options: Record<string, unknown>) => {
   if (spawnShouldThrow) throw new Error('spawn boom');
@@ -33,16 +34,21 @@ const mockSpawn = mock((command: string, args: string[], options: Record<string,
   spawnedChildren.push(child);
   return child;
 });
-const mockExecSync = mock((cmd: string) => execSyncImpl(cmd));
 
 mock.module('child_process', () => ({
   spawn: mockSpawn,
-  execSync: mockExecSync,
-  exec: mock(() => {}),
-  execFile: mock(() => {}),
   execFileSync: mock(() => Buffer.from('')),
   spawnSync: mock(() => ({ status: 0, stdout: '', stderr: '' })),
   fork: mock(() => {}),
+}));
+
+// Stubbed CLI path returned to the SUT on each call — override per-test to
+// exercise the Windows/non-Windows branches without shelling out to `where`.
+let resolvedClaudePath = 'claude';
+const mockResolveCliPathAsync = mock((_cliName: string) => Promise.resolve(resolvedClaudePath));
+
+mock.module('../../../../utils/common/cli-path-resolver', () => ({
+  resolveCliPathAsync: mockResolveCliPathAsync,
 }));
 
 let existsSyncImpl: (p: string) => boolean = () => true;
@@ -110,13 +116,11 @@ beforeEach(() => {
   spawnCalls = [];
   spawnedChildren = [];
   spawnShouldThrow = false;
-  execSyncImpl = () => {
-    throw new Error('not found');
-  };
+  resolvedClaudePath = 'claude';
   existsSyncImpl = () => true;
   accessImpl = () => Promise.resolve();
   mockSpawn.mockClear();
-  mockExecSync.mockClear();
+  mockResolveCliPathAsync.mockClear();
   mockExistsSync.mockClear();
   mockAccess.mockClear();
 });
@@ -199,35 +203,22 @@ describe('ClaudeCodeProvider.isAvailable', () => {
   });
 
   describe('on Windows', () => {
-    test('uses CLAUDE_CODE_PATH and resolves it via `where`', async () => {
+    test('uses CLAUDE_CODE_PATH and embeds the path resolveCliPathAsync resolves to', async () => {
       await withPlatform('win32', async () => {
         process.env.CLAUDE_CODE_PATH = 'custom-claude';
-        execSyncImpl = (cmd) => {
-          if (cmd === 'where custom-claude') return 'C:\\tools\\custom-claude.cmd\n';
-          throw new Error('unexpected command: ' + cmd);
-        };
+        resolvedClaudePath = 'C:\\tools\\custom-claude.cmd';
         const provider = new ClaudeCodeProvider();
         const promise = provider.isAvailable();
         await resolveNextSpawnClose(0);
         await promise;
+        expect(mockResolveCliPathAsync).toHaveBeenCalledWith('custom-claude');
         expect(spawnCalls[0]!.command).toBe('C:\\tools\\custom-claude.cmd');
       });
     });
 
-    test('falls back to the raw CLI name when `where` fails to resolve', async () => {
+    test('falls back to the raw CLI name when resolveCliPathAsync cannot resolve it', async () => {
       await withPlatform('win32', async () => {
-        const provider = new ClaudeCodeProvider();
-        const promise = provider.isAvailable();
-        await resolveNextSpawnClose(0);
-        await promise;
-        expect(spawnCalls[0]!.command).toBe('claude.cmd');
-      });
-    });
-
-    test('falls back to the raw CLI name when the resolved path does not exist on disk', async () => {
-      await withPlatform('win32', async () => {
-        execSyncImpl = () => 'C:\\ghost\\claude.cmd\n';
-        existsSyncImpl = () => false;
+        resolvedClaudePath = 'claude.cmd'; // resolveCliPathAsync's own fallback contract
         const provider = new ClaudeCodeProvider();
         const promise = provider.isAvailable();
         await resolveNextSpawnClose(0);
@@ -237,13 +228,13 @@ describe('ClaudeCodeProvider.isAvailable', () => {
     });
   });
 
-  test('skips `where` resolution entirely on non-Windows platforms', async () => {
+  test('embeds the raw CLI name on non-Windows platforms (resolveCliPathAsync is a no-op there)', async () => {
     await withPlatform('linux', async () => {
+      resolvedClaudePath = 'claude';
       const provider = new ClaudeCodeProvider();
       const promise = provider.isAvailable();
       await resolveNextSpawnClose(0);
       await promise;
-      expect(mockExecSync.mock.calls.length).toBe(0);
       expect(spawnCalls[0]!.command).toBe('claude');
     });
   });

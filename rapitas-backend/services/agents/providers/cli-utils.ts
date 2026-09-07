@@ -4,35 +4,9 @@
  * CLI path resolution and prompt construction utilities for the Claude Code provider.
  * Does NOT start processes or handle streaming.
  */
-import { execSync } from 'child_process';
-import { existsSync } from 'fs';
 import type { AgentTaskDefinition } from '../abstraction/types';
 
-/**
- * Resolves the absolute path of a CLI command on Windows using `where`.
- * Falls back to the original path on any error.
- *
- * @param cliName - CLI command name or path / CLIコマンド名またはパス
- * @returns Absolute path string on Windows, original string on other platforms / Windowsでのフルパスまたはそのままのパス
- */
-export function resolveCliPath(cliName: string): string {
-  if (process.platform !== 'win32') return cliName;
-  try {
-    const resolved = execSync(`where ${cliName}`, {
-      encoding: 'utf8',
-      timeout: 5000,
-      windowsHide: true,
-    })
-      .trim()
-      .split(/\r?\n/)[0];
-    if (resolved && existsSync(resolved)) {
-      return resolved;
-    }
-  } catch {
-    // Fallback to original path
-  }
-  return cliName;
-}
+export { resolveCliPathAsync as resolveCliPath } from '../../../utils/common/cli-path-resolver';
 
 /**
  * Builds the final prompt string from a task definition.

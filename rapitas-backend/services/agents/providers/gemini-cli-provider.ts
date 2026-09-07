@@ -66,14 +66,14 @@ export class GeminiCliProvider implements IAgentProvider {
    * @returns true if the binary exits with code 0 / バイナリが正常に起動できれば true
    */
   async isAvailable(): Promise<boolean> {
-    return new Promise((resolve) => {
-      const isWindows = process.platform === 'win32';
-      const geminiPath = resolveCliPath(
-        this.defaultConfig.cliPath ||
-          process.env.GEMINI_CLI_PATH ||
-          (isWindows ? 'gemini.cmd' : 'gemini'),
-      );
+    const isWindows = process.platform === 'win32';
+    const geminiPath = await resolveCliPath(
+      this.defaultConfig.cliPath ||
+        process.env.GEMINI_CLI_PATH ||
+        (isWindows ? 'gemini.cmd' : 'gemini'),
+    );
 
+    return new Promise((resolve) => {
       const proc = spawn(geminiPath, ['--version'], { shell: true });
 
       const timeout = setTimeout(() => {

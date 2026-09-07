@@ -5,9 +5,6 @@
  * Not responsible for process spawning or output parsing.
  */
 
-import { execSync } from 'child_process';
-import { existsSync } from 'fs';
-
 /** Configuration for the CodexCliAgent. */
 export type CodexCliAgentConfig = {
   workingDirectory?: string;
@@ -49,28 +46,4 @@ export type CodexCliAgentConfig = {
   investigationOutputType?: 'research' | 'plan' | 'review' | 'verify';
 };
 
-/**
- * Resolve the absolute path of a CLI tool on Windows using `where`.
- * Returns the original name unchanged on non-Windows platforms.
- *
- * @param cliName - Name of the CLI executable / CLI実行ファイル名
- * @returns Resolved absolute path on Windows, or cliName on other platforms / WindowsではAbsoluteパス、それ以外ではcliName
- */
-export function resolveCliPath(cliName: string): string {
-  if (process.platform !== 'win32') return cliName;
-  try {
-    const resolved = execSync(`where ${cliName}`, {
-      encoding: 'utf8',
-      timeout: 5000,
-      windowsHide: true,
-    })
-      .trim()
-      .split(/\r?\n/)[0];
-    if (resolved && existsSync(resolved)) {
-      return resolved;
-    }
-  } catch {
-    // intentionally ignore - fallback to cliName if resolution fails
-  }
-  return cliName;
-}
+export { resolveCliPathAsync as resolveCliPath } from '../../../utils/common/cli-path-resolver';

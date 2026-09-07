@@ -29,10 +29,12 @@ mock.module('../../config/database', () => ({
   prisma: { userSettings: { findFirst: async () => null } },
 }));
 
-// Controls the JSON returned by checkGitHubDeployments via execSync.
+// Controls the JSON returned by checkGitHubDeployments via execFileSync.
 let execSyncResult = '[]';
 mock.module('child_process', () => ({
   execSync: () => execSyncResult,
+  // NOTE: checkGitHubDeployments は execFileSync(gh CLI) を使う実装に変更済み。ミラー不足だと常に skipped に潰れる
+  execFileSync: () => execSyncResult,
 }));
 
 const { pollDeploymentStatus } = await import('./preview-deploy-service');

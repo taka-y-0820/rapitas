@@ -25,7 +25,19 @@ mock.module('../../services/memory/timeline', () => ({ appendEvent: () => Promis
 mock.module('../../services/memory/index', () => ({
   memoryTaskQueue: { enqueue: () => Promise.resolve() },
 }));
-mock.module('../../services/memory/utils', () => ({ createContentHash: (s: string) => s }));
+// NOTE: rag/vector-index.ts が cosineSimilarity を named import するため、ミラー漏れは load error になる
+mock.module('../../services/memory/utils', () => ({
+  createContentHash: (s: string) => s,
+  parseTagsAsStrings: (raw: string) => {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === 'string') : [];
+    } catch {
+      return [];
+    }
+  },
+  cosineSimilarity: () => 0,
+}));
 
 const { findRelatedKnowledge } = await import('../../services/memory/task-knowledge-extractor');
 
