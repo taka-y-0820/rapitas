@@ -211,6 +211,7 @@ export async function performAutoCommitAndPR(
     // Process autoCommit
     if (autoCommit) {
       try {
+        await checkCancellation();
         if (branchName) {
           await orchestrator.createBranch(gitCwd, branchName);
         }
@@ -253,6 +254,7 @@ export async function performAutoCommitAndPR(
     // PR. Runs BEFORE the PR-creation lock — the aux resolution + re-verify can
     // exceed the lock's 5-min staleness window.
     if (autoCreatePR && result.autoCommitResult?.success) {
+      await checkCancellation();
       const baseSync = await syncBaseIntoBranch({
         gitCwd,
         baseBranch: targetBranch,
@@ -263,6 +265,7 @@ export async function performAutoCommitAndPR(
         return { status: 'skipped', changedFiles: 0, conflicts: [], detail: String(err) };
       });
       result.baseSyncResult = baseSync;
+      await checkCancellation();
 
       if (baseSync.status === 'conflict_unresolved' || baseSync.status === 'reverify_failed') {
         // Withhold the PR; keep the worktree (NO cleanup) as the backstop for
@@ -376,6 +379,7 @@ export async function performAutoCommitAndPR(
               // resolve task → local PR id. Without this the by-task lookup 404s and
               // the button silently does nothing.
               if (prResult.prNumber != null && prResult.prUrl) {
+                await checkCancellation();
                 await linkAutoCreatedPr(prisma, {
                   taskId,
                   prNumber: prResult.prNumber,

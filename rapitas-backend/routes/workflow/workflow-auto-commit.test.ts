@@ -26,6 +26,8 @@ mock.module('../../config/logger', () => ({
 }));
 
 let publicationStatus = 'completed';
+let stopAt: 'commit' | 'sync' | null = null;
+let baseSyncCalls = 0;
 const mockPrisma = {
   agentExecution: { findMany: mock(async () => [{ id: 100, status: publicationStatus }]) },
   agentExecutionConfig: {
@@ -85,6 +87,7 @@ mock.module('../../services/agents/agent-orchestrator', () => ({
       createBranch: () => Promise.resolve(),
       createCommit: () => {
         createCommitCalls++;
+        if (stopAt === 'commit') publicationStatus = 'canceling';
         return Promise.resolve({
           hash: 'abc123',
           branch: 'feature/t687',
@@ -136,8 +139,11 @@ mock.module('../../services/github/git-exec', () => ({
   runGitCommand: () => Promise.resolve(revListFixture),
 }));
 mock.module('../../services/workflow/pre-pr-base-sync', () => ({
-  syncBaseIntoBranch: () =>
-    Promise.resolve({ status: 'skipped', changedFiles: 0, conflicts: [], detail: 'no worktree' }),
+  syncBaseIntoBranch: async () => {
+    baseSyncCalls++;
+    if (stopAt === 'sync') publicationStatus = 'canceling';
+    return { status: 'skipped', changedFiles: 0, conflicts: [], detail: 'no worktree' };
+  },
 }));
 
 const { performAutoCommitAndPR } = await import('./workflow-auto-commit');
@@ -302,3 +308,23 @@ test('a stop during verification prevents commit and PR creation', async () => {
     stopDuringVerification = false;
   }
 });
+
+test.each(['commit', 'sync'] as const)(
+  'stop during %s prevents subsequent base sync or PR work',
+  async (stage) => {
+    publicationStatus = 'completed';
+    stopAt = stage;
+    filesChangedFixture = 1;
+    baseSyncCalls = 0;
+    createPullRequestCalls = 0;
+    try {
+      const result = await performAutoCommitAndPR(687, 'verified');
+      expect(result.error).toContain('Publication withheld');
+      expect(baseSyncCalls).toBe(stage === 'commit' ? 0 : 1);
+      expect(createPullRequestCalls).toBe(0);
+    } finally {
+      stopAt = null;
+      publicationStatus = 'completed';
+    }
+  },
+);
