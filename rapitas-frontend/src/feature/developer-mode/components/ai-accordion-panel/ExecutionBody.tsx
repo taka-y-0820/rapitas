@@ -199,17 +199,20 @@ export function ExecutionBody({
     );
   }
 
-  // Initial (idle) state — execution form
+  // Saved workflow phases can exist even without a current execution.
   return (
-    <IdleExecutionForm
-      optimizedPrompt={optimizedPrompt}
-      instruction={instruction}
-      branchName={branchName}
-      baseBranch={baseBranch}
-      baseBranches={baseBranches}
-      onSetInstruction={onSetInstruction}
-      onSetBranchName={onSetBranchName}
-      onSetBaseBranch={onSetBaseBranch}
-    />
+    <div className="space-y-2">
+      {showLogs && <PhaseTimeline taskId={taskId} isRunning={false} liveLogs={logs} />}
+      <IdleExecutionForm
+        optimizedPrompt={optimizedPrompt}
+        instruction={instruction}
+        branchName={branchName}
+        baseBranch={baseBranch}
+        baseBranches={baseBranches}
+        onSetInstruction={onSetInstruction}
+        onSetBranchName={onSetBranchName}
+        onSetBaseBranch={onSetBaseBranch}
+      />
+    </div>
   );
 }
