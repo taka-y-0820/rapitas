@@ -252,6 +252,8 @@ export class AutoMergeWatcher {
   }
 
   private async process(c: Candidate, blocking: Set<string>): Promise<void> {
+    // Stale candidates must not launch CI repair or conflict-resolution work after a stop.
+    if (!(await canFinalizeAutoMerge(prisma, c.taskId))) return;
     const checks = await readPrChecks(c.cwd, c.prNumber);
     if (checks === null) return; // transient gh error — retry next tick
 

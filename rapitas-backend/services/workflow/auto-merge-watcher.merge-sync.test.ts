@@ -98,6 +98,7 @@ mock.module('../../config/logger', () => ({
 }));
 
 const { AutoMergeWatcher } = await import('./auto-merge-watcher');
+const { readPrChecks } = await import('./auto-merge-checks');
 
 type ProcessFn = (
   c: {
@@ -218,4 +219,23 @@ test('blocked during merge is not overwritten as done after GitHub returns', asy
   expect(mockTaskUpdate).not.toHaveBeenCalled();
   expect(mockUpdateMany).toHaveBeenCalledTimes(1);
   expect(mockNotify).not.toHaveBeenCalled();
+});
+
+for (const stopped of ['blocked', 'cancelled', 'todo']) {
+  test(`stale ${stopped} candidate cannot enter CI or conflict handling`, async () => {
+    taskStatus = stopped;
+    const before = (readPrChecks as ReturnType<typeof mock>).mock.calls.length;
+    await getProcess()(candidate, new Set(['Lint Code']));
+    expect((readPrChecks as ReturnType<typeof mock>).mock.calls.length).toBe(before);
+    expect(mockMerge).not.toHaveBeenCalled();
+    expect(mockTaskUpdate).not.toHaveBeenCalled();
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+}
+test('persisted cancellation prevents entering CI or conflict handling', async () => {
+  stoppingExecution = { id: 10 };
+  const before = (readPrChecks as ReturnType<typeof mock>).mock.calls.length;
+  await getProcess()(candidate, new Set(['Lint Code']));
+  expect((readPrChecks as ReturnType<typeof mock>).mock.calls.length).toBe(before);
+  expect(mockMerge).not.toHaveBeenCalled();
 });
