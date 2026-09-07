@@ -108,7 +108,7 @@ describe('segmentPhases', () => {
     expect(result.phases.map((p) => p.phaseType)).toEqual(['research', 'implement', 'verify']);
   });
 
-  it('drops a stray plan execution when the task has no plan file (lightweight)', () => {
+  it('retains recorded planning logs after the plan file is archived', () => {
     const executions: RawPhaseExecution[] = [
       exec({ id: 1, phaseType: 'research' }),
       exec({ id: 2, phaseType: 'plan' }),
@@ -117,7 +117,33 @@ describe('segmentPhases', () => {
 
     const result = segmentPhases(executions, [], false);
 
-    expect(result.phases.find((p) => p.phaseType === 'plan')).toBeUndefined();
+    expect(result.workflowMode).toBe('standard');
+    expect(result.phases.find((p) => p.phaseType === 'plan')?.iterations[0].executionIds).toEqual([
+      2,
+    ]);
+  });
+
+  it('shows the running planner before it first saves plan.md', () => {
+    const result = segmentPhases(
+      [
+        exec({
+          id: 3820,
+          phaseType: 'plan',
+          status: 'running',
+          completedAt: null,
+          logLineCount: 12,
+        }),
+      ],
+      [],
+      false,
+    );
+    expect(result.phases).toHaveLength(1);
+    expect(result.phases[0].phaseType).toBe('plan');
+    expect(result.phases[0].iterations[0]).toMatchObject({
+      executionIds: [3820],
+      status: 'running',
+      logLineCount: 12,
+    });
   });
 
   it('increments the implement iteration once per verify_repair bounce', () => {
