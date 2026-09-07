@@ -50,13 +50,24 @@ const MAX_CONFLICT_RETRIES = 2;
  * Mark a task row done/completed (idempotent). Used when the watcher is the one
  * that reaches a task's completion point under staged completion.
  */
-async function completeTaskRow(taskId: number): Promise<void> {
-  await prisma.task
-    .update({
-      where: { id: taskId },
+async function completeTaskRow(taskId: number): Promise<boolean> {
+  if (!(await canFinalizeAutoMerge(prisma, taskId))) return false;
+  const updated = await prisma.task
+    .updateMany({
+      where: {
+        id: taskId,
+        OR: [
+          { status: 'in-progress', workflowStatus: 'verify_done' },
+          { status: { in: ['done', 'completed'] }, workflowStatus: 'completed' },
+        ],
+      },
       data: { status: 'done', workflowStatus: 'completed', completedAt: new Date() },
     })
-    .catch((err) => log.warn({ err, taskId }, '[auto-merge] completeTaskRow failed'));
+    .catch((err) => {
+      log.warn({ err, taskId }, '[auto-merge] completeTaskRow failed');
+      return { count: 0 };
+    });
+  return updated.count === 1;
 }
 
 /** Record a terminal auto-merge outcome so the candidate is not reprocessed. */
@@ -287,7 +298,7 @@ export class AutoMergeWatcher {
       if (!(await canFinalizeAutoMerge(prisma, c.taskId))) return;
       // PR mode: CI is green and we DO NOT merge — completion is reaching green.
       if (c.mode === 'pr') {
-        await completeTaskRow(c.taskId);
+        if (!(await completeTaskRow(c.taskId))) return;
         await mark(c.taskId, 'pr_ci_completed', `PR #${c.prNumber} CI green`);
         await notify({
           taskId: c.taskId,
@@ -307,7 +318,7 @@ export class AutoMergeWatcher {
         // Under staged completion the task is still in-progress at verify_done;
         // completing on merge is the merge-mode completion point. Idempotent for
         // the legacy path where the task was already done.
-        await completeTaskRow(c.taskId);
+        const completed = await completeTaskRow(c.taskId);
         // Sync the LOCAL PR mirror to merged. The watcher merged on GitHub, but
         // nothing else updates the local GitHubPullRequest row (there is no webhook
         // in dev), so it kept showing 'open' even though the PR was merged — the
@@ -337,6 +348,7 @@ export class AutoMergeWatcher {
               ),
             );
         }
+        if (!completed) return;
         await mark(c.taskId, 'auto_merged', `strategy=${res.mergeStrategy}`);
         await notify({
           taskId: c.taskId,

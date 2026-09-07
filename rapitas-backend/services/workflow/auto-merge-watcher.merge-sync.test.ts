@@ -59,7 +59,7 @@ mock.module('../../utils/database/fail-closed-count', () => ({
 }));
 
 const mockUpdateMany = mock(() => Promise.resolve({ count: 1 }));
-const mockTaskUpdate = mock(() => Promise.resolve({}));
+const mockTaskUpdate = mock(() => Promise.resolve({ count: 1 }));
 let taskStatus = 'done';
 let stoppingExecution: { id: number } | null = null;
 const mockMerge = mock(async () => ({ success: true, mergeStrategy: 'squash' as const }));
@@ -80,7 +80,7 @@ const mockPrisma = {
     findUnique: mock(() =>
       Promise.resolve({ themeId: 1, status: taskStatus, workflowStatus: 'verify_done' }),
     ),
-    update: mockTaskUpdate,
+    updateMany: mockTaskUpdate,
   },
 };
 mock.module('../../config/database', () => ({ prisma: mockPrisma }));
@@ -136,7 +136,7 @@ beforeEach(() => {
   mockResolveIntegrationId.mockClear();
   mockResolveIntegrationId.mockImplementation(() => Promise.resolve<number | null>(1));
   mockUpdateMany.mockClear();
-  mockTaskUpdate.mockClear();
+  mockTaskUpdate.mockReset().mockResolvedValue({ count: 1 });
   mockNotify.mockClear();
 });
 
@@ -184,3 +184,33 @@ test.each(['merge', 'pr'] as const)(
     expect(mockTaskUpdate).not.toHaveBeenCalled();
   },
 );
+
+test('lost completion CAS does not announce task completion but preserves merged PR reality', async () => {
+  mockTaskUpdate.mockResolvedValue({ count: 0 });
+  await getProcess()(candidate, new Set(['Lint Code']));
+  expect(mockMerge).toHaveBeenCalledTimes(1);
+  expect(mockUpdateMany).toHaveBeenCalledTimes(1);
+  expect(mockNotify).not.toHaveBeenCalled();
+  expect(mockTaskUpdate).toHaveBeenCalledWith(
+    expect.objectContaining({
+      where: {
+        id: candidate.taskId,
+        OR: [
+          { status: 'in-progress', workflowStatus: 'verify_done' },
+          { status: { in: ['done', 'completed'] }, workflowStatus: 'completed' },
+        ],
+      },
+    }),
+  );
+});
+
+test('blocked during merge is not overwritten as done after GitHub returns', async () => {
+  mockMerge.mockImplementationOnce(async () => {
+    taskStatus = 'blocked';
+    return { success: true, mergeStrategy: 'squash' };
+  });
+  await getProcess()(candidate, new Set(['Lint Code']));
+  expect(mockTaskUpdate).not.toHaveBeenCalled();
+  expect(mockUpdateMany).toHaveBeenCalledTimes(1);
+  expect(mockNotify).not.toHaveBeenCalled();
+});
