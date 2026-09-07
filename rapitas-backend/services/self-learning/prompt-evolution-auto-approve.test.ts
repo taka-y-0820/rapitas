@@ -82,6 +82,7 @@ const {
   readComparisonRecord,
   recordComparisonRun,
   writeComparisonRecord,
+  addendumVersionHash,
 } = await import('./comparison/prompt-comparison-store');
 const { COMPARISON_MIN_SAMPLE } = await import('./comparison/prompt-comparison-metrics');
 import type { ComparisonRun } from './comparison/prompt-comparison-types';
@@ -115,7 +116,11 @@ function fillArm(id: number, arm: 'current' | 'candidate', successes: number, to
       failureCause: i < successes ? null : 'implementation_error',
       role: 'implementer',
       injected: arm === 'candidate',
-      injectedVersion: arm === 'candidate' ? 'v1' : null,
+      injectedVersion:
+        arm === 'candidate'
+          ? addendumVersionHash(rows.find((r) => r.id === id)!.afterPrompt.trim())
+          : null,
+      modelName: 'reported-model',
     };
     recordComparisonRun(id, arm, run);
   }
@@ -342,6 +347,43 @@ describe('autoApproveEligibleProposals — 既存比較記録の保護', () => {
 });
 
 describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () => {
+  test('a favorable cohort with a different reported model is withheld intact', async () => {
+    rows = [proposedRow(62, '- 提出前にlintを実行する')];
+    await autoApproveEligibleProposals();
+    fillArm(62, 'current', 0, 5);
+    fillArm(62, 'candidate', 5, 5);
+    const record = readComparisonRecord(62)!;
+    record.arms.find((c) => c.arm === 'candidate')!.runs[0].modelName = 'different-model';
+    writeComparisonRecord(record);
+    await autoApproveEligibleProposals();
+    expect(rows[0].status).toBe('staged');
+    expect(evidenceOf(62).comparisonCohortIssue).toBe('mixed_actual_models');
+    expect(readComparisonRecord(62)!.arms.flatMap((c) => c.runs)).toHaveLength(10);
+  });
+  test('changing candidate text does not reuse the old versions favorable results', async () => {
+    rows = [proposedRow(63, '- 提出前にlintを実行する')];
+    await autoApproveEligibleProposals();
+    fillArm(63, 'current', 0, 5);
+    fillArm(63, 'candidate', 5, 5);
+    rows[0].afterPrompt = '- 別の検証手順を実行する';
+    await autoApproveEligibleProposals();
+    expect(rows[0].status).toBe('staged');
+    expect(evidenceOf(63).comparisonCohortIssue).toBe('candidate_version_mismatch');
+  });
+  test('inconclusive checkpoints consume their own budget before any favorable verdict', async () => {
+    rows = [proposedRow(61, '- 提出前にlintを実行する')];
+    await autoApproveEligibleProposals();
+    fillArm(61, 'current', 2, 5);
+    fillArm(61, 'candidate', 2, 5);
+    await autoApproveEligibleProposals();
+    expect(evidenceOf(61).comparisonVerdict).toBe('inconclusive');
+    expect(evidenceOf(61).alphaLookJ).toBe(1);
+    fillArm(61, 'current', 0, 5);
+    fillArm(61, 'candidate', 5, 5);
+    await autoApproveEligibleProposals();
+    expect(evidenceOf(61).alphaLookJ).toBe(2);
+    expect(rows[0].status).toBe('staged');
+  });
   test('証拠不足のあいだは staged のまま継続し、全体採用しない', async () => {
     rows = [proposedRow(20, '- 提出前にlintを実行する')];
     await autoApproveEligibleProposals();
@@ -503,7 +545,7 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
     expect(evidenceOf(50).alphaLookJ).toBe(1);
   });
 
-  test('標本が増えたlook2で有意水準を満たせば採用に到達する', async () => {
+  test('7件時点では再評価せず、10件の事前チェックポイントで採用に到達する', async () => {
     rows = [proposedRow(51, '- 提出前にlintを実行する')];
     await autoApproveEligibleProposals();
     fillArm(51, 'current', 1, COMPARISON_MIN_SAMPLE);
@@ -513,10 +555,15 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
     await autoApproveEligibleProposals();
     expect(rows[0].status).toBe('staged');
 
-    // 各アームに2件追加 → candidate 7/7 vs current 1/7、p≈0.002331。
-    // look2 の予算 alpha_12≈0.004167 を下回るので採用。
+    // n=7は事前の評価時点ではない。最初の5件を再利用して採用しない。
     fillArm(51, 'current', 0, 2);
     fillArm(51, 'candidate', 2, 2);
+
+    await autoApproveEligibleProposals();
+    expect(rows[0].status).toBe('staged');
+    expect(evidenceOf(51).alphaLookJ).toBe(1);
+    fillArm(51, 'current', 0, 3);
+    fillArm(51, 'candidate', 3, 3);
 
     const result = await autoApproveEligibleProposals();
 
@@ -577,10 +624,8 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
     expect(readFileSync(ledgerPath(), 'utf8')).toBe(before);
   });
 
-  test('台帳導入前に staged になった候補も評価され、行き止まりにならない', async () => {
-    // 旧経路(台帳が無かった頃)で staged へ進んだ行を再現する。台帳エントリが
-    // 無いまま not_registered で保留し続けると、その候補は採用も撤回もされない
-    // 永久の行き止まりになる。
+  test('過去の好結果を見てから新規予算を発行して採用しない', async () => {
+    // 旧試行の結果は保持するが、事前登録のある試行として扱わない。
     rows = [
       {
         ...proposedRow(60, '- 提出前にlintを実行する'),
@@ -601,11 +646,10 @@ describe('autoApproveEligibleProposals — 第2段: staged の実測判定', () 
 
     const result = await autoApproveEligibleProposals();
 
-    // 評価時に予算を採番して判定まで到達すること。
-    expect(evidenceOf(60).alphaBudgetK).toBe(1);
-    expect(evidenceOf(60).alphaLookJ).toBe(1);
-    expect(rows[0].status).toBe('approved');
-    expect(result.approved).toBe(1);
+    expect(evidenceOf(60).alphaBudgetK).toBeUndefined();
+    expect(evidenceOf(60).alphaLedgerIssueKind).toBe('not_registered');
+    expect(rows[0].status).toBe('staged');
+    expect(result.approved).toBe(0);
   });
 
   test('評価時に台帳が読めなくなったら unknown 扱いで保留する', async () => {

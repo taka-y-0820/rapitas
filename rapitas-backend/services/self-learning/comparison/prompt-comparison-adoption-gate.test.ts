@@ -25,6 +25,35 @@ describe('logChoose', () => {
 });
 
 describe('fisherExactOneSidedGreater', () => {
+  it.each([NaN, Infinity, -1, 0.5])('rejects malformed cell counts (%s)', (invalid) => {
+    expect(fisherExactOneSidedGreater(invalid, 0, 0, 5)).toBe(1);
+    expect(
+      passesSequentialSignificance(
+        {
+          candidateSuccessCount: invalid,
+          candidateFailureCount: 0,
+          currentSuccessCount: 0,
+          currentFailureCount: 5,
+        },
+        0.01,
+      ),
+    ).toBe(false);
+  });
+  it('rejects non-finite or invalid significance budgets', () => {
+    for (const alpha of [NaN, Infinity, -1, 0, 1]) {
+      expect(
+        passesSequentialSignificance(
+          {
+            candidateSuccessCount: 5,
+            candidateFailureCount: 0,
+            currentSuccessCount: 0,
+            currentFailureCount: 5,
+          },
+          alpha,
+        ),
+      ).toBe(false);
+    }
+  });
   it("reproduces Fisher's tea-tasting reference value (17/70)", () => {
     // 2x2 = [[3,1],[1,3]] の片側p。公表された検算可能な基準値。
     expect(fisherExactOneSidedGreater(3, 1, 1, 3)).toBeCloseTo(17 / 70, 12);

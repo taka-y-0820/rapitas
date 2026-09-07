@@ -147,6 +147,17 @@ describe('assignCandidateBudget', () => {
 });
 
 describe('resolveEvaluationBudget', () => {
+  it('polling skipped checkpoints cannot enlarge the budget at n=20', () => {
+    assignCandidateBudget(10);
+    assignCandidateBudget(11);
+    const skipped = resolveEvaluationBudget(10, 20);
+    for (const n of [5, 10, 15]) resolveEvaluationBudget(11, n);
+    const observed = resolveEvaluationBudget(11, 20);
+    expect(skipped).toMatchObject({ j: 4, isNewLook: true });
+    expect(observed).toMatchObject({ j: 4, isNewLook: true });
+    expect(skipped).toMatchObject({ alphaKj: alphaForLook(alphaForCandidate(1), 4) });
+    expect(observed).toMatchObject({ alphaKj: alphaForLook(alphaForCandidate(2), 4) });
+  });
   it('未登録候補には予算を貸さない', () => {
     expect(resolveEvaluationBudget(999, 5)).toEqual({ issue: 'not_registered' });
   });
@@ -158,9 +169,9 @@ describe('resolveEvaluationBudget', () => {
     expect(look1).toMatchObject({ isNewLook: true, j: 1, issue: null });
     expect((look1 as { alphaKj: number }).alphaKj).toBeCloseTo(0.0125, 12);
 
-    const look2 = resolveEvaluationBudget(10, 8);
-    expect(look2).toMatchObject({ isNewLook: true, j: 2 });
-    expect((look2 as { alphaKj: number }).alphaKj).toBeCloseTo(0.025 / 6, 12);
+    const look2 = resolveEvaluationBudget(10, 20);
+    expect(look2).toMatchObject({ isNewLook: true, j: 4 });
+    expect((look2 as { alphaKj: number }).alphaKj).toBeCloseTo(0.025 / 20, 12);
   });
 
   it('同じ標本集合の再評価は評価回を消費しない', () => {
@@ -173,7 +184,7 @@ describe('resolveEvaluationBudget', () => {
     expect(repeat).toMatchObject({ isNewLook: false, j: 1 });
     expect(shrunk).toMatchObject({ isNewLook: false, j: 1 });
     // 次に標本が増えたときは j=2 から再開する（無駄消費していない）。
-    expect(resolveEvaluationBudget(10, 6)).toMatchObject({ isNewLook: true, j: 2 });
+    expect(resolveEvaluationBudget(10, 10)).toMatchObject({ isNewLook: true, j: 2 });
   });
 
   it('複数候補の j は互いに独立して進む', () => {
@@ -185,7 +196,7 @@ describe('resolveEvaluationBudget', () => {
     const other = resolveEvaluationBudget(11, 5);
 
     expect(other).toMatchObject({ isNewLook: true, j: 1 });
-    expect(resolveEvaluationBudget(10, 12)).toMatchObject({ j: 3 });
+    expect(resolveEvaluationBudget(10, 15)).toMatchObject({ j: 3 });
   });
 
   it('評価回の消費は再起動後も保持される', () => {

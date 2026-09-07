@@ -3,8 +3,8 @@
  *
  * Pre-registered error budget for unattended prompt adoption. One JSON file
  * (`<RAPITAS_DATA_DIR>/.prompt-comparisons/_alpha-ledger.json`) records, per
- * candidate, the order it entered a trial (`k`), how many looks it has spent
- * (`j`), and the sample size at the last look.
+ * candidate, its registration order (`k`), the last consumed sample-checkpoint
+ * index (`j`), and the sample size at that checkpoint.
  *
  * Each candidate k and evaluation j receives TOTAL_ALPHA/[k(k+1)j(j+1)].
  * The series bounds total allocated budget. Valid inference additionally needs
@@ -24,11 +24,14 @@ import { withAlphaLedgerLock, writeAlphaLedger } from './prompt-comparison-alpha
 /** Family-wise false-adoption budget shared by every candidate, ever. */
 export const TOTAL_ALPHA = 0.05;
 
+/** Checkpoints are fixed before outcomes at 5, 10, 15, ... per arm. */
+export const FIRST_EVALUATION_SAMPLE = 5;
+
 /** One candidate's permanent place in the budget series. */
 interface LedgerEntry {
   /** Registration order, 1-based. Assigned once, never re-assigned. */
   k: number;
-  /** Looks spent so far. 0 until the first evaluation with real samples. */
+  /** Last consumed checkpoint index; skipped checkpoints cannot be reclaimed. */
   lastLookJ: number;
   /** Sample size at the last look — a re-read of the same samples is free. */
   lastLookSampleSize: number;
@@ -51,6 +54,8 @@ export interface CandidateBudget {
 
 /** Result of reserving one look's share of a candidate's budget. */
 export interface EvaluationBudget {
+  /** Exact per-arm prefix to test. Never test later samples with this budget. */
+  sampleSize: number;
   /** False when this evaluation saw no new samples — no budget was spent. */
   isNewLook: boolean;
   j: number;
@@ -203,7 +208,7 @@ export function assignCandidateBudget(promptEvolutionId: number): CandidateBudge
 
 /**
  * Reserve the next look's share of a candidate's budget — but only when this
- * evaluation actually has new samples to look at.
+ * evaluation reaches a new predeclared integer sample checkpoint (n >= 5).
  *
  * Polling the same sample set (the daily job runs whether or not any phase ran)
  * must not consume budget, otherwise a candidate's alpha would drain to nothing
@@ -232,8 +237,11 @@ export function resolveEvaluationBudget(
     if (!entry) return { issue: 'not_registered' };
 
     const alphaK = alphaForCandidate(entry.k);
-    if (currentSampleSize <= entry.lastLookSampleSize) {
+    const checkpoint =
+      Math.floor(currentSampleSize / FIRST_EVALUATION_SAMPLE) * FIRST_EVALUATION_SAMPLE;
+    if (checkpoint < FIRST_EVALUATION_SAMPLE || checkpoint <= entry.lastLookSampleSize) {
       return {
+        sampleSize: checkpoint,
         isNewLook: false,
         j: entry.lastLookJ,
         alphaKj: alphaForLook(alphaK, Math.max(1, entry.lastLookJ)),
@@ -241,10 +249,18 @@ export function resolveEvaluationBudget(
       };
     }
 
-    const j = entry.lastLookJ + 1;
+    // Unobserved or unpromising checkpoints never transfer their budget to a
+    // later favourable result. The index depends on n, not polling history.
+    const j = Math.max(entry.lastLookJ + 1, checkpoint / FIRST_EVALUATION_SAMPLE);
     entry.lastLookJ = j;
-    entry.lastLookSampleSize = currentSampleSize;
+    entry.lastLookSampleSize = checkpoint;
     if (!writeLedger(read.file)) return { issue: 'write_failed' };
-    return { isNewLook: true, j, alphaKj: alphaForLook(alphaK, j), issue: null };
+    return {
+      sampleSize: checkpoint,
+      isNewLook: true,
+      j,
+      alphaKj: alphaForLook(alphaK, j),
+      issue: null,
+    };
   });
 }

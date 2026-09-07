@@ -52,7 +52,6 @@ async function recordTrialRun(
   sessionId: number,
   success: boolean,
   phaseStartedAt: Date,
-  modelName: string | null,
 ): Promise<void> {
   if (!assignment) return;
   try {
@@ -65,6 +64,7 @@ async function recordTrialRun(
         errorMessage: true,
         costUsd: true,
         executionTimeMs: true,
+        modelName: true,
       },
     });
     if (!execution) return;
@@ -87,7 +87,7 @@ async function recordTrialRun(
       injectedVersion: assignment.injectedVersion,
       // Arm assignment does not stratify by model, so a reader comparing the
       // two arms needs this to rule out a routing difference.
-      modelName,
+      modelName: execution.modelName ?? null,
     });
   } catch {
     /* a lost comparison sample is never worth failing (or delaying) the phase for */
@@ -269,7 +269,6 @@ export async function executeCLIAgent(
       session.id,
       sessionSucceeded,
       phaseStartedAt,
-      agentConfig.modelId,
     );
     await finalizePhaseSession(session.id, sessionSucceeded);
   }

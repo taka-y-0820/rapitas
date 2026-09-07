@@ -24,10 +24,14 @@ import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
 import { passesSequentialSignificance } from './comparison/prompt-comparison-adoption-gate';
 import {
-  assignCandidateBudget,
-  resolveEvaluationBudget,
-} from './comparison/prompt-comparison-alpha-ledger';
-import { readComparisonRecordStatus } from './comparison/prompt-comparison-store';
+  buildCheckpointSummary,
+  comparisonCohortIssue,
+} from './comparison/prompt-comparison-checkpoint';
+import { resolveEvaluationBudget } from './comparison/prompt-comparison-alpha-ledger';
+import {
+  readComparisonRecordStatus,
+  addendumVersionHash,
+} from './comparison/prompt-comparison-store';
 import {
   CANDIDATE_SELECT,
   parseEvidence,
@@ -36,7 +40,7 @@ import {
   type CandidateRow,
 } from './prompt-evolution-auto-approve-shared';
 import { autoPromoteEnabled, isPureAddendum } from './prompt-evolution-settle';
-import { reviewProposal } from './prompt-evolution-worker';
+import { reviewProposal, MAX_ADDENDUM_CHARS } from './prompt-evolution-worker';
 
 const log = createLogger('self-learning:prompt-evolution-auto-approve');
 
@@ -77,7 +81,20 @@ export async function evaluateStagedCandidates(result: AutoApproveResult): Promi
     }
     const comparison = status.record;
 
-    const summary = comparison.summary;
+    const cohortIssue = comparisonCohortIssue(
+      comparison.arms,
+      candidate.basePromptKey?.replace(/^workflow_role_/, '') ?? '',
+      addendumVersionHash(candidate.afterPrompt?.trim().slice(0, MAX_ADDENDUM_CHARS) ?? ''),
+    );
+    if (cohortIssue) {
+      evidence.comparisonCohortIssue = cohortIssue;
+      await stampEvidence(candidate.id, evidence);
+      result.withheld++;
+      continue;
+    }
+    delete evidence.comparisonCohortIssue;
+
+    const summary = buildCheckpointSummary(comparison.arms);
     const verdict = summary?.verdict ?? 'insufficient_data';
     // Kept so a look that turns out to spend no budget can put it back.
     const previousEvaluatedAt =
@@ -106,46 +123,9 @@ export async function evaluateStagedCandidates(result: AutoApproveResult): Promi
       continue;
     }
 
-    // insufficient_data / inconclusive: keep measuring rather than guess. A
-    // deletion signal that appeared after staging likewise holds the trial.
-    // (`summary` is non-null whenever the verdict is 'improved' — an absent
-    // summary degrades to 'insufficient_data' above — but the null check keeps
-    // that invariant enforced by the compiler rather than by reading.)
-    if (
-      verdict !== 'improved' ||
-      !summary ||
-      !isPureAddendum(candidate.afterPrompt?.trim() ?? '')
-    ) {
-      await stampEvidence(candidate.id, evidence);
-      result.withheld++;
-      continue;
-    }
-
-    // Reserve this look's slice of the candidate's budget. Done only once the
-    // descriptive gate has passed, so looks are not burned on samples that
-    // could not have led to adoption anyway.
-    //
-    // A candidate with no ledger entry is registered here rather than held:
-    // rows that reached `staged` before the ledger existed would otherwise
-    // return `not_registered` on every run forever, and could be neither
-    // adopted nor withdrawn — a dead end, not a safe hold. Registering late
-    // still assigns k by arrival order (its first look is its arrival), so the
-    // telescoping bound is unaffected.
-    let budget = resolveEvaluationBudget(candidate.id, summary.sampleSize);
-    if (budget.issue === 'not_registered') {
-      const assigned = assignCandidateBudget(candidate.id);
-      if (!assigned.issue) {
-        evidence.alphaBudgetK = assigned.k;
-        evidence.alphaK = assigned.alphaK;
-        budget = resolveEvaluationBudget(candidate.id, summary.sampleSize);
-        log.info(
-          { id: candidate.id, k: assigned.k },
-          '[prompt-evolution] Registered a pre-ledger staged candidate into the alpha budget',
-        );
-      } else {
-        budget = { issue: assigned.issue };
-      }
-    }
+    // A trial with historical outcomes cannot obtain a fresh budget after
+    // observing them. Legacy trials require prospective registration instead.
+    const budget = resolveEvaluationBudget(candidate.id, summary?.sampleSize ?? 0);
     if (budget.issue) {
       // A budget we cannot read is not a budget. Neither adopt nor withdraw.
       evidence.alphaLedgerStatus = 'unknown';
@@ -168,8 +148,7 @@ export async function evaluateStagedCandidates(result: AutoApproveResult): Promi
       //
       // The previous look's evaluation stamp is restored before writing, so a
       // poll that spent no budget does not masquerade as a fresh evaluation in
-      // the audit trail. Everything else (a recovered ledger status, a late
-      // budget registration) still persists.
+      // the audit trail. Recovered ledger status still persists.
       evidence.comparisonEvaluatedAt =
         previousEvaluatedAt ?? (evidence.comparisonEvaluatedAt as string);
       await stampEvidence(candidate.id, evidence);
@@ -179,6 +158,22 @@ export async function evaluateStagedCandidates(result: AutoApproveResult): Promi
 
     evidence.alphaLookJ = budget.j;
     evidence.alphaKj = budget.alphaKj;
+
+    // insufficient_data / inconclusive: keep measuring rather than guess. A
+    // deletion signal that appeared after staging likewise holds the trial.
+    // (`summary` is non-null whenever the verdict is 'improved' — an absent
+    // summary degrades to 'insufficient_data' above — but the null check keeps
+    // that invariant enforced by the compiler rather than by reading.)
+    if (
+      verdict !== 'improved' ||
+      !summary ||
+      !isPureAddendum(candidate.afterPrompt?.trim() ?? '')
+    ) {
+      await stampEvidence(candidate.id, evidence);
+      result.withheld++;
+      continue;
+    }
+
     const significant = passesSequentialSignificance(summary, budget.alphaKj);
     evidence.adoptionTestPassed = significant;
     if (!significant) {

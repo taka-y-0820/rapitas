@@ -77,21 +77,20 @@ function runCandidate(
   const budget = assignCandidateBudget(candidateId);
   if (budget.issue) throw new Error(`ledger unusable: ${budget.issue}`);
 
-  let currentSuccess = 0;
-  let currentTotal = 0;
-  let candidateSuccess = 0;
-  let candidateTotal = 0;
+  const current: number[] = [];
+  const candidate: number[] = [];
 
   for (const added of addedPerLook) {
-    currentSuccess += drawSuccesses(rng, added, currentRate);
-    currentTotal += added;
-    candidateSuccess += drawSuccesses(rng, added, candidateRate);
-    candidateTotal += added;
-
-    const look = resolveEvaluationBudget(candidateId, Math.min(currentTotal, candidateTotal));
+    for (let i = 0; i < added; i++) current.push(drawSuccesses(rng, 1, currentRate));
+    for (let i = 0; i < added; i++) candidate.push(drawSuccesses(rng, 1, candidateRate));
+    const look = resolveEvaluationBudget(candidateId, Math.min(current.length, candidate.length));
     if (look.issue) throw new Error(`ledger unusable: ${look.issue}`);
     if (!look.isNewLook) continue;
 
+    const currentTotal = look.sampleSize;
+    const candidateTotal = look.sampleSize;
+    const currentSuccess = current.slice(0, look.sampleSize).reduce((a, b) => a + b, 0);
+    const candidateSuccess = candidate.slice(0, look.sampleSize).reduce((a, b) => a + b, 0);
     const adopted = passesSequentialSignificance(
       {
         currentSuccessCount: currentSuccess,
@@ -107,7 +106,7 @@ function runCandidate(
 }
 
 describe('誤採用率（帰無仮説下のモンテカルロ）', () => {
-  it('最大予算の候補(k=1)を繰り返し評価しても誤採用率が alpha_1 を超えない', () => {
+  it('固定シードのk=1・3回評価で観測誤採用率が alpha_1 未満', () => {
     // 監督が示した数値例と同じ帰無条件: 両アームとも真の成功率0.7。
     // 各複製は台帳をリセットして k=1 から始める = 予算が最も緩い最悪ケース。
     const rng = mulberry32(0x894a1);
@@ -120,13 +119,22 @@ describe('誤採用率（帰無仮説下のモンテカルロ）', () => {
     }
 
     const rate = falseAdoptions / REPLICATIONS;
-    // 実測 5/600 = 0.0083。固定閾値を毎回再適用する方式では 0.116 だった。
+    // 0.116は旧ゲートの単回の厳密計算値で、反復試験の比較対象ではない。
+    // 有限回のシミュレーションは実運用の誤採用率上限の証明ではない。
+    console.log(
+      JSON.stringify({
+        scenario: 'null-3-looks',
+        falseAdoptions,
+        replications: REPLICATIONS,
+        rate,
+      }),
+    );
     // PRNG が固定シードなので値は再実行しても一致する（フレークしない）。
     expect(rate).toBeLessThan(alphaForCandidate(1));
     expect(rate).toBeLessThan(TOTAL_ALPHA);
   }, 120_000);
 
-  it('高頻度に覗いても（10回の評価回）誤採用率は増えない', () => {
+  it('固定シードのk=1・10回評価で観測誤採用率が alpha_1 未満', () => {
     const rng = mulberry32(0x894a2);
     const REPLICATIONS = 400;
     const looks = Array.from({ length: 10 }, () => 6);
@@ -137,12 +145,14 @@ describe('誤採用率（帰無仮説下のモンテカルロ）', () => {
       if (runCandidate(rng, 1, 0.5, 0.5, looks)) falseAdoptions++;
     }
 
-    // 実測 2/400 = 0.0050。覗く回数を3回から10回に増やしても増えない
-    // （alpha消費関数の性質。監視スケジュールを変えても上限が動かない）。
+    // 上の試験とは帰無成功率も異なるため、数値差から監視頻度の効果を推定しない。
+    console.log(
+      JSON.stringify({ scenario: 'null-10-looks', falseAdoptions, replications: REPLICATIONS }),
+    );
     expect(falseAdoptions / REPLICATIONS).toBeLessThan(alphaForCandidate(1));
   }, 120_000);
 
-  it('候補が次々登録される族全体でも誤採用率が5%を超えない', () => {
+  it('固定シードの10候補・150系列で観測した族誤採用率が5%未満', () => {
     // 1複製 = 「10候補が順に登録され、それぞれ3回評価される」1つの運用系列。
     // そのうち1件でも誤採用されれば族としての失敗と数える（family-wise）。
     const rng = mulberry32(0x894a3);
@@ -159,7 +169,13 @@ describe('誤採用率（帰無仮説下のモンテカルロ）', () => {
       if (anyAdopted) familiesWithFalseAdoption++;
     }
 
-    // 実測 0/150。k が進むほど予算が急減するため族全体でも 5% に達しない。
+    console.log(
+      JSON.stringify({
+        scenario: 'null-10-candidate-family',
+        familiesWithFalseAdoption,
+        replications: REPLICATIONS,
+      }),
+    );
     expect(familiesWithFalseAdoption / REPLICATIONS).toBeLessThan(TOTAL_ALPHA);
   }, 180_000);
 
@@ -175,8 +191,9 @@ describe('誤採用率（帰無仮説下のモンテカルロ）', () => {
       if (runCandidate(rng, 1, 0.3, 0.9, [10, 10, 10])) adopted++;
     }
 
-    // 実測 149/150 = 0.993。帰無条件の 0.0083 と対比して、ゲートが
-    // 本物の改善まで塞いでいないことを示す。
+    console.log(
+      JSON.stringify({ scenario: 'alternative-0.3-vs-0.9', adopted, replications: REPLICATIONS }),
+    );
     expect(adopted / REPLICATIONS).toBeGreaterThan(0.9);
   }, 120_000);
 });

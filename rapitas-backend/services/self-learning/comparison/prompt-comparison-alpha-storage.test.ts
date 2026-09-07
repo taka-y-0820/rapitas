@@ -68,7 +68,7 @@ it('four independent workers reserve unique budgets and only one identical look'
     expect(indices).toHaveLength(41);
     expect(new Set(indices).size).toBe(41);
     expect(file.nextK).toBe(42);
-    expect(file.entries['100'].lastLookJ).toBe(1);
+    expect(file.entries['100'].lastLookJ).toBe(2);
   } finally {
     for (const child of children) if (child.exitCode === null) child.kill();
     await Promise.all(children.map((child) => child.exited));

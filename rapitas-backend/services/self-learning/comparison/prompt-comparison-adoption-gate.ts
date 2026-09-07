@@ -80,6 +80,16 @@ export function fisherExactOneSidedGreater(
 ): number {
   const candidateTotal = candidateSuccess + candidateFailure;
   const currentTotal = currentSuccess + currentFailure;
+  if (
+    ![
+      candidateSuccess,
+      candidateFailure,
+      currentSuccess,
+      currentFailure,
+      candidateTotal + currentTotal,
+    ].every((n) => Number.isSafeInteger(n) && n >= 0)
+  )
+    return 1;
   // An arm with no runs carries no evidence — never let it read as significant.
   if (candidateTotal <= 0 || currentTotal <= 0) return 1;
 
@@ -122,7 +132,7 @@ export interface AdoptionGateCounts {
  * @returns True when the one-sided p-value is below the budget. / 予算未満なら true
  */
 export function passesSequentialSignificance(counts: AdoptionGateCounts, alphaKj: number): boolean {
-  if (!(alphaKj > 0)) return false;
+  if (!Number.isFinite(alphaKj) || !(alphaKj > 0 && alphaKj < 1)) return false;
   const p = fisherExactOneSidedGreater(
     counts.candidateSuccessCount,
     counts.candidateFailureCount,

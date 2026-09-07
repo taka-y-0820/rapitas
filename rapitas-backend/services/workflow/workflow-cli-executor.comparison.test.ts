@@ -29,7 +29,7 @@ const { initComparisonRecordForStaging, readComparisonRecord } =
 
 const getOrCreateDevConfig = (): Promise<{ id: number }> => Promise.resolve({ id: 42 });
 const task = { title: 'Finish the thing', description: 'desc' };
-const agentConfig = { id: 1, agentType: 'claude-code', name: 'Agent', modelId: null };
+const agentConfig = { id: 1, agentType: 'claude-code', name: 'Agent', modelId: 'configured-alias' };
 const implementerTransition = (): RoleTransition => ({
   role: 'implementer',
   outputFile: null,
@@ -84,6 +84,7 @@ beforeEach(() => {
       errorMessage: null,
       costUsd: 1.25,
       executionTimeMs: 123_000,
+      modelName: 'reported-model',
     }),
   );
 });
@@ -110,6 +111,7 @@ describe('executeCLIAgent — 限定試行の比較サンプル記録', () => {
       role: 'implementer',
       injected: true,
       injectedVersion: 'abc123def456',
+      modelName: 'reported-model',
     });
   });
 
