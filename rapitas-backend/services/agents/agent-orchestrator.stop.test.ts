@@ -241,7 +241,7 @@ describe('stopExecution', () => {
     ]);
   });
 
-  test('swallows an error from agent.stop() and still completes cleanup', async () => {
+  test('retains the agent and reports failure when agent.stop throws', async () => {
     const orchestrator = getOrchestrator();
     const state = makeExecutionState({ executionId: 3, agentId: 'agent-3' });
     internals(orchestrator).activeExecutions.set(3, state);
@@ -250,9 +250,10 @@ describe('stopExecution', () => {
 
     const result = await orchestrator.stopExecution(3);
 
-    expect(result).toBe(true);
-    expect(mockPrisma.agentExecution.update).toHaveBeenCalledTimes(1);
-    expect(internals(orchestrator).activeExecutions.has(3)).toBe(false);
+    expect(result).toBe(false);
+    expect(mockPrisma.agentExecution.update).not.toHaveBeenCalled();
+    expect(internals(orchestrator).activeExecutions.has(3)).toBe(true);
+    expect(removeAgentMock).not.toHaveBeenCalled();
   });
 
   test('BUG FIX: a DB update failure still cleans up in-memory state instead of leaving a stuck execution', async () => {

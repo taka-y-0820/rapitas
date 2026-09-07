@@ -50,8 +50,15 @@ async function stopExecutions(executionIds: number[], reason: string): Promise<n
   for (const executionId of executionIds) {
     try {
       // Ask BOTH orchestrators — only the owner can taskkill the CLI handle.
-      await agentWorkerManager.stopExecution(executionId).catch(() => false);
-      await mainOrchestrator.stopExecution(executionId).catch(() => false);
+      const workerStopped = await agentWorkerManager.stopExecution(executionId).catch(() => false);
+      const mainStopped = await mainOrchestrator.stopExecution(executionId).catch(() => false);
+      if (!workerStopped && !mainStopped) {
+        log.warn(
+          { executionId },
+          '[stopTaskAgents] No owner confirmed cancellation; preserving execution state',
+        );
+        continue;
+      }
       // Retain diagnostic output: cancellation must not erase evidence needed for recovery.
       await prisma.agentExecution
         .update({

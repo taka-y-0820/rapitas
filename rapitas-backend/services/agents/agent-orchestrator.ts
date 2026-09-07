@@ -326,6 +326,7 @@ export class AgentOrchestrator {
       await agent.stop();
     } catch (error) {
       logger.error({ err: error }, `[Orchestrator] Error stopping agent`);
+      return false;
     }
 
     try {
@@ -380,8 +381,7 @@ export class AgentOrchestrator {
     const entries = [...this.activeAgents.entries()];
     for (const [executionId, info] of entries) {
       if (taskIds.has(info.taskId)) {
-        await this.stopExecution(executionId).catch(() => {});
-        stopped.push(executionId);
+        if (await this.stopExecution(executionId).catch(() => false)) stopped.push(executionId);
       }
     }
     if (stopped.length > 0) {

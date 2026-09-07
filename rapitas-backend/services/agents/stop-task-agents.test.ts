@@ -160,3 +160,13 @@ test('timeout scopes queue and agent cancellation to the complete descendant tre
   });
   expect(mockPrisma.agentExecutionLog.deleteMany).not.toHaveBeenCalled();
 });
+
+test('does not report cancellation when neither execution owner confirms stopping', async () => {
+  resetMocks();
+  workerStopMock.mockResolvedValueOnce(false);
+  mainStopMock.mockRejectedValueOnce(new Error('stop failed'));
+  mockPrisma.agentExecution.findMany.mockResolvedValue([{ id: 88 }]);
+  const result = await stopTaskAgents(880);
+  expect(result).toEqual({ stoppedCount: 0, executionIds: [] });
+  expect(mockPrisma.agentExecution.update).not.toHaveBeenCalled();
+});
