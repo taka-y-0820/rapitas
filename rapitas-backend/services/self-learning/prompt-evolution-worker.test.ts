@@ -217,6 +217,26 @@ describe('getApprovedRoleAddendum', () => {
     expect(await getApprovedRoleAddendum('implementer', 810)).toBe('追記テキスト');
     expect(await getApprovedRoleAddendum('implementer', 811)).toBeNull();
   });
+
+  test('段階適用の対象タスクが不明なら追記を注入しない', async () => {
+    rows = [{ ...pendingRow(1, 'implementer'), status: 'approved', afterPrompt: '追記テキスト' }];
+    writeComparisonRecord(comparisonRecord({ stagedTaskIds: [810] }));
+    expect(await getApprovedRoleAddendum('implementer')).toBeNull();
+  });
+
+  test('対象リストが空ならタスクID省略でも段階適用を解除しない', async () => {
+    rows = [{ ...pendingRow(1, 'implementer'), status: 'approved', afterPrompt: '追記テキスト' }];
+    writeComparisonRecord(comparisonRecord({ stagedTaskIds: [] }));
+    expect(await getApprovedRoleAddendum('implementer')).toBeNull();
+    expect(await getApprovedRoleAddendum('implementer', 810)).toBeNull();
+  });
+
+  test('completed候補も段階適用の制限を維持する', async () => {
+    rows = [{ ...pendingRow(1, 'implementer'), status: 'completed', afterPrompt: '追記テキスト' }];
+    writeComparisonRecord(comparisonRecord({ stagedTaskIds: [810] }));
+    expect(await getApprovedRoleAddendum('implementer')).toBeNull();
+    expect(await getApprovedRoleAddendum('implementer', 810)).toBe('追記テキスト');
+  });
 });
 
 describe('listProposals', () => {
