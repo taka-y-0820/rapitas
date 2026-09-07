@@ -145,6 +145,9 @@ export class CodexCliAgent extends BaseAgent {
       codexSessionId: this.codexSessionId,
       actualModel: null,
       status: this.status,
+      turnFailed: false,
+      turnFailureMessage: null,
+      activeCodexCommands: new Map(),
     };
 
     // Extend config with task-level overrides (resume session, investigation
