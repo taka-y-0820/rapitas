@@ -33,15 +33,24 @@ const log = createLogger('routes:workflow:resume');
  *
  * Reuses the SAME agent config the task's last execution used (falls back to
  * the execute route's own default-agent resolution when none is found).
- * Never throws — errors are logged and swallowed so a failed auto re-run
- * cannot fail the caller's own response; a theme with auto-run currently
- * active will reject this with 409 (harmless — the scheduler already owns
- * that task).
+ * Active AutoRun themes use the scheduler queue and refresh the claim only
+ * after enqueue succeeds. Other themes use the manual route. Errors remain
+ * best-effort and never undo the already persisted answer.
  *
  * @param taskId - Task whose question was just answered. / 回答されたタスクID
  */
 export async function triggerReExecutionAfterAnswer(taskId: number): Promise<void> {
   try {
+    const theme = await resolveTaskThemeId(taskId);
+    const state = theme?.themeId ? await getAutoRunState(theme.themeId) : null;
+    if (state?.enabled && state.status === 'running') {
+      // The manual execute route rejects AUTO_RUN_ACTIVE. Queue through the
+      // scheduler instead; a successful claim also rebases lastRunAt so the
+      // question's waiting time cannot trip the resumed run's hard ceiling.
+      await triggerRedispatchAfterResume(taskId);
+      return;
+    }
+
     // NOTE: A task run through the workflow CLI executor (research/plan/verify
     // phases) never gets an AgentExecution row via this session→config chain —
     // that relation is populated by a different execution path. Task 513

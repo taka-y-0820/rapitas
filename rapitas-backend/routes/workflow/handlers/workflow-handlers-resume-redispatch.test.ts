@@ -192,3 +192,30 @@ describe('triggerRedispatchAfterResume', () => {
     expect(mockSetCurrentTask).not.toHaveBeenCalled();
   });
 });
+
+describe('intake answer under AutoRun', () => {
+  test('requeues and rebases the current claim instead of using the forbidden manual route', async () => {
+    mockResolveTaskThemeId.mockResolvedValue({ id: 894, themeId: 1 });
+    mockGetAutoRunState.mockResolvedValue({ enabled: true, status: 'running', currentTaskId: 894 });
+    await triggerReExecutionAfterAnswer(894);
+    expect(mockEnqueue).toHaveBeenCalledWith({ taskId: 894, themeId: 1, priority: 50 });
+    expect(mockSetCurrentTask).toHaveBeenCalledWith(1, 894);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+  test('does not take over another task or fall back to manual execution', async () => {
+    mockResolveTaskThemeId.mockResolvedValue({ id: 894, themeId: 1 });
+    mockGetAutoRunState.mockResolvedValue({ enabled: true, status: 'running', currentTaskId: 999 });
+    await triggerReExecutionAfterAnswer(894);
+    expect(mockEnqueue).not.toHaveBeenCalled();
+    expect(mockSetCurrentTask).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+  test('failed enqueue cannot refresh the claim or launch a second execution', async () => {
+    mockResolveTaskThemeId.mockResolvedValue({ id: 894, themeId: 1 });
+    mockGetAutoRunState.mockResolvedValue({ enabled: true, status: 'running', currentTaskId: 894 });
+    mockEnqueue.mockRejectedValue(new Error('queue unavailable'));
+    await triggerReExecutionAfterAnswer(894);
+    expect(mockSetCurrentTask).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
