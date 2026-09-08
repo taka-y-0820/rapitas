@@ -431,6 +431,27 @@ describe('handleAnswerWorkflowQuestion', () => {
 });
 
 describe('handleResumeFromQuestion', () => {
+  test('uses the recorded source phase even when metadata is null', async () => {
+    mockResolveTaskWorkflowState.mockResolvedValue({
+      id: 503,
+      workflowStatus: 'awaiting_question',
+    });
+    mockFindFirstTransition.mockResolvedValue({ metadata: null, fromStatus: 'research_done' });
+    const result = await handleResumeFromQuestion({ params: { taskId: '503' }, set: {} });
+    expect(result.toStatus).toBe('research_done');
+    expect(result.source).toBe('transition_metadata');
+  });
+
+  test('does not resume back into a question self-transition', async () => {
+    mockResolveTaskWorkflowState.mockResolvedValue({
+      id: 503,
+      workflowStatus: 'awaiting_question',
+    });
+    mockFindFirstTransition.mockResolvedValue({ metadata: {}, fromStatus: 'awaiting_question' });
+    const result = await handleResumeFromQuestion({ params: { taskId: '503' }, set: {} });
+    expect(result.toStatus).toBe('in_progress');
+    expect(result.source).toBe('fallback');
+  });
   test('resumes to the previousStatus recorded in the awaiting_question transition metadata', async () => {
     mockResolveTaskWorkflowState.mockResolvedValue({
       id: 503,
