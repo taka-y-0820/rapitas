@@ -73,8 +73,12 @@ export function PhaseTimeline({ taskId, isRunning, liveLogs }: PhaseTimelineProp
   // until they jump back ("実行中へ").
   const manualNavRef = useRef(false);
 
+  const hasRunningPhase = phases.some((phase) =>
+    phase.iterations.some((iteration) => iteration.status === 'running'),
+  );
+
   useEffect(() => {
-    if (!isRunning) {
+    if (!isRunning && !hasRunningPhase) {
       // Run just ended — one more fetch so the header badge shows the final
       // task status instead of the last mid-run poll's snapshot.
       void refetch();
@@ -82,7 +86,7 @@ export function PhaseTimeline({ taskId, isRunning, liveLogs }: PhaseTimelineProp
     }
     const interval = setInterval(() => void refetch(), POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [isRunning, refetch]);
+  }, [isRunning, hasRunningPhase, refetch]);
 
   // Debounce so the (potentially large) highlight pass doesn't run per keystroke.
   useEffect(() => {
