@@ -130,6 +130,18 @@ describe('stopTaskAgents', () => {
 describe('stopThemeAgents', () => {
   beforeEach(resetMocks);
 
+  test('includes grandchildren without repeating cyclic task references', async () => {
+    mockPrisma.task.findMany
+      .mockResolvedValueOnce([{ id: 200 }])
+      .mockResolvedValueOnce([{ id: 300 }])
+      .mockResolvedValueOnce([{ id: 400 }])
+      .mockResolvedValueOnce([{ id: 200 }]);
+    mockPrisma.agentExecution.findMany.mockResolvedValue([]);
+    await stopThemeAgents(42, null);
+    expect(stopAllForTasksMock).toHaveBeenCalledWith(new Set([200, 300, 400]));
+    expect(mockPrisma.task.findMany).toHaveBeenCalledTimes(4);
+  });
+
   test('recovers prior stopped targets when no active execution remains', async () => {
     pendingTargets.mockResolvedValueOnce([91, 92]);
     mockPrisma.agentExecution.findMany.mockResolvedValue([]);
