@@ -1,3 +1,4 @@
+import { readReviewedPlanPolicy } from './reviewed-plan-policy';
 /** Server-owned review entry point. Callers supply a task id, never their own verdict. */
 import type { PrismaClient } from '../../generated/prisma-postgres';
 import { commitRequirementReplan, parseStoredRequirementArray } from './requirement-replan-commit';
@@ -24,6 +25,7 @@ export async function attemptRequirementReplan(
             acceptanceCriteria: true,
             status: true,
             workflowStatus: true,
+            workflowMode: true,
             updatedAt: true,
           },
         });
@@ -39,7 +41,8 @@ export async function attemptRequirementReplan(
         });
         const plan = files.find((f) => f.fileType === 'plan');
         const verify = files.find((f) => f.fileType === 'verify');
-        if (!plan || !verify) return null;
+        const planPolicy = await readReviewedPlanPolicy(tx, task.workflowMode ?? 'comprehensive');
+        if (!verify || (planPolicy.includePlan && !plan)) return null;
         const execution = await tx.agentExecution.findFirst({
           where: { session: { config: { taskId } } },
           orderBy: { id: 'desc' },
@@ -54,7 +57,8 @@ export async function attemptRequirementReplan(
             goals: parseStoredRequirementArray(task.goals),
             constraints: parseStoredRequirementArray(task.constraints),
             acceptanceCriteria: parseStoredRequirementArray(task.acceptanceCriteria),
-            plan: plan.content,
+            planPolicy,
+            plan: plan?.content ?? '',
             verify: verify.content,
           },
         };

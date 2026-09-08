@@ -82,6 +82,10 @@ beforeEach(async () => {
     'verify',
     snapshot.verify,
   );
+  await db.$executeRawUnsafe('ALTER TABLE Task ADD COLUMN workflowMode TEXT');
+  await db.$executeRawUnsafe(
+    'CREATE TABLE WorkflowModeConfig (id INTEGER PRIMARY KEY, mode TEXT UNIQUE, stepDefinitions TEXT)',
+  );
 });
 
 afterEach(async () => {
@@ -193,7 +197,10 @@ test('server entry point reviews the stored source and commits the verdict', asy
     db as unknown as PostgresClient,
     1,
     async (source) => {
-      expect(source).toEqual(snapshot);
+      expect(source).toEqual({
+        ...snapshot,
+        planPolicy: { mode: 'comprehensive', includePlan: true },
+      });
       return review;
     },
   );

@@ -1,3 +1,4 @@
+import { readReviewedPlanPolicy } from './reviewed-plan-policy';
 /** Atomic admission and audit for a server-reviewed replan. Never dispatches agents. */
 import type { PrismaClient } from '../../generated/prisma-postgres';
 import { withTaskLifecycleLock } from './task-lifecycle-lock';
@@ -142,6 +143,7 @@ async function commitReviewedDecision(
             acceptanceCriteria: true,
             status: true,
             workflowStatus: true,
+            workflowMode: true,
             updatedAt: true,
             themeId: true,
           },
@@ -206,14 +208,17 @@ async function commitReviewedDecision(
           return { committed: false, reason: rejected };
         if (completion && (execution?.id ?? null) !== completion.executionId)
           return { committed: false, reason: 'execution_superseded' };
-        if (!plan || !verify) return { committed: false, reason: 'artifact_missing' };
+        const planPolicy = await readReviewedPlanPolicy(tx, task.workflowMode ?? 'comprehensive');
+        if (!verify || (planPolicy.includePlan && !plan))
+          return { committed: false, reason: 'artifact_missing' };
         const snapshot: ReplanSnapshot = {
           title: task.title,
           description: task.description ?? '',
           goals: parseStoredRequirementArray(task.goals),
           constraints: parseStoredRequirementArray(task.constraints),
           acceptanceCriteria: parseStoredRequirementArray(task.acceptanceCriteria),
-          plan: plan.content,
+          planPolicy,
+          plan: plan?.content ?? '',
           verify: verify.content,
         };
         if (verdict.kind === 'no_mismatch') {

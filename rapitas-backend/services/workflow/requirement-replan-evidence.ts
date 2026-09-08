@@ -3,9 +3,11 @@
  * This is not a semantic judge or an authorization to replan. A grounded claim
  * still needs independent evaluation and a transactional lifecycle guard.
  */
+import type { ReviewedPlanPolicy } from './reviewed-plan-policy';
 import { createHash } from 'node:crypto';
 
 export interface ReplanSnapshot {
+  planPolicy?: ReviewedPlanPolicy;
   title: string;
   description: string;
   goals: string[];
@@ -36,6 +38,7 @@ export function replanSnapshotDigest(snapshot: ReplanSnapshot): string {
         snapshot.acceptanceCriteria,
         snapshot.plan,
         snapshot.verify,
+        snapshot.planPolicy ?? { mode: 'comprehensive', includePlan: true },
       ]),
     )
     .digest('hex');

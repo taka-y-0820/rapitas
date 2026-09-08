@@ -57,3 +57,5 @@ services/workflow/workflow-cli-executor.replan.test.ts
 services/workflow/workflow-runner.errors.test.ts
 services/workflow/workflow-runner.advancing.test.ts
 routes/workflow/workflow-auto-commit.test.ts
+services/workflow/requirement-replan-plan-policy.test.ts
+services/workflow/reviewed-plan-policy.test.ts
