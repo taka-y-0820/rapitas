@@ -51,7 +51,11 @@ export const themeAutoRunRoutes = new Elysia()
         where: {
           themeId,
           status: { in: ['todo', 'in-progress'] },
-          workflowStatus: { notIn: ['completed', 'verify_done'] },
+          OR: [
+            { workflowStatus: null },
+            { workflowStatus: { notIn: ['completed', 'verify_done', 'awaiting_question'] } },
+          ],
+          workflowDisabled: false,
           parentId: null,
         },
       });
