@@ -115,6 +115,21 @@ test('commits state and audit while preserving criteria and both artifacts', asy
   expect(await db.workflowFile.count()).toBe(2);
 });
 
+test('persists the exact replan generation for guarded continuation', async () => {
+  expect((await commit()).committed).toBe(true);
+  const task = await db.task.findUniqueOrThrow({
+    where: { id: 1 },
+    select: { updatedAt: true, workflowStatus: true },
+  });
+  const audit = await db.workflowTransition.findFirstOrThrow({ select: { metadata: true } });
+  expect(JSON.parse(audit.metadata).resumeReceipt).toEqual({
+    updatedAt: task.updatedAt.toISOString(),
+    workflowStatus: 'research_done',
+    executionId: null,
+  });
+  expect(task.updatedAt.getTime()).toBeGreaterThan(now.getTime());
+});
+
 test('audit insert failure rolls back the task update in real SQLite', async () => {
   await db.$executeRawUnsafe(
     "CREATE TRIGGER reject_audit BEFORE INSERT ON WorkflowTransition BEGIN SELECT RAISE(ABORT, 'test audit failure'); END",

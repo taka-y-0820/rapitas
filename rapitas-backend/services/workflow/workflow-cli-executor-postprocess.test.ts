@@ -13,8 +13,10 @@ mock.module('../../config/logger', () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
 const taskUpdates: unknown[] = [];
+const findQueueOwner = mock(async (): Promise<{ id: number } | null> => null);
 mock.module('../../config', () => ({
   prisma: {
+    workflowQueueItem: { findFirst: findQueueOwner },
     task: {
       update: (args: unknown) => {
         taskUpdates.push(args);
@@ -63,6 +65,47 @@ beforeEach(() => {
   transitions.length = 0;
   advances.length = 0;
   researchContent = null;
+  findQueueOwner.mockReset();
+  findQueueOwner.mockResolvedValue(null);
+});
+
+test('queue owner alone advances implementer and auto-approved planner phases', async () => {
+  findQueueOwner.mockResolvedValue({ id: 42 });
+  for (const role of ['implementer', 'planner']) {
+    await runPostProcessing({
+      ...base,
+      transition: { role } as never,
+      phaseStatus: 'plan_approved',
+    });
+  }
+  await Bun.sleep(1100);
+  expect(findQueueOwner).toHaveBeenCalledTimes(2);
+  expect(findQueueOwner).toHaveBeenCalledWith({
+    where: { taskId: 776, status: 'running' },
+    select: { id: true },
+  });
+  expect(advances).toEqual([]);
+});
+
+test('direct implementer execution still advances without a queue owner', async () => {
+  await runPostProcessing({
+    ...base,
+    transition: { role: 'implementer' } as never,
+    phaseStatus: 'in_progress',
+  });
+  await Bun.sleep(1100);
+  expect(advances).toEqual([776]);
+});
+
+test('owner lookup failure does not start a competing execution', async () => {
+  findQueueOwner.mockRejectedValue(new Error('DB unavailable'));
+  await runPostProcessing({
+    ...base,
+    transition: { role: 'implementer' } as never,
+    phaseStatus: 'in_progress',
+  });
+  await Bun.sleep(1100);
+  expect(advances).toEqual([]);
 });
 
 describe('runPostProcessing — research no-change early exit (auto-run path)', () => {

@@ -2,7 +2,29 @@ import { expect, mock, test } from 'bun:test';
 import type { PrismaClient } from '../../generated/prisma-postgres';
 const enqueue = mock(async (_db: unknown, _taskId: number, _receipt: unknown) => 'queued');
 mock.module('./verify-repair-queue', () => ({ enqueueCommittedRepair: enqueue }));
-const { recoverPendingRepairs, RepairRecoveryError } = await import('./verify-repair-recovery');
+const { recoverPendingRepairs, recoverCommittedRepair, RepairRecoveryError } =
+  await import('./verify-repair-recovery');
+
+test('recovery selects the latest repair or requirement replan without inventing a new receipt', async () => {
+  const receipt = {
+    updatedAt: '2026-09-09T00:00:00.000Z',
+    workflowStatus: 'research_done',
+    executionId: 3934,
+  };
+  const findFirst = mock(async () => ({ metadata: JSON.stringify({ resumeReceipt: receipt }) }));
+  const db = { workflowTransition: { findFirst } } as unknown as PrismaClient;
+  await recoverCommittedRepair(db, 913);
+  expect(findFirst).toHaveBeenCalledWith({
+    where: { taskId: 913, cause: { in: ['verify_repair', 'requirement_evidence_replan'] } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    select: { metadata: true },
+  });
+  expect(enqueue).toHaveBeenLastCalledWith(db, 913, {
+    ...receipt,
+    updatedAt: new Date(receipt.updatedAt),
+  });
+  enqueue.mockClear();
+});
 
 test('a corrupt audit does not starve later repairs, and the pass still reports failure', async () => {
   const wake = mock(() => {});
