@@ -1,3 +1,4 @@
+import { reviewedReplanTransition } from './requirement-replan-dispatch';
 import { blockReviewedEmptyDiff } from './reviewed-empty-diff';
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -500,4 +501,25 @@ test('preflight admission refuses durable stop before external work', async () =
   await expect(assertReviewedTaskCurrent(db as unknown as PostgresClient, receipt)).rejects.toThrow(
     'stop_not_resumed',
   );
+});
+
+test('reviewed replan dispatches a planner and preserves the approval gate', async () => {
+  expect((await commit()).committed).toBe(true);
+  expect(
+    await reviewedReplanTransition(db as unknown as PostgresClient, 1, 'research_done'),
+  ).toEqual({
+    role: 'planner',
+    outputFile: 'plan',
+    nextStatus: 'plan_created',
+  });
+  expect(
+    await reviewedReplanTransition(db as unknown as PostgresClient, 1, 'plan_created'),
+  ).toBeNull();
+  expect(
+    await reviewedReplanTransition(db as unknown as PostgresClient, 1, 'plan_approved'),
+  ).toEqual({
+    role: 'implementer',
+    outputFile: null,
+    nextStatus: 'in_progress',
+  });
 });

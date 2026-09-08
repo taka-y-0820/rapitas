@@ -76,3 +76,17 @@ services/workflow/workflow-reconciler-queue-stall.test.ts
 services/workflow/workflow-reconciler-question-pause.test.ts
 services/workflow/workflow-reconciler-question-auto-answer.test.ts
 services/workflow/workflow-reconciler-autoapprove.test.ts
+services/workflow/workflow-orchestrator.transitions.test.ts
+services/workflow/workflow-orchestrator.smart-router.test.ts
+services/workflow/workflow-orchestrator.replan.test.ts
+services/workflow/workflow-orchestrator.guard.test.ts
+services/workflow/workflow-orchestrator.errors.test.ts
+services/workflow/workflow-orchestrator-shutdown.test.ts
+services/workflow/workflow-orchestrator-replan.test.ts
+services/workflow/workflow-orchestrator-probe-integration.test.ts
+services/workflow/workflow-orchestrator-preflight-probe.test.ts
+services/workflow/workflow-orchestrator-plan-replan.test.ts
+services/workflow/workflow-orchestrator-overlap-guard.test.ts
+services/workflow/workflow-orchestrator-context.test.ts
+services/workflow/artifact-reuse-reconciler.test.ts
+services/workflow/workflow-mode-config.test.ts

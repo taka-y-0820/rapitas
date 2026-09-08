@@ -99,9 +99,7 @@ const mockPrisma = {
   systemPrompt: {
     findUnique: mock(() => Promise.resolve(null)),
   },
-  workflowTransition: {
-    count: mock(() => Promise.resolve(0)),
-  },
+  workflowTransition: { findFirst: async () => null, count: mock(() => Promise.resolve(0)) },
   aIAgentConfig: {
     findUnique: mock(() => Promise.resolve(null)),
   },
