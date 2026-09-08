@@ -827,10 +827,9 @@ describe('handleSaveFile — validateVerify 失敗によるバウンスは冗長
       severity: 80,
       summary: '受入基準1が複数回の差し戻しで一度も対応されていない',
     });
-    // 1st call = priorVerifyPass check (no prior pass); 2nd call =
+    // The history-based completion rescue is gone. The latest-row lookup is
     // wasNonConvergenceCutoffJustRecorded reading the row attemptVerifyRepair
     // (mocked below) just recorded.
-    mockWorkflowTransitionFindFirst.mockResolvedValueOnce(null);
     mockWorkflowTransitionFindFirst.mockResolvedValueOnce({
       cause: 'verify_repair_non_convergence',
       createdAt: new Date(),
