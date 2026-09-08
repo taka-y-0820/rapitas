@@ -20,3 +20,7 @@ export {
 } from './workflow-handlers-mode';
 export { handleResumeFromQuestion, handleAnswerWorkflowQuestion } from './workflow-handlers-resume';
 export { handleRunVerification } from './workflow-handlers-verification';
+export {
+  handleRunVerificationStatus,
+  handleRunVerificationLatest,
+} from './workflow-handlers-verification-status';
