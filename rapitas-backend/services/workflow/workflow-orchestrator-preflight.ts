@@ -1,3 +1,4 @@
+import { reviewedReplanTransition } from './requirement-replan-dispatch';
 /**
  * Workflow Orchestrator — Preflight
  *
@@ -82,6 +83,17 @@ export async function runPreflight(taskId: number) {
   const modeTransitions = buildTransitions(modeSettings);
 
   let currentStatus = narrowWorkflowStatus(task.workflowStatus);
+  const reviewedTransition = await reviewedReplanTransition(prisma, taskId, currentStatus);
+  if (reviewedTransition) {
+    return {
+      done: false as const,
+      task,
+      workflowMode,
+      currentStatus,
+      transition: reviewedTransition,
+    };
+  }
+
   let transition = modeTransitions[currentStatus];
   if (!transition) {
     const result: WorkflowAdvanceResult = {

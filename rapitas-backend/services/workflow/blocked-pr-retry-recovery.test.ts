@@ -43,6 +43,7 @@ mock.module('../../config/database', () => ({
     task: { updateMany: mockTaskUpdateMany, findUnique: mockTaskFindUnique },
     themeAutoRun: { findUnique: mockThemeAutoRunFindUnique },
     agentExecution: { findFirst: mockAgentExecutionFindFirst },
+    workflowTransition: { findFirst: async () => null },
   },
 }));
 

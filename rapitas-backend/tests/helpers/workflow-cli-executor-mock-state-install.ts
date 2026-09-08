@@ -29,6 +29,18 @@ const p = (rel: string): string => join(BACKEND_ROOT, rel);
  * file's registration bun keeps "active" (see file header).
  */
 export function installWorkflowCliExecutorMocks(): void {
+  mock.module(p('services/workflow/requirement-replan-service'), () => ({
+    attemptRequirementReplan: async () => ({
+      committed: false,
+      reason: 'no_mismatch',
+      completionReceipt: { taskId: 1 },
+    }),
+  }));
+  mock.module(p('services/workflow/requirement-replan-commit'), () => ({
+    completeReviewedTask: spies.completeReviewedTask,
+    assertReviewedTaskCurrent: spies.assertReviewedTaskCurrent,
+    REQUIREMENT_REPLAN_CAUSE: 'requirement_evidence_replan',
+  }));
   mock.module(p('config/database'), () => ({
     prisma: prismaMock,
     ensureDatabaseConnection: () => Promise.resolve(),
@@ -207,6 +219,8 @@ const noopLogger = {
 };
 
 const prismaMock = {
+  // Ordinary phase fixtures have no committed requirement replan.
+  workflowTransition: { findFirst: () => Promise.resolve(null) },
   task: {
     update: spies.taskUpdate,
     updateMany: spies.taskUpdateMany,

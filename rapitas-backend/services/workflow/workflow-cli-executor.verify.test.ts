@@ -231,10 +231,12 @@ describe('executeCLIAgent — verify phase', () => {
 
     expect(result.status).toBe('completed');
     expect(spies.performAutoCommitAndPR).not.toHaveBeenCalled();
-    const completed = taskUpdateCalls().find((c) => c.data.workflowStatus === 'completed');
-    expect(completed).toBeDefined();
-    expect(completed?.data.status).toBe('done');
-    expect(recordedCauses()).toContain('verify_passed');
+    expect(spies.taskUpdate).not.toHaveBeenCalled();
+    expect(spies.completeReviewedTask).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ cause: 'verify_passed' }),
+    );
   });
 
   test('completes after a successful auto-commit + PR when none existed yet', async () => {
@@ -247,7 +249,11 @@ describe('executeCLIAgent — verify phase', () => {
 
     expect(spies.performAutoCommitAndPR).toHaveBeenCalledTimes(1);
     expect(result.status).toBe('completed');
-    expect(recordedCauses()).toContain('verify_passed');
+    expect(spies.completeReviewedTask).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ cause: 'verify_passed' }),
+    );
   });
 
   test('completes without a PR when auto-commit/PR was not requested at all', async () => {
@@ -269,9 +275,12 @@ describe('executeCLIAgent — verify phase', () => {
     const result = await run();
 
     expect(result.status).toBe('completed');
-    const completed = taskUpdateCalls().find((c) => c.data.workflowStatus === 'completed');
-    expect(completed).toBeDefined();
-    expect(recordedCauses()).toContain('verify_no_change_confirmed');
+    expect(spies.taskUpdate).not.toHaveBeenCalled();
+    expect(spies.completeReviewedTask).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ cause: 'verify_no_change_confirmed' }),
+    );
   });
 
   test('a genuine PR-creation failure blocks — completion always requires a PR', async () => {

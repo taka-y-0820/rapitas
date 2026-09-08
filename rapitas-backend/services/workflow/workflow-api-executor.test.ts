@@ -43,7 +43,9 @@ mock.module('../../config/logger', () => ({
   createLogger: () => noopLog,
 }));
 
-const mockWriteWorkflowFile = mock(() => Promise.resolve());
+const mockWriteWorkflowFile = mock(
+  async (_taskId: number, _type: string, content: string) => content,
+);
 const mockExtractMarkdown = mock((output: string, _fileType: string) => output);
 mock.module('./workflow-file-utils', () => ({
   writeWorkflowFile: mockWriteWorkflowFile,
@@ -157,7 +159,9 @@ function resetMocks() {
   mockTaskFindUnique.mockReset();
   mockTaskFindUnique.mockResolvedValue({ workflowStatus: 'in_progress' });
   mockWriteWorkflowFile.mockReset();
-  mockWriteWorkflowFile.mockResolvedValue(undefined);
+  mockWriteWorkflowFile.mockImplementation(
+    async (_taskId: number, _type: string, content: string) => content,
+  );
   mockExtractMarkdown.mockReset();
   mockExtractMarkdown.mockImplementation((output: string) => output);
   mockCallAnthropicAPI.mockReset();
@@ -448,19 +452,18 @@ describe('executeAPIAgent — verify.md honesty gate', () => {
       attempt: 1,
     });
 
+    mockWriteWorkflowFile.mockResolvedValueOnce('persisted verification');
     const result = await runVerify();
+    expect(mockValidateVerify).toHaveBeenCalledWith('persisted verification');
 
     expect(mockAttemptVerifyRepair).toHaveBeenCalledWith(
       1,
       'in_progress',
       'contradicts itself',
-      'anthropic output',
+      'persisted verification',
     );
-    expect(mockTaskUpdate).toHaveBeenCalledWith({
-      where: { id: 1 },
-      data: { workflowStatus: 'plan_approved' },
-    });
-    expect(result.status).toBe('verify_done');
+    expect(mockTaskUpdate).not.toHaveBeenCalled();
+    expect(result.status).toBe('plan_approved');
   });
 
   test('blocks durably once repair attempts are exhausted, without advancing workflowStatus', async () => {

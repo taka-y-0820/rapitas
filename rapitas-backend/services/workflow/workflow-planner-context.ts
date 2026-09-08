@@ -15,6 +15,8 @@ import { buildCriticFeedback, buildCriticLessonsSection } from './phase-critic';
 import { buildSubtaskSplitDirective } from './subtask-split-policy';
 import { recordContextMetrics } from './workflow-context-metrics';
 import type { PlannerTexts } from './workflow-role-prompts';
+import { prisma } from '../../config/database';
+import { buildRequirementReplanContext } from './requirement-replan-context';
 
 /**
  * Build the planner role's prompt context.
@@ -41,6 +43,8 @@ export async function buildPlannerContext(
 ): Promise<string> {
   const research = await readWorkflowFile(taskId, 'research');
   let ctx = taskInfo;
+  const requirementReplan = await buildRequirementReplanContext(prisma, taskId, language);
+  if (requirementReplan) ctx += `\n\n${requirementReplan}`;
 
   // A human asked for a targeted change to THIS plan. Leads the context: it is
   // a direct instruction about the document being written, so it outranks the

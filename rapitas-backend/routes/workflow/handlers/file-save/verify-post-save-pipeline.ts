@@ -1,3 +1,4 @@
+import type { CompletionReviewReceipt } from '../../../../services/workflow/requirement-replan-commit';
 /**
  * FileSave Verify Post-Save Pipeline
  *
@@ -36,6 +37,7 @@ import { runVerifyCommitPrCompletion, type CommitPrCompletionOutcome } from './v
  * @returns The completion outcome (pass-through when the save was not a passing verify)
  */
 export async function runVerifyPostSaveAutomation(params: {
+  completionReceipt?: CompletionReviewReceipt;
   taskId: number;
   fileType: WorkflowFileType;
   newStatus: string | undefined;
@@ -49,6 +51,7 @@ export async function runVerifyPostSaveAutomation(params: {
 
   const work = (async (): Promise<CommitPrCompletionOutcome> => {
     const completionGate = await runVerifyCompletionGate({
+      completionReceipt: params.completionReceipt,
       taskId,
       fileType,
       newStatus,
@@ -67,6 +70,7 @@ export async function runVerifyPostSaveAutomation(params: {
     });
 
     return runVerifyCommitPrCompletion({
+      completionReceipt: params.completionReceipt,
       taskId,
       fileType,
       newStatus: adversarial.newStatus,

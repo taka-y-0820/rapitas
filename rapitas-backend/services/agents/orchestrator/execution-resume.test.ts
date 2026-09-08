@@ -6,6 +6,7 @@
  * エラー時のクリーンアップを検証する。
  */
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { join } from 'node:path';
 
 // ── Module-level mocks（import 前に宣言） ──────────────────────────────────────
 // NOTE: mock.module はプロセスグローバル。同一 specifier をモックする他のテスト
@@ -378,7 +379,7 @@ describe('resumeInterruptedExecution() — 正常系', () => {
               title: 't',
               description: null,
               theme: {
-                workingDirectory: 'C:\\Projects\\rapitas\\rapitas-backend',
+                workingDirectory: join(getProjectRootMock(), 'rapitas-backend'),
                 name: 'テーマC',
               },
             },

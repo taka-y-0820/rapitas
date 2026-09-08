@@ -65,6 +65,20 @@ mock.module('../../../../services/workflow/phase-output-validator', () => ({
 }));
 
 const mockAttemptVerifyRepair = mock(() => Promise.resolve({ bounced: false })) as any;
+const mockRequirementReplan = mock(
+  async (): Promise<{
+    committed: boolean;
+    reason: string;
+    completionReceipt?: { taskId: number };
+  }> => ({ committed: false, reason: 'no_mismatch' }),
+);
+const advanceVerify = mock(async (_db: unknown, receipt: unknown) => receipt);
+mock.module('../../../../services/workflow/requirement-replan-commit', () => ({
+  advanceReviewedVerify: advanceVerify,
+}));
+mock.module('../../../../services/workflow/requirement-replan-service', () => ({
+  attemptRequirementReplan: mockRequirementReplan,
+}));
 mock.module('../../../../services/workflow/verify-self-repair', () => ({
   attemptVerifyRepair: mockAttemptVerifyRepair,
 }));
@@ -81,7 +95,49 @@ function buildParams() {
 }
 
 describe('computeAndApplyStatusTransition — 非収束カットオフの二重記録防止', () => {
+  test('passing verify delegates its state write and returns the renewed receipt', async () => {
+    const receipt = { taskId: 715 };
+    mockRequirementReplan.mockResolvedValueOnce({
+      committed: false,
+      reason: 'no_mismatch',
+      completionReceipt: receipt,
+    });
+    mockValidateVerify.mockReturnValueOnce({
+      ok: true,
+      severity: 0,
+      summary: '',
+      missingSections: [],
+    });
+    const result = await computeAndApplyStatusTransition(buildParams());
+    expect(result.newStatus).toBe('verify_done');
+    expect(result.completionReceipt).toEqual(receipt);
+    expect(advanceVerify).toHaveBeenCalledWith(mockPrisma, receipt);
+    expect(mockTaskUpdate).not.toHaveBeenCalled();
+  });
+
+  test('a stop during verify save cannot fall back to an unchecked state update', async () => {
+    mockRequirementReplan.mockResolvedValueOnce({
+      committed: false,
+      reason: 'no_mismatch',
+      completionReceipt: { taskId: 715 },
+    });
+    mockValidateVerify.mockReturnValueOnce({
+      ok: true,
+      severity: 0,
+      summary: '',
+      missingSections: [],
+    });
+    advanceVerify.mockRejectedValueOnce(new Error('stop_not_resumed'));
+    await expect(computeAndApplyStatusTransition(buildParams())).rejects.toThrow(
+      'stop_not_resumed',
+    );
+    expect(mockTaskUpdate).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
+    advanceVerify.mockReset().mockImplementation(async (_db, receipt) => receipt);
+    mockRequirementReplan
+      .mockReset()
+      .mockResolvedValue({ committed: false, reason: 'no_mismatch' });
     mockValidateVerify.mockReset().mockReturnValue({
       ok: false,
       missingSections: [],
@@ -95,6 +151,26 @@ describe('computeAndApplyStatusTransition — 非収束カットオフの二重�
     mockMarkLatestExecutionFailed.mockClear();
     mockWorkflowTransitionFindFirst.mockReset().mockResolvedValue(null);
     mockAttemptVerifyRepair.mockReset().mockResolvedValue({ bounced: false });
+  });
+
+  test('committed replan returns before verification repair and completion advancement', async () => {
+    mockRequirementReplan.mockResolvedValueOnce({
+      committed: true,
+      reason: 'requirement_evidence_replan',
+    });
+    const result = await computeAndApplyStatusTransition(buildParams());
+    expect(result.newStatus).toBe('research_done');
+    expect(result.verifyRepairBounced).toBe(true);
+    expect(mockValidateVerify).not.toHaveBeenCalled();
+    expect(mockAttemptVerifyRepair).not.toHaveBeenCalled();
+    expect(mockTaskUpdate).not.toHaveBeenCalled();
+  });
+
+  test('unknown replan review cannot advance or consume implementation repair', async () => {
+    mockRequirementReplan.mockResolvedValueOnce({ committed: false, reason: 'unknown' });
+    await expect(computeAndApplyStatusTransition(buildParams())).rejects.toThrow('review held');
+    expect(mockAttemptVerifyRepair).not.toHaveBeenCalled();
+    expect(mockTaskUpdate).not.toHaveBeenCalled();
   });
 
   test('validator exception never advances a saved artifact to verify_done', async () => {

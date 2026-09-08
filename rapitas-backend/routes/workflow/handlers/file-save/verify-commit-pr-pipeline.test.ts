@@ -11,6 +11,28 @@
  * 直接検証する。
  */
 import { describe, expect, test, mock } from 'bun:test';
+import type { CompletionReviewReceipt } from '../../../../services/workflow/requirement-replan-commit';
+const receipt: CompletionReviewReceipt = {
+  taskId: 653,
+  executionId: 1,
+  evaluatedUpdatedAt: new Date(),
+  review: {
+    snapshotDigest: 'test',
+    durationMs: 1,
+    tokensUsed: 1,
+    modelName: null,
+    verdict: { kind: 'no_mismatch', reason: 'test' },
+  },
+};
+const completeReview = mock(async (_db: unknown, _receipt: unknown, _completion: unknown) => ({
+  committed: true,
+  reason: 'verify_passed',
+}));
+const preflight = mock(async () => undefined);
+mock.module('../../../../services/workflow/requirement-replan-commit', () => ({
+  assertReviewedTaskCurrent: preflight,
+  completeReviewedTask: completeReview,
+}));
 
 mock.module('../../../../config/logger', () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
@@ -98,6 +120,7 @@ describe('requested merge is a completion requirement', () => {
       try {
         const outcome = await runVerifyCommitPrPipeline({
           taskId: 897,
+          completionReceipt: { ...receipt, taskId: 897 },
           savedContent: '# 検証結果',
           preferredBaseBranchForVerify: null,
         });
@@ -117,6 +140,7 @@ describe('runVerifyCommitPrPipeline — リカバリ後の再試行を待つこ�
   test('再試行(2回目の performAutoCommitAndPR)が解決するまでパイプラインが完了しないこと', async () => {
     let settled = false;
     const work = runVerifyCommitPrPipeline({
+      completionReceipt: receipt,
       taskId: 653,
       savedContent: '# 検証結果',
       preferredBaseBranchForVerify: null,
@@ -146,9 +170,29 @@ describe('runVerifyCommitPrPipeline — リカバリ後の再試行を待つこ�
     const outcome = await work;
     expect(settled).toBe(true);
     expect(outcome.taskMarkedDone).toBe(true);
-    expect(outcome.newStatus).toBe('verify_done');
+    expect(outcome.newStatus).toBe('completed');
     expect(sideEffectsCalls).toEqual([653]);
   });
+});
+
+test('a stale review after PR work cannot trigger completion side effects', async () => {
+  performAutoCommitAndPRMock.mockImplementationOnce(() =>
+    Promise.resolve({
+      autoPRResult: { success: true, prNumber: 1 },
+      requested: { autoCommit: true, autoCreatePR: true, autoMergePR: false },
+    }),
+  );
+  completeReview.mockResolvedValueOnce({ committed: false, reason: 'stop_not_resumed' });
+  const before = sideEffectsCalls.length;
+  await expect(
+    runVerifyCommitPrPipeline({
+      taskId: 653,
+      savedContent: '# verify',
+      preferredBaseBranchForVerify: null,
+      completionReceipt: receipt,
+    }),
+  ).rejects.toThrow('Reviewed completion held');
+  expect(sideEffectsCalls.length).toBe(before);
 });
 
 describe('runVerifyCommitPrPipeline — PR未作成時の失敗メッセージ（task 793）', () => {
@@ -165,6 +209,7 @@ describe('runVerifyCommitPrPipeline — PR未作成時の失敗メッセージ�
 
     await runVerifyCommitPrPipeline({
       taskId: 793,
+      completionReceipt: { ...receipt, taskId: 793 },
       savedContent: '# 検証結果',
       preferredBaseBranchForVerify: null,
     });
@@ -174,4 +219,18 @@ describe('runVerifyCommitPrPipeline — PR未作成時の失敗メッセージ�
       expect.stringContaining('数分以内にPR再作成のみを行う軽量な自動リトライが1回行われます'),
     );
   });
+});
+
+test('a stopped preflight prevents any commit or PR attempt', async () => {
+  const before = performAutoCommitAndPRMock.mock.calls.length;
+  preflight.mockRejectedValueOnce(new Error('stop_not_resumed'));
+  await expect(
+    runVerifyCommitPrPipeline({
+      taskId: 653,
+      savedContent: 'PASS',
+      preferredBaseBranchForVerify: null,
+      completionReceipt: receipt,
+    }),
+  ).rejects.toThrow('stop_not_resumed');
+  expect(performAutoCommitAndPRMock.mock.calls.length).toBe(before);
 });

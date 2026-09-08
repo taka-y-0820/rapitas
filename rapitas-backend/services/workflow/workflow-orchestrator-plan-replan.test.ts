@@ -63,6 +63,7 @@ const mockPrisma = {
   },
   // The counter under test — REJECTS to simulate a DB hiccup.
   workflowTransition: {
+    findFirst: async () => null,
     count: mock(() => Promise.reject(new Error('connection reset'))),
   },
 };
