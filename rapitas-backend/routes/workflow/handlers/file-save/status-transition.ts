@@ -9,6 +9,7 @@
 
 import { prisma } from '../../../../config';
 import { createLogger } from '../../../../config/logger';
+import { hasNonpassingVerifyVerdict } from '../../../../services/workflow/nonpassing-verify-verdict';
 import type { WorkflowFileType } from '../../core/workflow-helpers';
 import { researchConcludesNoChange } from '../../../../services/workflow/completion-gate';
 import { recordTransition } from '../../../../services/workflow/transition-recorder';
@@ -130,7 +131,11 @@ export async function computeAndApplyStatusTransition(params: {
               .findUnique({ where: { id: taskId }, select: { githubPrId: true } })
               .catch(() => null)
           : null;
-        if (priorVerifyPass && prRow?.githubPrId != null) {
+        if (
+          priorVerifyPass &&
+          prRow?.githubPrId != null &&
+          !hasNonpassingVerifyVerdict(savedContent)
+        ) {
           log.warn(
             { taskId, prId: prRow.githubPrId, summary: verifyValidation.summary },
             '[Workflow] verify re-run reported a failure, but the task already passed verify and has a PR — completing as already-done (false-negative on already-merged work).',
