@@ -1,5 +1,5 @@
 /** Durable queue admission for one committed repair; never starts a process. */
-import type { PrismaClient } from '../../generated/prisma-postgres';
+import type { Prisma, PrismaClient } from '../../generated/prisma-postgres';
 import { withTaskLifecycleLock } from './task-lifecycle-lock';
 import { THEME_STOP_INTENT } from '../agents/theme-stop-intent';
 
@@ -17,57 +17,10 @@ export async function enqueueCommittedRepair(
   return withTaskLifecycleLock(taskId, () =>
     db.$transaction(
       async (tx) => {
-        const task = await tx.task.findUnique({
-          where: { id: taskId },
-          select: {
-            status: true,
-            workflowStatus: true,
-            updatedAt: true,
-            themeId: true,
-          },
-        });
-        if (
-          !task ||
-          task.status !== 'in-progress' ||
-          task.workflowStatus !== receipt.workflowStatus ||
-          task.updatedAt.getTime() !== receipt.updatedAt.getTime()
-        )
-          return 'held';
-        const execution = await tx.agentExecution.findFirst({
-          where: { session: { config: { taskId } } },
-          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-          select: { id: true, status: true, startedAt: true },
-        });
-        if (
-          (execution?.id ?? null) !== receipt.executionId ||
-          ['canceled', 'cancelled', 'canceling', 'cancelling'].includes(execution?.status ?? '')
-        )
-          return 'held';
-        const stop = await tx.workflowTransition.findFirst({
-          where: {
-            taskId,
-            cause: {
-              in: [
-                THEME_STOP_INTENT,
-                'manual_execution_stop_revert',
-                'manual_execution_stop_withdraw',
-                'auto_run_stop_revert',
-              ],
-            },
-          },
-          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-          select: { createdAt: true },
-        });
-        if (stop && (!execution?.startedAt || execution.startedAt <= stop.createdAt)) return 'held';
-        const theme =
-          task.themeId === null
-            ? null
-            : await tx.themeAutoRun.findUnique({
-                where: { themeId: task.themeId },
-                select: { enabled: true, status: true },
-              });
-        if (theme && ['stopping', 'paused'].includes(theme.status)) return 'held';
-        if (theme?.enabled && theme.status === 'running') return 'scheduler_owned';
+        const eligible = await readRepairQueueEligibility(tx, taskId, receipt);
+        if (eligible !== 'eligible') return eligible;
+        const task = await tx.task.findUnique({ where: { id: taskId }, select: { themeId: true } });
+        if (!task) return 'held';
         const existing = await tx.workflowQueueItem.findFirst({
           where: {
             taskId,
@@ -86,6 +39,7 @@ export async function enqueueCommittedRepair(
             currentPhase: receipt.workflowStatus,
             priority: 50,
             dependencies: '[]',
+            result: JSON.stringify({ repairResume: receipt }),
           },
           select: { id: true },
         });
@@ -94,4 +48,64 @@ export async function enqueueCommittedRepair(
       { isolationLevel: 'Serializable' },
     ),
   );
+}
+
+/** Shared by enqueue and first dequeue, inside the caller's transaction. */
+export async function readRepairQueueEligibility(
+  tx: Prisma.TransactionClient,
+  taskId: number,
+  receipt: RepairQueueReceipt,
+): Promise<'eligible' | 'held' | 'scheduler_owned'> {
+  const task = await tx.task.findUnique({
+    where: { id: taskId },
+    select: {
+      status: true,
+      workflowStatus: true,
+      updatedAt: true,
+      themeId: true,
+    },
+  });
+  if (
+    !task ||
+    task.status !== 'in-progress' ||
+    task.workflowStatus !== receipt.workflowStatus ||
+    task.updatedAt.getTime() !== receipt.updatedAt.getTime()
+  )
+    return 'held';
+  const execution = await tx.agentExecution.findFirst({
+    where: { session: { config: { taskId } } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    select: { id: true, status: true, startedAt: true },
+  });
+  if (
+    (execution?.id ?? null) !== receipt.executionId ||
+    ['canceled', 'cancelled', 'canceling', 'cancelling'].includes(execution?.status ?? '')
+  )
+    return 'held';
+  const stop = await tx.workflowTransition.findFirst({
+    where: {
+      taskId,
+      cause: {
+        in: [
+          THEME_STOP_INTENT,
+          'manual_execution_stop_revert',
+          'manual_execution_stop_withdraw',
+          'auto_run_stop_revert',
+        ],
+      },
+    },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    select: { createdAt: true },
+  });
+  if (stop && (!execution?.startedAt || execution.startedAt <= stop.createdAt)) return 'held';
+  const theme =
+    task.themeId === null
+      ? null
+      : await tx.themeAutoRun.findUnique({
+          where: { themeId: task.themeId },
+          select: { enabled: true, status: true },
+        });
+  if (theme && ['stopping', 'paused'].includes(theme.status)) return 'held';
+  if (theme?.enabled && theme.status === 'running') return 'scheduler_owned';
+  return 'eligible';
 }

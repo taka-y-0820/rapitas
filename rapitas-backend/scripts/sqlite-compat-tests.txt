@@ -62,3 +62,4 @@ services/workflow/reviewed-plan-policy.test.ts
 services/workflow/requirement-replan-sources.test.ts
 services/workflow/verify-repair-commit.test.ts
 tests/services/verify-self-repair.test.ts
+services/workflow/workflow-queue.dequeue.test.ts

@@ -1,3 +1,5 @@
+import { canAcquireRepairQueue, clearAcquiredRepairReceipt } from './repair-queue-acquire';
+import type { Prisma } from '../../generated/prisma-postgres';
 import { enqueueCommittedRepair } from './verify-repair-queue';
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -154,4 +156,40 @@ test('old delivery cannot enqueue a newer execution', async () => {
   );
   expect(await enqueueCommittedRepair(db as unknown as PostgresClient, 1, receipt)).toBe('held');
   expect(await db.workflowQueueItem.count()).toBe(0);
+});
+
+test('stop between enqueue and acquire invalidates the persisted receipt', async () => {
+  const receipt = await repairReceipt();
+  await enqueueCommittedRepair(db as unknown as PostgresClient, 1, receipt);
+  const item = await db.workflowQueueItem.findFirstOrThrow({
+    select: { taskId: true, result: true },
+  });
+  expect(
+    await db.$transaction((tx) =>
+      canAcquireRepairQueue(tx as unknown as Prisma.TransactionClient, item),
+    ),
+  ).toBe(true);
+  await db.$executeRawUnsafe(
+    "INSERT INTO WorkflowTransition (taskId,cause,createdAt) VALUES (1,'manual_execution_stop_revert',?)",
+    new Date(),
+  );
+  expect(
+    await db.$transaction((tx) =>
+      canAcquireRepairQueue(tx as unknown as Prisma.TransactionClient, item),
+    ),
+  ).toBe(false);
+});
+test('successful acquisition consumes only the repair admission receipt', async () => {
+  const receipt = await repairReceipt();
+  const metadata = JSON.stringify({ repairResume: receipt });
+  expect(clearAcquiredRepairReceipt(metadata)).toBeNull();
+  expect(clearAcquiredRepairReceipt('{"phase":"verify"}')).toBe('{"phase":"verify"}');
+  expect(
+    await db.$transaction((tx) =>
+      canAcquireRepairQueue(tx as unknown as Prisma.TransactionClient, {
+        taskId: 1,
+        result: '{"repairResume":{"updatedAt":"invalid"}}',
+      }),
+    ),
+  ).toBe(false);
 });
