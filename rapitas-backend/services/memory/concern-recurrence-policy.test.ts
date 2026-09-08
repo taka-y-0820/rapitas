@@ -331,7 +331,7 @@ describe('resolveFiling', () => {
       findBlockingDuplicate,
     });
     expect(findBlockingDuplicate).toHaveBeenCalledTimes(1);
-    expect(decision).toEqual({ reuseId: 7 });
+    expect(decision).toEqual({ reuseId: 7, reuseReason: 'dedup-live-duplicate' });
   });
 
   it('returns no reuseId when findBlockingDuplicate finds nothing and no policy is given', async () => {
@@ -362,7 +362,7 @@ describe('resolveFiling', () => {
       severity: 'medium',
       findBlockingDuplicate,
     });
-    expect(decision).toEqual({ reuseId: 5 });
+    expect(decision).toEqual({ reuseId: 5, reuseReason: 'recurrence-merged-open' });
     expect(prisma.update).toHaveBeenCalledTimes(1);
     expect(findBlockingDuplicate).not.toHaveBeenCalled();
   });

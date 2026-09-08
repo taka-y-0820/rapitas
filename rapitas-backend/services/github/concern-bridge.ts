@@ -223,7 +223,7 @@ export async function importIssueAsConcern(
     return { success: true, concernId: issue.linkedConcernId };
   }
 
-  const concernId = await submitConcern({
+  const filing = await submitConcern({
     title: issue.title,
     detail: issue.body?.trim() || `(GitHub Issue #${issue.issueNumber})`,
     // Recover type/severity from labels if the issue was a published concern,
@@ -234,6 +234,7 @@ export async function importIssueAsConcern(
     // Stable per-issue key so re-importing the same issue never duplicates.
     dedupKey: `gh-issue:${issue.id}`,
   });
+  const concernId = filing.id;
 
   await prisma.gitHubIssue.update({ where: { id: issueId }, data: { linkedConcernId: concernId } });
   log.info({ issueId, concernId }, 'GitHub issue imported as concern');
