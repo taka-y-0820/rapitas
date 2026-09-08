@@ -44,7 +44,37 @@ export function buildPollUrl(taskId: number, runId: string): string {
  * @param ctx - Elysia handler context. / Elysiaハンドラコンテキスト
  * @returns `{runId, status, pollUrl}`, or an error payload. / ジョブ起動結果またはエラー
  */
+const startingJobs = new Map<
+  number,
+  Promise<{ response: Awaited<ReturnType<typeof launchVerification>>; status?: number | string }>
+>();
+
+/** Share initialization, including its failure, without exposing an unpersisted placeholder ID. */
 export async function handleRunVerification(ctx: RunVerificationContext) {
+  const taskId = Number(ctx.params.taskId);
+  if (!Number.isSafeInteger(taskId) || taskId <= 0) {
+    ctx.set.status = 400;
+    return { success: false, error: 'invalid taskId' };
+  }
+  const existing = startingJobs.get(taskId);
+  if (existing) {
+    const result = await existing;
+    ctx.set.status = result.status;
+    return result.response;
+  }
+  const starting = launchVerification(ctx).then((response) => ({
+    response,
+    status: ctx.set.status,
+  }));
+  startingJobs.set(taskId, starting);
+  try {
+    return (await starting).response;
+  } finally {
+    if (startingJobs.get(taskId) === starting) startingJobs.delete(taskId);
+  }
+}
+
+async function launchVerification(ctx: RunVerificationContext) {
   const taskId = parseInt(ctx.params.taskId);
   if (!Number.isFinite(taskId)) {
     ctx.set.status = 400;
@@ -62,14 +92,8 @@ export async function handleRunVerification(ctx: RunVerificationContext) {
     };
   }
 
-  // Reserved synchronously, before the first await, so two requests that
-  // both miss the `runningJobs.get` check above cannot both proceed — this
-  // mirrors the prior in-flight guard's ordering (task 897 supervisor
-  // finding: a reservation placed AFTER an await leaves a race window).
-  // The placeholder is replaced with the real runId once beginVerificationRun
-  // resolves; every exit path below removes the reservation on failure.
-  const PENDING = '__pending__';
-  runningJobs.set(taskId, PENDING);
+  // The handler shares this launch promise until a durable runId exists.
+  // runningJobs contains only real job IDs, never preparation placeholders.
   try {
     const session = await prisma.agentSession
       .findFirst({

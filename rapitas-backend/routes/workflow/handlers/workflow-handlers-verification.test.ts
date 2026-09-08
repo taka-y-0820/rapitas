@@ -150,7 +150,7 @@ describe('handleRunVerification', () => {
   });
 
   describe('回帰(task897 監督差戻し): runningJobs の同期予約', () => {
-    it('session読み取りが保留中でも同一taskへの2件目は即座に既存予約を返す（awaitより前に予約）', async () => {
+    it('session読み取り中の同時要求は準備結果を共有し実在するrunIdだけを返す', async () => {
       let releaseSession!: () => void;
       findFirstMock.mockImplementationOnce(
         () =>
@@ -161,15 +161,57 @@ describe('handleRunVerification', () => {
       const first = handleRunVerification(ctx('55'));
       const secondContext = ctx('55');
       try {
-        const second = await handleRunVerification(secondContext);
+        let secondSettled = false;
+        const secondPromise = handleRunVerification(secondContext).then((result) => {
+          secondSettled = true;
+          return result;
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(secondSettled).toBe(false);
+        releaseSession();
+        const second = await secondPromise;
         // No new session lookup for the second call — the reservation guard
         // short-circuits before findFirst is reached a second time.
         expect(findFirstMock).toHaveBeenCalledTimes(1);
-        expect(second).toMatchObject({ success: true, status: 'running', idempotent: true });
+        expect(second).toMatchObject({ success: true, status: 'running', runId: 'run-1' });
       } finally {
         releaseSession();
         await first;
       }
+    });
+
+    it('同時要求へ準備失敗を共有し、次の起動は再試行できる', async () => {
+      let release!: () => void;
+      findFirstMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = () => resolve(null);
+          }),
+      );
+      const firstContext = ctx('57');
+      const secondContext = ctx('57');
+      const first = handleRunVerification(firstContext);
+      const second = handleRunVerification(secondContext);
+      release();
+      const results = await Promise.all([first, second]);
+      expect(results).toEqual([
+        {
+          success: false,
+          error: 'このタスクの worktree が見つかりません（エージェント実行前は検証できません）。',
+        },
+        {
+          success: false,
+          error: 'このタスクの worktree が見つかりません（エージェント実行前は検証できません）。',
+        },
+      ]);
+      expect(firstContext.set.status).toBe(404);
+      expect(secondContext.set.status).toBe(404);
+      expect(beginVerificationRunMock).not.toHaveBeenCalled();
+      expect(await handleRunVerification(ctx('57'))).toMatchObject({
+        success: true,
+        runId: 'run-1',
+      });
     });
 
     it('404(worktreeなし)応答の直後は同一taskへの再要求が固着しない', async () => {
