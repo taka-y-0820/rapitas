@@ -49,7 +49,10 @@ export async function processStoppingThemesImpl(
 ): Promise<void> {
   for (const state of stopping) {
     try {
-      await stopThemeExecutionImpl(prisma, state.themeId, state.currentTaskId);
+      // Stopping execution is not authorization to discard shared workspace edits.
+      await stopThemeExecutionImpl(prisma, state.themeId, state.currentTaskId, {
+        preserveChanges: true,
+      });
       await finalizeStop(state.themeId);
       broadcastAutoRunUpdateImpl(state.themeId);
       log.info(`[ThemeAutoRunScheduler] Theme ${state.themeId} stopped`);
