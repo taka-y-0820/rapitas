@@ -12,11 +12,18 @@ const mainStopMock = mock((_id: number) => Promise.resolve(true));
 // (agent-orchestrator.ts:366) before the DB-based sweep; mocked as a no-op empty sweep
 // since these tests exercise the DB-based path via mainStopMock/workerStopMock.
 const stopAllForTasksMock = mock((_taskIds: Set<number>) => Promise.resolve([] as number[]));
+const recordIntent = mock(async (_db: unknown, _theme: number, _ids: number[]) => 'request');
+const pendingTargets = mock(async () => [] as number[]);
+mock.module('./theme-stop-intent', () => ({
+  recordThemeStopIntent: recordIntent,
+  readPendingThemeStopTargets: pendingTargets,
+}));
 
 const mockPrisma = {
+  agentSession: { updateMany: mock(async () => ({ count: 1 })) },
   workflowQueueItem: { updateMany: mock(() => Promise.resolve({ count: 0 })) },
   agentExecution: {
-    findMany: mock(() => Promise.resolve([] as { id: number }[])),
+    findMany: mock(() => Promise.resolve([] as { id?: number; sessionId?: number }[])),
     update: mock(() => Promise.resolve({})),
   },
   agentExecutionLog: {
@@ -49,9 +56,12 @@ const { stopTaskAgents, stopThemeAgents, stopTaskTreeAgents } = await import('./
 const { acquireTaskExecutionLock, isTaskExecutionLocked } = await import('./task-execution-lock');
 
 function resetMocks() {
+  mockPrisma.agentSession.updateMany.mockReset().mockResolvedValue({ count: 1 });
+  recordIntent.mockReset().mockResolvedValue('request');
+  pendingTargets.mockReset().mockResolvedValue([]);
   workerStopMock.mockClear();
   mainStopMock.mockClear();
-  stopAllForTasksMock.mockClear();
+  stopAllForTasksMock.mockReset().mockResolvedValue([]);
   mockPrisma.agentExecution.findMany.mockReset();
   mockPrisma.agentExecution.update.mockReset();
   mockPrisma.agentExecutionLog.deleteMany.mockReset();
@@ -63,6 +73,25 @@ function resetMocks() {
 
 describe('stopTaskAgents', () => {
   beforeEach(resetMocks);
+
+  test('session persistence failure cannot report a successful stop', async () => {
+    mockPrisma.agentExecution.findMany.mockResolvedValue([{ id: 11, sessionId: 7 }]);
+    mockPrisma.agentSession.updateMany.mockRejectedValueOnce(new Error('session unavailable'));
+    acquireTaskExecutionLock(5011);
+    await expect(stopTaskAgents(5011)).rejects.toThrow('could not be persisted');
+    expect(isTaskExecutionLocked(5011)).toBe(false);
+    expect(mainStopMock).toHaveBeenCalledWith(11);
+  });
+
+  test('persistence failure still attempts every process stop and releases the task lock', async () => {
+    mockPrisma.agentExecution.findMany.mockResolvedValue([{ id: 11 }, { id: 22 }]);
+    mockPrisma.agentExecution.update.mockRejectedValueOnce(new Error('DB unavailable'));
+    acquireTaskExecutionLock(5010);
+    await expect(stopTaskAgents(5010)).rejects.toThrow('could not be persisted');
+    expect(workerStopMock).toHaveBeenCalledTimes(2);
+    expect(mainStopMock).toHaveBeenCalledTimes(2);
+    expect(isTaskExecutionLocked(5010)).toBe(false);
+  });
 
   test('実行中の全エージェントを停止する（1つだけでなく）', async () => {
     mockPrisma.agentExecution.findMany.mockResolvedValue([{ id: 11 }, { id: 22 }, { id: 33 }]);
@@ -111,6 +140,68 @@ describe('stopTaskAgents', () => {
 
 describe('stopThemeAgents', () => {
   beforeEach(resetMocks);
+
+  test('retry repairs cancelled targets sessions without cancelling a newer active execution', async () => {
+    pendingTargets.mockResolvedValue([91]);
+    mockPrisma.task.findMany.mockResolvedValue([{ id: 200 }]);
+    // Two active queries return empty; the third query resolves prior cancelled targets.
+    mockPrisma.task.findMany.mockResolvedValueOnce([{ id: 200 }]).mockResolvedValue([]);
+    mockPrisma.agentExecution.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ sessionId: 7 }]);
+    expect(await stopThemeAgents(42, null)).toEqual({ stoppedCount: 1, executionIds: [91] });
+    expect(mockPrisma.agentSession.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: [7] },
+        status: { in: ['active', 'running'] },
+        agentExecutions: { none: { status: { in: ['running', 'pending', 'waiting_for_input'] } } },
+      },
+      data: { status: 'cancelled' },
+    });
+    expect(mainStopMock).not.toHaveBeenCalled();
+  });
+
+  test('includes grandchildren without repeating cyclic task references', async () => {
+    mockPrisma.task.findMany
+      .mockResolvedValueOnce([{ id: 200 }])
+      .mockResolvedValueOnce([{ id: 300 }])
+      .mockResolvedValueOnce([{ id: 400 }])
+      .mockResolvedValueOnce([{ id: 200 }]);
+    mockPrisma.agentExecution.findMany.mockResolvedValue([]);
+    await stopThemeAgents(42, null);
+    expect(stopAllForTasksMock).toHaveBeenCalledWith(new Set([200, 300, 400]));
+    expect(mockPrisma.task.findMany).toHaveBeenCalledTimes(4);
+  });
+
+  test('recovers prior stopped targets when no active execution remains', async () => {
+    pendingTargets.mockResolvedValueOnce([91, 92]);
+    mockPrisma.agentExecution.findMany.mockResolvedValue([]);
+    expect(await stopThemeAgents(42, null)).toEqual({ stoppedCount: 2, executionIds: [91, 92] });
+    expect(recordIntent).not.toHaveBeenCalled();
+  });
+
+  test('intent persistence failure still stops agents and then reports failure', async () => {
+    mockPrisma.agentExecution.findMany.mockResolvedValue([{ id: 91 }]);
+    recordIntent.mockRejectedValueOnce(new Error('intent database unavailable'));
+    await expect(stopThemeAgents(42, 200)).rejects.toThrow('intent database unavailable');
+    expect(stopAllForTasksMock).toHaveBeenCalled();
+    expect(workerStopMock).toHaveBeenCalledWith(91);
+    expect(mainStopMock).toHaveBeenCalledWith(91);
+  });
+
+  test('reports executions stopped by the memory sweep even after their DB status became cancelled', async () => {
+    mockPrisma.task.findMany.mockResolvedValueOnce([{ id: 200 }]);
+    stopAllForTasksMock.mockResolvedValueOnce([91, 92]);
+    mockPrisma.agentExecution.findMany.mockResolvedValue([]);
+    expect(await stopThemeAgents(42, null)).toEqual({ stoppedCount: 2, executionIds: [91, 92] });
+  });
+
+  test('deduplicates executions observed by both stop sweeps', async () => {
+    stopAllForTasksMock.mockResolvedValueOnce([91]);
+    mockPrisma.agentExecution.findMany.mockResolvedValue([{ id: 91 }, { id: 92 }]);
+    expect(await stopThemeAgents(42, 200)).toEqual({ stoppedCount: 2, executionIds: [91, 92] });
+  });
 
   test('現在タスク・サブタスク・テーマ内タスクの全エージェントを停止する', async () => {
     // 1st task.findMany → theme top-level tasks; 2nd → their subtasks.
