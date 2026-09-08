@@ -76,9 +76,12 @@ export function PhaseTimeline({ taskId, isRunning, liveLogs }: PhaseTimelineProp
   const hasRunningPhase = phases.some((phase) =>
     phase.iterations.some((iteration) => iteration.status === 'running'),
   );
+  // A planner may start after the previous phase has ended, while the parent's
+  // execution manager still reports idle. Keep discovering phases during that gap.
+  const taskInProgress = taskStatus === 'in-progress' || taskStatus === 'in_progress';
 
   useEffect(() => {
-    if (!isRunning && !hasRunningPhase) {
+    if (!isRunning && !hasRunningPhase && !taskInProgress) {
       // Run just ended — one more fetch so the header badge shows the final
       // task status instead of the last mid-run poll's snapshot.
       void refetch();
@@ -86,7 +89,7 @@ export function PhaseTimeline({ taskId, isRunning, liveLogs }: PhaseTimelineProp
     }
     const interval = setInterval(() => void refetch(), POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [isRunning, hasRunningPhase, refetch]);
+  }, [isRunning, hasRunningPhase, taskInProgress, refetch]);
 
   // Debounce so the (potentially large) highlight pass doesn't run per keystroke.
   useEffect(() => {
