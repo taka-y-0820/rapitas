@@ -16,7 +16,6 @@ import { hasPromotableBacklog, promoteBacklogForTheme } from './backlog-task-pro
 import { logCycleEvent } from '../../observability';
 import { getThemeActiveQueueItems, hasItemAwaitingApproval } from './auto-run-selection';
 import { eligibleTopLevelTodoWhere } from './auto-run-eligibility';
-import { recordTransition } from '../transition-recorder';
 import {
   resumeAutoRun,
   finalizeStop,
@@ -312,20 +311,14 @@ export async function processPausedThemesImpl(
  * @param themeId - Theme to stop / 停止するテーマID
  * @param currentTaskId - Currently tracked task ID / 現在のタスクID
  * @param options.preserveChanges - Keep filesystem changes on automatic timeout for diagnosis/retry.
- * @param options.recordRevertTransition - Record an `auto_run_stop_revert`
- *   WorkflowTransition for the todo revert (default true). The hang-backstop
- *   caller (`auto-run-advance-active.ts`) passes false — it immediately
- *   follows this call with its own, more accurate `auto_run_hang_backstop`
- *   transition into 'blocked', so recording here would just be a
- *   near-instantly-superseded duplicate (task 830).
  */
 export async function stopThemeExecutionImpl(
   prisma: PrismaClient,
   themeId: number,
   currentTaskId: number | null,
-  options: { recordRevertTransition?: boolean; preserveChanges?: boolean } = {},
+  options: { preserveChanges?: boolean } = {},
 ): Promise<void> {
-  const { recordRevertTransition = true, preserveChanges = false } = options;
+  const { preserveChanges = false } = options;
   // Cancel all auto-run queue items for this theme
   await prisma.workflowQueueItem.updateMany({
     where: {
@@ -335,6 +328,12 @@ export async function stopThemeExecutionImpl(
     data: { status: 'cancelled', completedAt: new Date(), errorMessage: 'Auto-run stopped' },
   });
 
+  const { stopThemeAgents } = await import('../../agents/stop-task-agents');
+  const stopped = await stopThemeAgents(themeId, currentTaskId, {
+    errorMessage: 'Auto-run stopped',
+  });
+  const { settleStoppedTasks } = await import('../../agents/settle-stopped-tasks');
+  await settleStoppedTasks(prisma, stopped.executionIds);
   if (!currentTaskId) return;
 
   // Stop the agent execution(s) if any are running
@@ -346,12 +345,6 @@ export async function stopThemeExecutionImpl(
     // subtasks, and any other theme task with a live execution (not just the
     // first found) — and release their locks. A split parent's subtask runs
     // under a different taskId, so a current-task-only stop would orphan it.
-    const { stopThemeAgents } = await import('../../agents/stop-task-agents');
-    await stopThemeAgents(themeId, currentTaskId, { errorMessage: 'Auto-run stopped' }).catch(
-      (err) => {
-        log.warn({ err, themeId }, '[ThemeAutoRunScheduler] stopThemeAgents failed');
-      },
-    );
 
     // Revert any uncommitted changes
     if (workDir && !preserveChanges) {
@@ -366,28 +359,8 @@ export async function stopThemeExecutionImpl(
         });
     }
 
-    // Reset task to 'todo'
-    const reverted = await prisma.task
-      .update({
-        where: { id: currentTaskId },
-        data: { status: 'todo' },
-        select: { workflowStatus: true },
-      })
-      .catch(() => null);
-    // Record the revert so isWithinRecoveryGrace (incident-signature-detectors.ts)
-    // recognizes this deliberate `status='todo'` × advanced `workflowStatus` shape
-    // as expected — mirrors the other 5 todo-revert paths (task 709). Without this,
-    // a theme-stop mid-workflow reproduces the #6825/#830 Pattern B false positive.
-    if (reverted && recordRevertTransition) {
-      await recordTransition({
-        taskId: currentTaskId,
-        fromStatus: reverted.workflowStatus,
-        toStatus: reverted.workflowStatus ?? 'draft',
-        actor: 'system',
-        cause: 'auto_run_stop_revert',
-        metadata: { reason: 'auto_run_stop' },
-      }).catch(() => {});
-    }
+    // Task state was settled atomically from cancelled execution IDs above.
+    // Never reset currentTaskId blindly: it may have completed or started a newer run.
   } catch (err) {
     log.error(
       { err },

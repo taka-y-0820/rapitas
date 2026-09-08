@@ -142,10 +142,12 @@ export const themeAutoRunRoutes = new Elysia()
           const { stopThemeAgents } = await import('../../services/agents/stop-task-agents');
           const stopResult = await stopThemeAgents(themeId, state.currentTaskId ?? null, {
             errorMessage: 'Cancelled by user (auto-run stop)',
-          }).catch((err) => {
-            log.error({ err, themeId }, '[theme-auto-run] Failed to stop in-flight agents on stop');
-            return { stoppedCount: 0, executionIds: [] as number[] };
           });
+          // A cancelled execution alone must not leave the task looking runnable.
+          // Propagate failures to the action's HTTP error handler; never report
+          // success when the state/audit transaction did not settle.
+          const { settleStoppedTasks } = await import('../../services/agents/settle-stopped-tasks');
+          await settleStoppedTasks(prisma, stopResult.executionIds);
           log.info(
             { themeId, stoppedCount: stopResult.stoppedCount },
             `[theme-auto-run] Halted ${stopResult.stoppedCount} in-flight agent(s) for theme ${themeId}`,
