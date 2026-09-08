@@ -97,6 +97,26 @@ describe('computeAndApplyStatusTransition — 非収束カットオフの二重�
     mockAttemptVerifyRepair.mockReset().mockResolvedValue({ bounced: false });
   });
 
+  test('validator exception never advances a saved artifact to verify_done', async () => {
+    mockValidateVerify.mockImplementationOnce(() => {
+      throw new Error('validator unavailable');
+    });
+    await expect(computeAndApplyStatusTransition(buildParams())).rejects.toThrow(
+      'validator unavailable',
+    );
+    expect(mockTaskUpdate).not.toHaveBeenCalled();
+    expect(mockAttemptVerifyRepair).not.toHaveBeenCalled();
+  });
+
+  test('repair exception never advances the failed artifact to verify_done', async () => {
+    mockAttemptVerifyRepair.mockRejectedValueOnce(new Error('repair database unavailable'));
+    await expect(computeAndApplyStatusTransition(buildParams())).rejects.toThrow(
+      'repair database unavailable',
+    );
+    expect(mockTaskUpdate).not.toHaveBeenCalled();
+    expect(transitionCalls).toHaveLength(0);
+  });
+
   test('a prior pass and existing PR cannot override the current partial verdict', async () => {
     mockWorkflowTransitionFindFirst.mockResolvedValue({ id: 1 });
     mockPrisma.task.findUnique.mockResolvedValue({ githubPrId: 100 });
