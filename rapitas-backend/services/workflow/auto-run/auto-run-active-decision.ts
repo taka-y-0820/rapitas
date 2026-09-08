@@ -254,6 +254,16 @@ export async function advanceActiveTaskLocked(
 
   const task = await resolveTaskWorkflowState(currentTaskId);
 
+  // A question can be saved while the task is still in-progress, after its
+  // queue item disappears. Waiting is a workflow state, not only task.blocked.
+  if (
+    task?.workflowStatus === 'awaiting_question' &&
+    ['todo', 'in-progress', 'blocked'].includes(task.status)
+  ) {
+    await notifyAwaitingUserAnswer(themeId, currentTaskId);
+    return;
+  }
+
   // Confirmed-vanished-task guard (task 651): the task row is confirmed
   // absent (dequeue/runner/reconciler all detected this and marked their
   // queue item with the same vanished-task marker). Writing task.blocked
