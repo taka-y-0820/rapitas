@@ -1,6 +1,7 @@
 /** Recover committed repair delivery without creating a second repair attempt. */
 import type { PrismaClient } from '../../generated/prisma-postgres';
 import { enqueueCommittedRepair } from './verify-repair-queue';
+import { REQUIREMENT_REPLAN_CAUSE } from './requirement-replan-commit';
 
 export class RepairRecoveryError extends Error {
   constructor(
@@ -31,7 +32,7 @@ export async function recoverRepairsForRunner(
 
 export async function recoverCommittedRepair(db: PrismaClient, taskId: number) {
   const audit = await db.workflowTransition.findFirst({
-    where: { taskId, cause: 'verify_repair' },
+    where: { taskId, cause: { in: ['verify_repair', REQUIREMENT_REPLAN_CAUSE] } },
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     select: { metadata: true },
   });

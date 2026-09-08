@@ -185,6 +185,26 @@ export async function runPostProcessing(params: {
       );
     }
   }
+  const canAutoAdvance =
+    effectiveSuccess &&
+    (transition.role === 'implementer' ||
+      (phaseStatus === 'plan_approved' &&
+        transition.role !== 'verifier' &&
+        transition.role !== 'auto_verifier'));
+  if (canAutoAdvance) {
+    try {
+      const queueOwner = await prisma.workflowQueueItem.findFirst({
+        where: { taskId, status: 'running' },
+        select: { id: true },
+      });
+      // WorkflowRunner already loops through phases for its acquired item.
+      // A second timer competes for the execution lock and requeues that owner.
+      if (queueOwner) return;
+    } catch (error) {
+      log.error({ err: error, taskId }, '[WorkflowCLIExecutor] Cannot determine next-phase owner');
+      return;
+    }
+  }
   // Auto-start verification phase after implementer completes
   if (effectiveSuccess && transition.role === 'implementer') {
     log.info('[WorkflowCLIExecutor] Implementer done, auto-starting verifier...');

@@ -265,6 +265,9 @@ async function commitReviewedDecision(
         }
         const invalid = validateReplanEvidence(snapshot, verdict.evidence);
         if (invalid) return { committed: false, reason: invalid };
+        // Persist the exact post-transition generation in the same transaction.
+        // Recovery must not guess a fresh authorization from the current task.
+        const updatedAt = new Date(Math.max(Date.now(), task.updatedAt.getTime() + 1));
         const updated = await tx.task.updateMany({
           where: {
             id: taskId,
@@ -272,7 +275,7 @@ async function commitReviewedDecision(
             workflowStatus: task.workflowStatus,
             updatedAt: task.updatedAt,
           },
-          data: { workflowStatus: 'research_done', updatedAt: new Date() },
+          data: { workflowStatus: 'research_done', updatedAt },
         });
         if (updated.count !== 1) return { committed: false, reason: 'stale_task' };
         // This audit write intentionally does NOT use the best-effort recordTransition helper.
@@ -293,6 +296,11 @@ async function commitReviewedDecision(
               durationMs: review.durationMs,
               tokensUsed: review.tokensUsed,
               modelName: review.modelName,
+              resumeReceipt: {
+                updatedAt,
+                workflowStatus: 'research_done',
+                executionId: execution?.id ?? null,
+              },
             }),
           },
         });
