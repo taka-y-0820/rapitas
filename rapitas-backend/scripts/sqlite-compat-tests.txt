@@ -26,6 +26,7 @@ services/agents/stop-task-agents.test.ts
 routes/workflow/theme-auto-run.stop.test.ts
 services/workflow/auto-run/auto-run-stop-preservation.test.ts
 services/workflow/auto-run/theme-auto-run-scheduler.stopping-idle-paused.test.ts
+services/workflow/auto-run/theme-auto-run-scheduler.test.ts
 
 # ===== 検証レッド — 修正不可 (スコープ外) / 懸念バックログ起票済み =====
 # tests/routes/system/setup.test.ts

@@ -130,6 +130,9 @@ export const themeAutoRunRoutes = new Elysia()
         } else {
           // stop
           state = await stopAutoRun(themeId);
+          // Polling may be dormant after an all-stopped startup. Ensure both
+          // finalization and retries run without starting queued agent work.
+          scheduler.start(false);
           log.info(`[theme-auto-run] Stop requested for theme ${themeId}`);
           // Kill EVERY in-flight agent in the theme synchronously — not just
           // state.currentTaskId. When the scheduler has more than one execution
