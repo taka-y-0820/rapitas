@@ -37,11 +37,11 @@ const mockComputeAndApplyStatusTransition = mock(async () => {
 mock.module('./file-save', () => ({
   validateFileType: (ft: string) => ft,
   resolveTargetTask: async () => ({
-    task: { workflowStatus: 'in-progress', workflowMode: null },
+    task: { workflowStatus: 'in_progress', workflowMode: null },
     categoryId: 1,
     themeId: 1,
   }),
-  guardStatusTransition: async () => ({ ok: true, status: 'in-progress' }),
+  guardStatusTransition: async () => ({ ok: true, status: 'in_progress' }),
   guardParentSubtasksTerminal: async () => {},
   prepareAndPersistContent: async () => ({
     ok: true,
@@ -102,16 +102,25 @@ describe('handleSaveFile question-lock wiring', () => {
   it('research保存はタスクロックを取らない', async () => {
     transitionGate = Promise.resolve();
 
-    const probeOrder: string[] = [];
-    const probe = withTaskLifecycleLock(43, async () => {
-      probeOrder.push('probe');
+    let releaseProbe!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseProbe = resolve;
     });
-    await handleSaveFile({
+    const probe = withTaskLifecycleLock(43, () => gate);
+    let saved = false;
+    const save = handleSaveFile({
       params: { taskId: '43', fileType: 'research' },
       body: { content: 'R' },
       set: { status: 200 },
+    }).then(() => {
+      saved = true;
     });
-    await probe;
-    expect(probeOrder).toEqual(['probe']);
+    try {
+      await flushMicrotasks(50);
+      expect(saved).toBe(true);
+    } finally {
+      releaseProbe();
+      await Promise.all([probe, save]);
+    }
   });
 });

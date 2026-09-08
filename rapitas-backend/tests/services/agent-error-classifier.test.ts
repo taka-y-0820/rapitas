@@ -190,6 +190,16 @@ describe('classifyAgentError', () => {
         input: 'Anthropic API error: credit_balance_too_low',
         expected: { provider: 'claude', reason: 'quota' },
       },
+      {
+        label: 'ERRORコンテキストなしの裸429（execution3874再現）',
+        input: 'Plan: implement local HTTP 429 rate-limit handling in the client SDK.',
+        expected: null,
+      },
+      {
+        label: 'ERRORコンテキストありの429はstrictでも検知する（安全網の維持）',
+        input: 'ERROR: 429 Too Many Requests from upstream',
+        expected: { provider: 'gemini', reason: 'rate_limit' },
+      },
     ];
 
     test.each(strictModeCases)('strict mode: $label', ({ input, expected }) => {
