@@ -1,132 +1,57 @@
 /**
  * workflow-handlers-verification.test
  *
- * Unit tests for the implementer self-verification endpoint handler:
- * invalid id, missing worktree, happy path, gate error, the per-task
- * in-flight guard (including the synchronous-reservation regression), and
- * the content-aware result cache (including real-git regressions for the
- * task 897 supervisor-found key-collision defect). Most collaborators are
- * mocked; the final describe block exercises real git subprocess calls
- * against a throwaway repo.
+ * Unit tests for the implementer self-verification job-launch endpoint:
+ * invalid id, missing worktree, immediate-response happy path, the per-task
+ * idempotent re-request (no double gate launch), the synchronous-reservation
+ * regression (task 897), and failure to start a job.
  */
-import { describe, it, test, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { execFileSync } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync, unlinkSync, symlinkSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
-
-// headCounter is bumped in beforeEach so every test gets a distinct HEAD by
-// default — the cache is a module-level singleton shared across all `it()`
-// blocks in this file, so without this, an earlier test's cached entry for
-// the same taskId would silently serve stale results here.
-let headCounter = 0;
-// gitDiffOutput is the canned `git diff HEAD` response. gitDiffSequence, when
-// set, overrides it and returns successive values per call — used to
-// simulate the worktree changing content BETWEEN the pre- and post-run key
-// computations inside a single handleRunVerification invocation.
-let gitDiffOutput = '';
-let gitDiffSequence: string[] | null = null;
-let diffCallCount = 0;
-let gitUntrackedOutput = '';
-
-const cannedRunGitCommand = async (args: string[]): Promise<string> => {
-  if (args[0] === 'rev-parse') return `head-${headCounter}`;
-  if (args[0] === 'diff') {
-    if (gitDiffSequence) {
-      const v = gitDiffSequence[Math.min(diffCallCount, gitDiffSequence.length - 1)];
-      diffCallCount += 1;
-      return v;
-    }
-    return gitDiffOutput;
-  }
-  if (args[0] === 'ls-files') return gitUntrackedOutput;
-  return '';
-};
-const runGitCommandMock = mock(cannedRunGitCommand);
-mock.module('../../../services/github/git-exec', () => ({
-  runGitCommand: runGitCommandMock,
-}));
+import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
 const findFirstMock = mock(async (): Promise<unknown> => null);
-const taskFindUniqueMock = mock(async (): Promise<unknown> => null);
-
 mock.module('../../../config', () => ({
-  prisma: {
-    agentSession: { findFirst: findFirstMock },
-    task: { findUnique: taskFindUniqueMock },
-  },
+  prisma: { agentSession: { findFirst: findFirstMock } },
 }));
 
 mock.module('../../../config/logger', () => ({
   createLogger: () => ({ info: mock(() => {}), warn: mock(() => {}), debug: mock(() => {}) }),
 }));
 
-const runAutomatedVerificationMock = mock(
-  async (): Promise<{ ok: boolean; summary: string; checks: unknown[] }> => ({
-    ok: true,
-    summary: 'ok',
-    checks: [],
-  }),
+let nextRunId = 0;
+const beginVerificationRunMock = mock(
+  async (): Promise<{
+    runId: string;
+    cacheInputsBefore: { worktreePath: string; requireTests: boolean };
+    keyBefore: string | null;
+  }> => {
+    nextRunId += 1;
+    return {
+      runId: `run-${nextRunId}`,
+      cacheInputsBefore: { worktreePath: 'C:/wt/task-1', requireTests: false },
+      keyBefore: 'key-1',
+    };
+  },
 );
-const renderVerificationMarkdownMock = mock(() => '# 自動検証\nok');
+const runVerificationGateAndRecordMock = mock(async (): Promise<void> => {});
 
-mock.module('../../../services/agents/verification/automated-verifier', () => ({
-  runAutomatedVerification: runAutomatedVerificationMock,
-  renderVerificationMarkdown: renderVerificationMarkdownMock,
-  // Mirrors the real detector closely enough for the requireTests tests.
-  looksLikeBugFixTask: (text: string | null | undefined) =>
-    !!text && /(バグ|不具合|クラッシュ|\bbug\b|\bcrash\b)/i.test(text),
+mock.module('../../../services/workflow/verification-job-runner', () => ({
+  beginVerificationRun: beginVerificationRunMock,
+  runVerificationGateAndRecord: runVerificationGateAndRecordMock,
 }));
 
-const readWorkflowFileMock = mock(async (): Promise<string | null> => null);
-mock.module('../../../services/workflow/workflow-file-utils', () => ({
-  readWorkflowFile: readWorkflowFileMock,
-}));
-
-const resolvePreferredBaseBranchMock = mock(async (): Promise<string | null> => 'develop');
-mock.module('../../../services/task/task-resolver', () => ({
-  resolvePreferredBaseBranch: resolvePreferredBaseBranchMock,
-}));
-
-const { handleRunVerification, computeVerificationCacheKey } =
-  await import('./workflow-handlers-verification');
+const { handleRunVerification } = await import('./workflow-handlers-verification');
 
 function ctx(taskId: string) {
   return { params: { taskId }, set: {} as { status?: number | string } };
 }
 
 beforeEach(() => {
+  nextRunId = 0;
   findFirstMock.mockClear();
-  taskFindUniqueMock.mockClear();
-  runAutomatedVerificationMock.mockClear();
-  renderVerificationMarkdownMock.mockClear();
-  readWorkflowFileMock.mockClear();
-  resolvePreferredBaseBranchMock.mockClear();
-  runGitCommandMock.mockClear();
-  // A prior test (e.g. the git-unavailable case) may have overridden the
-  // implementation via mockImplementation, which mockClear() does NOT undo —
-  // without this reset, that override silently leaks into every later test
-  // in the file (observed: made the mid-run-change regression below pass
-  // even with the before/after comparison it's meant to guard removed,
-  // because the leaked "always throw" implementation disabled caching
-  // entirely regardless of the fix under test).
-  runGitCommandMock.mockImplementation(cannedRunGitCommand);
-  headCounter += 1;
-  gitDiffOutput = '';
-  gitDiffSequence = null;
-  diffCallCount = 0;
-  gitUntrackedOutput = '';
+  beginVerificationRunMock.mockClear();
+  runVerificationGateAndRecordMock.mockClear();
   findFirstMock.mockImplementation(async () => ({ worktreePath: 'C:/wt/task-1' }));
-  taskFindUniqueMock.mockImplementation(async () => ({
-    title: 'Feature',
-    description: '',
-    acceptanceCriteria: null,
-  }));
-  runAutomatedVerificationMock.mockImplementation(async () => ({
-    ok: true,
-    summary: 'ok',
-    checks: [],
-  }));
+  runVerificationGateAndRecordMock.mockImplementation(async () => {});
 });
 
 describe('handleRunVerification', () => {
@@ -137,113 +62,95 @@ describe('handleRunVerification', () => {
     expect(res).toMatchObject({ success: false });
   });
 
-  it('returns 404 when the task has no worktree session', async () => {
+  it('returns 404 when the task has no worktree session, and releases the reservation', async () => {
     findFirstMock.mockImplementation(async () => null);
     const c = ctx('7');
     const res = await handleRunVerification(c);
     expect(c.set.status).toBe(404);
     expect(res).toMatchObject({ success: false });
+
+    findFirstMock.mockImplementation(async () => ({ worktreePath: 'C:/wt/task-1' }));
+    const res2 = await handleRunVerification(ctx('7'));
+    expect(res2).toMatchObject({ success: true, status: 'running' });
   });
 
-  it('runs the gate on the worktree and returns the measured result', async () => {
-    readWorkflowFileMock.mockImplementation(async () => '# plan');
-    const c = ctx('7');
+  it('starts a job and responds immediately with runId/pollUrl, without waiting for the gate', async () => {
+    const c = ctx('11');
     const res = await handleRunVerification(c);
-    expect(res).toMatchObject({ success: true, ok: true, summary: 'ok' });
-    expect(runAutomatedVerificationMock).toHaveBeenCalledWith(
-      'C:/wt/task-1',
-      expect.objectContaining({ planContent: '# plan', preferredBaseBranch: 'develop', taskId: 7 }),
-    );
-    expect(renderVerificationMarkdownMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('forces requireTests and passes criteria/taskText for a bug-fix task', async () => {
-    taskFindUniqueMock.mockImplementation(async () => ({
-      title: '保存時にクラッシュするバグの修正',
-      description: '## 受入基準\n- `services/foo/bar.ts` の修正で再現テストが通る',
-      acceptanceCriteria: null,
-    }));
-    const res = await handleRunVerification(ctx('7'));
-    expect(res).toMatchObject({ success: true, ok: true });
-    expect(runAutomatedVerificationMock).toHaveBeenCalledWith(
-      'C:/wt/task-1',
-      expect.objectContaining({
-        requireTests: true,
-        acceptanceCriteria: ['`services/foo/bar.ts` の修正で再現テストが通る'],
-        taskText: expect.stringContaining('保存時にクラッシュするバグの修正'),
-      }),
-    );
-  });
-
-  it('does not force requireTests for a non-bug-fix task', async () => {
-    taskFindUniqueMock.mockImplementation(async () => ({
-      title: '新しいダッシュボード widget を追加する',
-      description: '説明のみ（受入基準の見出しなし）',
-      acceptanceCriteria: null,
-    }));
-    await handleRunVerification(ctx('7'));
-    expect(runAutomatedVerificationMock).toHaveBeenCalledWith(
-      'C:/wt/task-1',
-      expect.objectContaining({ requireTests: false }),
-    );
-    // No criteria resolvable → the option is omitted (acceptance stays fail-open).
-    const opts = (runAutomatedVerificationMock.mock.calls[0] as unknown[])[1] as Record<
-      string,
-      unknown
-    >;
-    expect(opts.acceptanceCriteria).toBeUndefined();
-  });
-
-  it('passes a failing gate result through as ok:false (not an error)', async () => {
-    runAutomatedVerificationMock.mockImplementation(async () => ({
-      ok: false,
-      summary: 'lint failed',
-      checks: [{ name: 'lint', ok: false }],
-    }));
-    const res = await handleRunVerification(ctx('7'));
-    expect(res).toMatchObject({ success: true, ok: false, summary: 'lint failed' });
-  });
-
-  it('returns 500 when the gate itself throws, and releases the in-flight slot', async () => {
-    runAutomatedVerificationMock.mockImplementation(async () => {
-      throw new Error('boom');
+    expect(res).toMatchObject({
+      success: true,
+      runId: 'run-1',
+      status: 'running',
+      pollUrl: '/workflow/tasks/11/run-verification/run-1',
     });
-    const c = ctx('7');
+    expect(beginVerificationRunMock).toHaveBeenCalledTimes(1);
+    expect(beginVerificationRunMock).toHaveBeenCalledWith(11, 'C:/wt/task-1');
+    // Fire-and-forget: at the moment the handler returns, the background
+    // gate call has been kicked off but this test never awaits it directly
+    // (matches production: the caller gets the response first).
+    await new Promise((r) => setTimeout(r, 10));
+    expect(runVerificationGateAndRecordMock).toHaveBeenCalledTimes(1);
+    expect(runVerificationGateAndRecordMock).toHaveBeenCalledWith(
+      11,
+      'run-1',
+      'C:/wt/task-1',
+      expect.objectContaining({ worktreePath: 'C:/wt/task-1' }),
+      'key-1',
+    );
+  });
+
+  it('returns 500 when beginVerificationRun fails, and releases the reservation', async () => {
+    beginVerificationRunMock.mockImplementationOnce(async () => {
+      throw new Error('fingerprint failed');
+    });
+    const c = ctx('12');
     const res = await handleRunVerification(c);
     expect(c.set.status).toBe(500);
     expect(res).toMatchObject({ success: false });
-    // Slot released — a follow-up run must reach the gate again.
-    runAutomatedVerificationMock.mockImplementation(async () => ({
-      ok: true,
-      summary: 'ok',
-      checks: [],
-    }));
-    const res2 = await handleRunVerification(ctx('7'));
-    expect(res2).toMatchObject({ success: true, ok: true });
+
+    // Slot released — a follow-up run must reach beginVerificationRun again.
+    const res2 = await handleRunVerification(ctx('12'));
+    expect(res2).toMatchObject({ success: true, status: 'running' });
+    expect(beginVerificationRunMock).toHaveBeenCalledTimes(2);
   });
 
-  it('rejects a concurrent run for the same task with 429', async () => {
-    let release: (() => void) | undefined;
-    runAutomatedVerificationMock.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          release = () => resolve({ ok: true, summary: 'ok', checks: [] });
-        }),
-    );
-    const first = handleRunVerification(ctx('9'));
-    // Give the first call a tick to acquire the slot before the second tries.
-    await new Promise((r) => setTimeout(r, 10));
-    const c2 = ctx('9');
-    const res2 = await handleRunVerification(c2);
-    expect(c2.set.status).toBe(429);
-    expect(res2).toMatchObject({ success: false });
-    release?.();
-    const res1 = await first;
-    expect(res1).toMatchObject({ success: true, ok: true });
+  describe('実行中ジョブへの冪等応答', () => {
+    it('ジョブ完了後の2回目のPOSTで runAutomatedVerification 相当（beginVerificationRun）が呼ばれる', async () => {
+      let releaseGate: (() => void) | undefined;
+      runVerificationGateAndRecordMock.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseGate = resolve;
+          }),
+      );
+      const first = await handleRunVerification(ctx('9'));
+      expect(first).toMatchObject({ success: true, runId: 'run-1' });
+
+      // Second request while the job is still running: same runId, no new
+      // gate launch (idempotent — this is what breaks the task 897 429
+      // retry-storm: the caller gets a 200 with the existing runId instead).
+      const second = await handleRunVerification(ctx('9'));
+      expect(second).toMatchObject({
+        success: true,
+        runId: 'run-1',
+        status: 'running',
+        idempotent: true,
+      });
+      expect(beginVerificationRunMock).toHaveBeenCalledTimes(1);
+
+      releaseGate?.();
+      await new Promise((r) => setTimeout(r, 10));
+
+      // After the background job finishes, the slot is released — a new
+      // request starts a fresh job.
+      const third = await handleRunVerification(ctx('9'));
+      expect(third).toMatchObject({ success: true, runId: 'run-2' });
+      expect(beginVerificationRunMock).toHaveBeenCalledTimes(2);
+    });
   });
 
-  describe('回帰(task897 監督差戻し): inFlight の同期予約', () => {
-    it('session読み取りが保留中でも同一taskへの2件目は即429（awaitより前にinFlight予約）', async () => {
+  describe('回帰(task897 監督差戻し): runningJobs の同期予約', () => {
+    it('session読み取り中の同時要求は準備結果を共有し実在するrunIdだけを返す', async () => {
       let releaseSession!: () => void;
       findFirstMock.mockImplementationOnce(
         () =>
@@ -254,17 +161,60 @@ describe('handleRunVerification', () => {
       const first = handleRunVerification(ctx('55'));
       const secondContext = ctx('55');
       try {
-        const second = await handleRunVerification(secondContext);
-        expect(secondContext.set.status).toBe(429);
-        expect(second).toMatchObject({ success: false });
+        let secondSettled = false;
+        const secondPromise = handleRunVerification(secondContext).then((result) => {
+          secondSettled = true;
+          return result;
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(secondSettled).toBe(false);
+        releaseSession();
+        const second = await secondPromise;
+        // No new session lookup for the second call — the reservation guard
+        // short-circuits before findFirst is reached a second time.
         expect(findFirstMock).toHaveBeenCalledTimes(1);
+        expect(second).toMatchObject({ success: true, status: 'running', runId: 'run-1' });
       } finally {
         releaseSession();
         await first;
       }
     });
 
-    it('404(worktreeなし)応答の直後は同一taskへの再要求が429で固着しない', async () => {
+    it('同時要求へ準備失敗を共有し、次の起動は再試行できる', async () => {
+      let release!: () => void;
+      findFirstMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = () => resolve(null);
+          }),
+      );
+      const firstContext = ctx('57');
+      const secondContext = ctx('57');
+      const first = handleRunVerification(firstContext);
+      const second = handleRunVerification(secondContext);
+      release();
+      const results = await Promise.all([first, second]);
+      expect(results).toEqual([
+        {
+          success: false,
+          error: 'このタスクの worktree が見つかりません（エージェント実行前は検証できません）。',
+        },
+        {
+          success: false,
+          error: 'このタスクの worktree が見つかりません（エージェント実行前は検証できません）。',
+        },
+      ]);
+      expect(firstContext.set.status).toBe(404);
+      expect(secondContext.set.status).toBe(404);
+      expect(beginVerificationRunMock).not.toHaveBeenCalled();
+      expect(await handleRunVerification(ctx('57'))).toMatchObject({
+        success: true,
+        runId: 'run-1',
+      });
+    });
+
+    it('404(worktreeなし)応答の直後は同一taskへの再要求が固着しない', async () => {
       findFirstMock.mockImplementation(async () => null);
       const c1 = ctx('56');
       const res1 = await handleRunVerification(c1);
@@ -275,248 +225,7 @@ describe('handleRunVerification', () => {
       const c2 = ctx('56');
       const res2 = await handleRunVerification(c2);
       expect(c2.set.status).toBeUndefined();
-      expect(res2).toMatchObject({ success: true });
-    });
-  });
-
-  describe('result cache (content-aware identity)', () => {
-    it('runs a fresh gate even when Git and task inputs are unchanged', async () => {
-      const c1 = ctx('101');
-      const res1 = await handleRunVerification(c1);
-      expect(res1).toMatchObject({ success: true, ok: true, cached: false });
-      expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(1);
-
-      const c2 = ctx('101');
-      const res2 = await handleRunVerification(c2);
-      expect(res2).toMatchObject({ success: true, ok: true, cached: false });
-      // The same fingerprint still requires a fresh verification.
-      expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(2);
-    });
-
-    it('re-runs the gate when HEAD changes between requests', async () => {
-      await handleRunVerification(ctx('102'));
-      expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(1);
-
-      headCounter += 1; // simulate a new commit landing in the worktree
-      const res2 = await handleRunVerification(ctx('102'));
-      expect(res2).toMatchObject({ success: true, cached: false });
-      expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(2);
-    });
-
-    it('re-runs the gate when tracked working-tree content changes between requests', async () => {
-      gitDiffOutput = 'diff --git a/x b/x\n-old\n+v1\n';
-      await handleRunVerification(ctx('103'));
-      expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(1);
-
-      // Same status-visible "M x" line in real git terms, but the actual
-      // content differs — this is the task 897 supervisor-found collision
-      // class (`git status --porcelain` alone cannot distinguish these).
-      gitDiffOutput = 'diff --git a/x b/x\n-old\n+v2\n';
-      const res2 = await handleRunVerification(ctx('103'));
-      expect(res2).toMatchObject({ success: true, cached: false });
-      expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(2);
-    });
-
-    it('never caches and always re-runs when git is unavailable (fail-safe)', async () => {
-      runGitCommandMock.mockImplementation(async () => {
-        throw new Error('git not found');
-      });
-      expect(await handleRunVerification(ctx('104'))).toMatchObject({
-        ok: false,
-        unverifiable: true,
-      });
-      expect(await handleRunVerification(ctx('104'))).toMatchObject({
-        ok: false,
-        unverifiable: true,
-      });
-      expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(2);
-    });
-
-    it('回帰(task897): 検証実行中に内容が変化した場合は結果を保存しない', async () => {
-      // keyBefore is computed from the first `diff` call ('diff-before'),
-      // keyAfter from the second ('diff-after') — simulating the implementer
-      // editing the worktree WHILE the gate (which can take minutes) was
-      // still running. Because they mismatch, the result must NOT be cached
-      // under keyBefore.
-      gitDiffSequence = ['diff-before', 'diff-after'];
-      const res1 = await handleRunVerification(ctx('105'));
-      expect(res1).toMatchObject({ success: true, cached: false });
-      expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(1);
-
-      // This request's own before/after pair is stable and IDENTICAL to
-      // request 1's keyBefore ('diff-before', same HEAD, same task inputs).
-      // If request 1 had wrongly cached under keyBefore, this would be a
-      // cache hit (cached:true, gate not re-invoked). It must instead be a
-      // miss — proving request 1's mismatched pass was never stored.
-      gitDiffSequence = null;
-      gitDiffOutput = 'diff-before';
-      const res2 = await handleRunVerification(ctx('105'));
-      expect(res2).toMatchObject({ success: true, cached: false });
-      expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(2);
-    });
-
-    it('回帰(task897 監督差戻し): 検証実行中にDB側のplan内容が変わった場合は結果を保存しない', async () => {
-      // Request 1: buildCacheInputs' plan read returns 'plan v1' the FIRST
-      // time (before the gate runs) and 'plan v2' the SECOND time (after) —
-      // simulating a plan.md edit landing in the DB while the gate (which can
-      // take minutes) was still running. Rehashing the SAME in-memory
-      // `cacheInputsBefore` object would never observe this; only a genuine
-      // re-fetch does.
-      readWorkflowFileMock.mockImplementationOnce(async () => 'plan v1');
-      readWorkflowFileMock.mockImplementationOnce(async () => 'plan v2');
-      const res1 = await handleRunVerification(ctx('106'));
-      expect(res1).toMatchObject({ success: true, ok: false, unverifiable: true, cached: false });
-      expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(1);
-
-      // Request 2 has a STABLE 'plan v1' identity for both its own before
-      // and after reads — deliberately identical to request 1's keyBefore.
-      // If request 1 had wrongly cached under that keyBefore (ignoring the
-      // after-mismatch), this would be a cache hit. It must instead re-run
-      // the gate, proving request 1's mismatched pass was never stored.
-      readWorkflowFileMock.mockImplementationOnce(async () => 'plan v1');
-      readWorkflowFileMock.mockImplementationOnce(async () => 'plan v1');
-      const res2 = await handleRunVerification(ctx('106'));
-      expect(res2).toMatchObject({ success: true, cached: false });
-      expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(2);
+      expect(res2).toMatchObject({ success: true, status: 'running' });
     });
   });
 });
-
-describe('computeVerificationCacheKey (実git回帰: task897 監督差戻し)', () => {
-  let repoDir: string;
-  const realRunGitCommand = async (args: string[], cwd?: string): Promise<string> =>
-    execFileSync('git', args, { cwd: cwd ?? repoDir, encoding: 'utf8' }).trim();
-
-  beforeEach(() => {
-    repoDir = mkdtempSync(join(tmpdir(), 'selfverify-cachekey-'));
-    execFileSync('git', ['init', '-q'], { cwd: repoDir });
-    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoDir });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoDir });
-    writeFileSync(join(repoDir, 'app.txt'), 'initial\n');
-    execFileSync('git', ['add', 'app.txt'], { cwd: repoDir });
-    execFileSync('git', ['commit', '-q', '-m', 'root'], { cwd: repoDir });
-    runGitCommandMock.mockImplementation(realRunGitCommand);
-  });
-
-  afterEach(() => {
-    rmSync(repoDir, { recursive: true, force: true });
-    runGitCommandMock.mockImplementation(cannedRunGitCommand);
-  });
-
-  test('同一 dirty tracked ファイルの再編集で key が変わる（監督実測: git status --porcelain だけでは不変だった）', async () => {
-    writeFileSync(join(repoDir, 'app.txt'), 'edit A\n');
-    const keyA = await computeVerificationCacheKey({ worktreePath: repoDir, requireTests: false });
-    writeFileSync(join(repoDir, 'app.txt'), 'edit B\n');
-    const keyB = await computeVerificationCacheKey({ worktreePath: repoDir, requireTests: false });
-    expect(keyA).not.toBeNull();
-    expect(keyB).not.toBeNull();
-    expect(keyA).not.toBe(keyB);
-  });
-
-  test('未追跡ファイルの内容変更で key が変わり、同一内容の再計算では不変', async () => {
-    writeFileSync(join(repoDir, 'new.txt'), 'v1\n');
-    const key1 = await computeVerificationCacheKey({ worktreePath: repoDir, requireTests: false });
-    const key1Again = await computeVerificationCacheKey({
-      worktreePath: repoDir,
-      requireTests: false,
-    });
-    expect(key1).not.toBeNull();
-    expect(key1).toBe(key1Again);
-
-    writeFileSync(join(repoDir, 'new.txt'), 'v2\n');
-    const key2 = await computeVerificationCacheKey({ worktreePath: repoDir, requireTests: false });
-    expect(key2).not.toBe(key1);
-  });
-
-  test('クリーンな worktree なら2回の呼び出しで同一 key（非null）を返す', async () => {
-    const keyA = await computeVerificationCacheKey({ worktreePath: repoDir, requireTests: false });
-    const keyB = await computeVerificationCacheKey({ worktreePath: repoDir, requireTests: false });
-    expect(keyA).not.toBeNull();
-    expect(keyA).toBe(keyB);
-  });
-
-  test('未追跡合計サイズが安全弁の上限を超えると null を返す（キャッシュ回避）', async () => {
-    writeFileSync(join(repoDir, 'big.bin'), Buffer.alloc(1024, 1));
-    const prevLimit = process.env.RAPITAS_SELFVERIFY_MAX_UNTRACKED_BYTES;
-    process.env.RAPITAS_SELFVERIFY_MAX_UNTRACKED_BYTES = '100';
-    try {
-      const key = await computeVerificationCacheKey({
-        worktreePath: repoDir,
-        requireTests: false,
-      });
-      expect(key).toBeNull();
-    } finally {
-      if (prevLimit === undefined) delete process.env.RAPITAS_SELFVERIFY_MAX_UNTRACKED_BYTES;
-      else process.env.RAPITAS_SELFVERIFY_MAX_UNTRACKED_BYTES = prevLimit;
-    }
-  });
-
-  test('検証入力（planContent等）が変われば同一worktreeでも key が変わる', async () => {
-    const keyA = await computeVerificationCacheKey({
-      worktreePath: repoDir,
-      requireTests: false,
-      planContent: 'plan A',
-    });
-    const keyB = await computeVerificationCacheKey({
-      worktreePath: repoDir,
-      requireTests: false,
-      planContent: 'plan B',
-    });
-    expect(keyA).not.toBe(keyB);
-  });
-
-  test('回帰(task897 監督差戻し): 未追跡ファイルのフレーミング衝突 — 単一ファイル(NUL区切りを内容に含む)と複数ファイルで key が一致しない', async () => {
-    // A single untracked file 'a' containing the raw bytes x\0b\0y reduces,
-    // under the old `relPath + NUL + content + NUL` concatenation scheme, to
-    // the exact same byte stream as two untracked files a='x' and b='y'
-    // (both are `a\0x\0b\0y\0`) — reconfirmed against this file's own prior
-    // implementation before this fix (both hashed to `c8d9a2ee...`).
-    writeFileSync(join(repoDir, 'a'), Buffer.from([0x78, 0x00, 0x62, 0x00, 0x79]));
-    const keySingleFileWithEmbeddedNuls = await computeVerificationCacheKey({
-      worktreePath: repoDir,
-      requireTests: false,
-    });
-
-    unlinkSync(join(repoDir, 'a'));
-    writeFileSync(join(repoDir, 'a'), 'x');
-    writeFileSync(join(repoDir, 'b'), 'y');
-    const keyTwoFiles = await computeVerificationCacheKey({
-      worktreePath: repoDir,
-      requireTests: false,
-    });
-
-    expect(keySingleFileWithEmbeddedNuls).not.toBeNull();
-    expect(keyTwoFiles).not.toBeNull();
-    expect(keySingleFileWithEmbeddedNuls).not.toBe(keyTwoFiles);
-  });
-
-  test('回帰(task897 監督差戻し): 未追跡パスにシンボリックリンクが含まれる場合は null を返す（キャッシュ回避）', async () => {
-    writeFileSync(join(repoDir, 'target.txt'), 'target content\n');
-    // target.txt itself stays untracked too — only the link's presence
-    // should matter, not whether the target is tracked.
-    symlinkSync(join(repoDir, 'target.txt'), join(repoDir, 'link.txt'), 'file');
-    const key = await computeVerificationCacheKey({ worktreePath: repoDir, requireTests: false });
-    expect(key).toBeNull();
-  });
-});
-
-for (const missing of [false, true]) {
-  it(`does not run a weakened gate when task inputs are ${missing ? 'missing' : 'unavailable'}`, async () => {
-    taskFindUniqueMock.mockImplementation(async () => {
-      if (missing) return null;
-      throw new Error('database unavailable');
-    });
-    const context = ctx(missing ? '9202' : '9201');
-    const result = await handleRunVerification(context);
-    expect(result.success).toBe(false);
-    expect(context.set.status).toBe(500);
-    expect(runAutomatedVerificationMock).not.toHaveBeenCalled();
-    taskFindUniqueMock.mockImplementation(async () => ({
-      title: 'Feature',
-      description: '',
-      acceptanceCriteria: null,
-    }));
-    expect((await handleRunVerification(context)).success).toBe(true);
-    expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(1);
-  });
-}

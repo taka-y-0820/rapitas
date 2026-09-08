@@ -61,7 +61,12 @@ export type TimelineEventType =
   | 'verify_pipeline_settled'
   // NOTE: task 723 — a user-triggered dry-run of the verify gate + jury,
   // recorded so results can be listed/compared without a new table.
-  | 'dry_run_executed';
+  | 'dry_run_executed'
+  // NOTE: task 899 — implementer self-verification jobs, recorded so a
+  // POST can return immediately and a GET can later recover the result
+  // without a new table (see verification-job-store.ts).
+  | 'verification_job_started'
+  | 'verification_job_finished';
 
 export type ActorType = 'user' | 'agent' | 'system';
 
