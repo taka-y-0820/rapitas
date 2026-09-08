@@ -207,6 +207,23 @@ describe('findCandidates — no work', () => {
 });
 
 describe('findCandidates — completion gate', () => {
+  it('collects a requested merge at verify_done without the staged flag', async () => {
+    addTask({ id: 897, status: 'in-progress', workflowStatus: 'verify_done', autoMergePR: true });
+    addOpenPr({ prNumber: 623, baseBranch: 'develop', linkedTaskId: 897 });
+    expect(await findCandidates()).toEqual([
+      expect.objectContaining({ taskId: 897, mode: 'merge' }),
+    ]);
+  });
+
+  it.each(['canceling', 'canceled', 'cancelled', 'blocked'])(
+    'does not collect %s tasks awaiting merge',
+    async (status) => {
+      process.env.RAPITAS_STAGED_COMPLETION = 'true';
+      addTask({ id: 897, status, workflowStatus: 'verify_done', autoMergePR: true });
+      addOpenPr({ prNumber: 623, baseBranch: 'develop', linkedTaskId: 897 });
+      expect(await findCandidates()).toEqual([]);
+    },
+  );
   it('includes a "done" task whose policy resolves autoMergePR (merge mode)', async () => {
     addTask({ id: 1, autoMergePR: true });
     addOpenPr({ prNumber: 100, baseBranch: 'develop', linkedTaskId: 1 });

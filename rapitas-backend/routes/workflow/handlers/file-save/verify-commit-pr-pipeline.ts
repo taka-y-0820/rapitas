@@ -235,17 +235,16 @@ export async function runVerifyCommitPrPipeline(params: {
     } else {
       // Staged completion: when changes land via a PR, completion is NOT at
       // PR creation — `pr` mode completes when the PR's CI goes green, `merge`
-      // mode completes when the PR is merged. The PR-completion watcher
-      // advances those. Only `commit`/`none` complete here. Gated OFF by
-      // default so existing deployments keep the verify-time completion until
-      // they opt in (RAPITAS_STAGED_COMPLETION=true) + restart.
+      // mode completes when the PR is merged. A requested merge is always a
+      // completion requirement; the legacy flag only controls CI-only PR mode.
+      // The watcher verifies the external result before completing the task.
       const staged =
         process.env.RAPITAS_STAGED_COMPLETION === 'true' ||
         process.env.RAPITAS_STAGED_COMPLETION === '1';
       const landingMode = autoCommitPRResult.requested
         ? resolveLandingMode(autoCommitPRResult.requested)
         : 'none';
-      if (staged && (landingMode === 'pr' || landingMode === 'merge')) {
+      if (landingMode === 'merge' || (staged && landingMode === 'pr')) {
         // Hold at verify_done (status stays in-progress, NOT done). The watcher
         // completes on CI-green (pr) / merge (merge). Do not fire completion
         // side effects yet (taskMarkedDone stays false).
