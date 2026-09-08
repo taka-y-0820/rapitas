@@ -240,9 +240,10 @@ export async function computeAndApplyStatusTransition(params: {
         newStatus = 'verify_done';
       }
     } catch (err) {
-      // Validator failure must not block legitimate verify saves.
-      log.warn({ err, taskId }, '[Workflow] verify validator threw, allowing save anyway');
-      newStatus = 'verify_done';
+      // The artifact is already saved. An unavailable validator/repair is not
+      // evidence of success and must never authorize downstream commit/PR gates.
+      log.error({ err, taskId }, '[Workflow] verify gate failed; refusing status advancement');
+      throw err;
     }
   }
 
