@@ -79,17 +79,13 @@ describe('start / stop', () => {
 });
 
 describe('recoverOnStartup', () => {
-  it('always cleans up stale "stopping" records', async () => {
+  it('retries stopping records without blindly resetting them or starting the queue', async () => {
     const scheduler = ThemeAutoRunScheduler.getInstance();
-    mockFindByStatuses.mockResolvedValue([]);
+    mockFindByStatuses.mockResolvedValue([makeState({ status: 'stopping' })]);
     mockThemeAutoRunCount.mockResolvedValue(0);
-
     await scheduler.recoverOnStartup();
-
-    expect(mockThemeAutoRunUpdateMany).toHaveBeenCalledWith({
-      where: { status: 'stopping' },
-      data: { status: 'idle', enabled: false, currentTaskId: null },
-    });
+    expect(mockThemeAutoRunUpdateMany).not.toHaveBeenCalled();
+    expect(mockStartProcessing).not.toHaveBeenCalled();
     scheduler.stop();
   });
 
