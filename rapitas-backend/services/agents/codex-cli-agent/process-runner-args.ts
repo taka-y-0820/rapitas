@@ -158,7 +158,8 @@ export function buildCodexArgs(
   const resumeId = config.resumeSessionId;
 
   if (resumeId) {
-    args.push('resume', resumeId);
+    args.push('resume', resumeId, '-');
+    promptForStdin = prompt;
     logger.info(`${logPrefix} Resuming session: ${resumeId}`);
   } else if (config.investigationMode) {
     const outputType = config.investigationOutputType ?? 'research';
