@@ -46,7 +46,19 @@ Object.assign(mockPrisma, {
   agentExecution: { findFirst: async () => null },
   themeAutoRun: { findUnique: async () => null },
 });
-Object.assign(mockPrisma.workflowFile, { findUnique: () => mockPrisma.workflowFile.findFirst() });
+Object.assign(mockPrisma, { workflowFileVersion: { create: async () => undefined } });
+Object.assign(mockPrisma.workflowFile, {
+  findUnique: (args: { where: { taskId_fileType: { fileType: string } } }) =>
+    args.where.taskId_fileType.fileType === 'plan'
+      ? mockPrisma.workflowFile.findFirst()
+      : Promise.resolve(null),
+  upsert: (args: { create: { taskId: number; content: string } }) =>
+    (writeWorkflowFile as (...args: unknown[]) => Promise<void>)(
+      args.create.taskId,
+      'verify',
+      args.create.content,
+    ),
+});
 Object.assign(mockPrisma.workflowTransition, {
   create: async (args: { data: { metadata: string } }) =>
     (recordTransition as (...args: unknown[]) => Promise<void>)({

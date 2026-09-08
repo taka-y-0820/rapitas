@@ -45,6 +45,7 @@ const databaseMock = {
   ...mockPrisma,
   task: {
     ...mockPrisma.task,
+    findFirst: async () => null,
     updateMany: async (args: { data: Partial<typeof repairState> }) => {
       const result = await (
         mockPrisma.task.updateMany as (...args: unknown[]) => Promise<{ count: number }>
@@ -71,9 +72,19 @@ const databaseMock = {
     create: (args: { data: unknown }) =>
       (enqueue as (...args: unknown[]) => Promise<{ id: number }>)(args.data),
   },
+  workflowFileVersion: { create: async () => undefined },
   workflowFile: {
     ...mockPrisma.workflowFile,
-    findUnique: () => mockPrisma.workflowFile.findFirst(),
+    findUnique: (args: { where: { taskId_fileType: { fileType: string } } }) =>
+      args.where.taskId_fileType.fileType === 'plan'
+        ? mockPrisma.workflowFile.findFirst()
+        : Promise.resolve(null),
+    upsert: (args: { create: { taskId: number; content: string } }) =>
+      (writeWorkflowFile as (...args: unknown[]) => Promise<string>)(
+        args.create.taskId,
+        'verify',
+        args.create.content,
+      ),
   },
   workflowTransition: {
     ...mockPrisma.workflowTransition,

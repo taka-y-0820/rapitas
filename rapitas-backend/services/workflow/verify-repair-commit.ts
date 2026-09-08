@@ -1,4 +1,5 @@
-/** Atomic repair admission. Callers must deliver durable feedback before dispatch. */
+import { saveCommittedRepairFeedback } from './verify-repair-feedback-save';
+/** Atomic repair admission, feedback, and audit. Dispatch happens after commit. */
 import type { PrismaClient } from '../../generated/prisma-postgres';
 import { withTaskLifecycleLock } from './task-lifecycle-lock';
 import { THEME_STOP_INTENT } from '../agents/theme-stop-intent';
@@ -110,6 +111,12 @@ export async function commitVerifyRepair(
           where: { taskId_fileType: { taskId, fileType: 'plan' } },
           select: { id: true },
         });
+        const verify = await tx.workflowFile.findUnique({
+          where: { taskId_fileType: { taskId, fileType: 'verify' } },
+          select: { content: true, sha256: true, sizeBytes: true },
+        });
+        if (verify && verify.content !== input.verifyContent)
+          return { committed: false, reason: 'stale_verification' };
         const newStatus = plan ? 'plan_approved' : 'research_done';
         const updatedAt = new Date(Math.max(Date.now(), input.updatedAt.getTime() + 1));
         const changed = await tx.task.updateMany({
@@ -123,6 +130,14 @@ export async function commitVerifyRepair(
         });
         if (changed.count !== 1) return { committed: false, reason: 'stale_task' };
         const attempt = prior + 1;
+        await saveCommittedRepairFeedback(
+          tx,
+          taskId,
+          input.reason,
+          input.verifyContent,
+          attempt,
+          verify,
+        );
         await tx.workflowTransition.create({
           data: {
             taskId,

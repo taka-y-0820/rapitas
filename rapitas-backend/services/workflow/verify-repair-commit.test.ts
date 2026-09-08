@@ -29,21 +29,25 @@ beforeEach(async () => {
     datasources: { db: { url: `file:${join(dir, 'test.db').replaceAll('\\', '/')}` } },
   });
   for (const sql of [
-    'CREATE TABLE Task (id INTEGER PRIMARY KEY, status TEXT, workflowStatus TEXT, updatedAt DATETIME, themeId INTEGER)',
-    'CREATE TABLE WorkflowFile (id INTEGER PRIMARY KEY, taskId INTEGER, fileType TEXT, UNIQUE(taskId,fileType))',
+    'CREATE TABLE Task (id INTEGER PRIMARY KEY, status TEXT, workflowStatus TEXT, updatedAt DATETIME, themeId INTEGER, parentId INTEGER)',
+    'CREATE TABLE WorkflowFile (id INTEGER PRIMARY KEY, taskId INTEGER, fileType TEXT, content TEXT, sha256 TEXT, sizeBytes INTEGER, absolutePath TEXT, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME, UNIQUE(taskId,fileType))',
     'CREATE TABLE DeveloperModeConfig (id INTEGER PRIMARY KEY, taskId INTEGER)',
     'CREATE TABLE AgentSession (id INTEGER PRIMARY KEY, configId INTEGER)',
     'CREATE TABLE AgentExecution (id INTEGER PRIMARY KEY, sessionId INTEGER, status TEXT, startedAt DATETIME, createdAt DATETIME)',
     'CREATE TABLE ThemeAutoRun (id INTEGER PRIMARY KEY, themeId INTEGER UNIQUE, status TEXT)',
     'CREATE TABLE WorkflowQueueItem (id INTEGER PRIMARY KEY AUTOINCREMENT, taskId INTEGER, orchestraSessionId INTEGER, themeId INTEGER, status TEXT, currentPhase TEXT, priority INTEGER, dependencies TEXT, retryCount INTEGER DEFAULT 0, maxRetries INTEGER DEFAULT 3, errorMessage TEXT, result TEXT, queuedAt DATETIME DEFAULT CURRENT_TIMESTAMP, startedAt DATETIME, completedAt DATETIME, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME)',
+    'CREATE TABLE WorkflowFileVersion (id INTEGER PRIMARY KEY AUTOINCREMENT, taskId INTEGER, fileType TEXT, content TEXT, sha256 TEXT, sizeBytes INTEGER, archivedAt DATETIME DEFAULT CURRENT_TIMESTAMP)',
     'CREATE TABLE ActivityLog (id INTEGER PRIMARY KEY, taskId INTEGER, action TEXT, createdAt DATETIME)',
     'CREATE TABLE WorkflowTransition (id INTEGER PRIMARY KEY AUTOINCREMENT, taskId INTEGER, fromStatus TEXT, toStatus TEXT, actor TEXT, cause TEXT, phase TEXT, executionId INTEGER, sessionId INTEGER, metadata TEXT DEFAULT "{}", invariantViolation BOOLEAN DEFAULT 0, invariantMessage TEXT, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP)',
-    "INSERT INTO WorkflowFile VALUES (1,1,'plan')",
+    "INSERT INTO WorkflowFile (id,taskId,fileType) VALUES (1,1,'plan')",
     'INSERT INTO DeveloperModeConfig VALUES (1,1)',
     'INSERT INTO AgentSession VALUES (1,1)',
   ])
     await db.$executeRawUnsafe(sql);
-  await db.$executeRawUnsafe("INSERT INTO Task VALUES (1,'in-progress','verify_done',?,NULL)", now);
+  await db.$executeRawUnsafe(
+    "INSERT INTO Task (id,status,workflowStatus,updatedAt,themeId) VALUES (1,'in-progress','verify_done',?,NULL)",
+    now,
+  );
   await db.$executeRawUnsafe("INSERT INTO AgentExecution VALUES (1,1,'running',?,?)", now, now);
 });
 afterEach(async () => {
@@ -192,4 +196,37 @@ test('successful acquisition consumes only the repair admission receipt', async 
       }),
     ),
   ).toBe(false);
+});
+
+test('feedback failure rolls back state, audit, and budget', async () => {
+  await db.$executeRawUnsafe(
+    "CREATE TRIGGER fail_feedback BEFORE INSERT ON WorkflowFile WHEN NEW.fileType='verify' BEGIN SELECT RAISE(ABORT, 'feedback unavailable'); END",
+  );
+  await expect(commit()).rejects.toThrow();
+  await unchanged();
+  expect(await db.workflowFileVersion.count()).toBe(0);
+});
+test('newer verification content cannot be overwritten by an old repair', async () => {
+  await db.$executeRawUnsafe(
+    "INSERT INTO WorkflowFile (taskId,fileType,content,sha256,sizeBytes) VALUES (1,'verify','New verification','digest',16)",
+  );
+  expect(await commit()).toEqual({ committed: false, reason: 'stale_verification' });
+  await unchanged();
+});
+test('repair preserves the original verification and archives it atomically', async () => {
+  await db.$executeRawUnsafe(
+    "INSERT INTO WorkflowFile (taskId,fileType,content,sha256,sizeBytes) VALUES (1,'verify',?,'digest',?)",
+    input.verifyContent,
+    input.verifyContent.length,
+  );
+  expect((await commit()).committed).toBe(true);
+  const saved = await db.workflowFile.findUniqueOrThrow({
+    where: { taskId_fileType: { taskId: 1, fileType: 'verify' } },
+    select: { content: true },
+  });
+  expect(saved.content).toContain(input.verifyContent);
+  expect(saved.content).toContain('repair-feedback:start');
+  expect(
+    (await db.workflowFileVersion.findFirstOrThrow({ select: { content: true } })).content,
+  ).toBe(input.verifyContent);
 });

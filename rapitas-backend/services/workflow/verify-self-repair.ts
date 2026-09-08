@@ -26,7 +26,6 @@ import {
   detectRepairNonConvergence,
   resolveRepairWindowStart,
 } from './verify-self-repair-budget';
-import { writeRepairFeedback } from './verify-self-repair-feedback';
 import { ensureRunnerResumes, resolveRepairCaller } from './verify-self-repair-resume';
 import { attemptInvariantCutoff, INVARIANT_NON_CONVERGENCE_CAUSE } from './verify-invariant-repair';
 
@@ -246,7 +245,6 @@ export async function attemptVerifyRepair(
       : { bounced: false, stale: true };
   }
   const { attempt, newStatus } = committed;
-  await writeRepairFeedback(taskId, reason, verifyContent, attempt);
 
   // Self-drive the re-run: a single/manual execution has no poller, so a
   // bounce would otherwise park the task at in-progress forever. Re-queue +

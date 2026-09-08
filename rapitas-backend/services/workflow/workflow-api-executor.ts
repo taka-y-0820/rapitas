@@ -179,6 +179,7 @@ export async function executeAPIAgent(
     }
 
     const executionTimeMs = Date.now() - startTime;
+    let repairEntryStatus: WorkflowAdvanceResult['status'] | undefined;
 
     if (transition.outputFile && output.trim()) {
       // Critic-rejection guard: mirror the CLI executor — if the phase critic
@@ -219,7 +220,7 @@ export async function executeAPIAgent(
       // response. The CLI path (the real contamination source) is stricter.
       const { extractMarkdownFromOutput } = await import('./workflow-file-utils');
       const cleaned = extractMarkdownFromOutput(output, transition.outputFile) ?? output;
-      await writeWorkflowFile(taskId, transition.outputFile, cleaned);
+      const persistedOutput = await writeWorkflowFile(taskId, transition.outputFile, cleaned);
 
       // verify.md honesty gate + self-repair — API agents save directly here
       // (bypassing the workflow file HTTP handler), so without this they could
@@ -229,7 +230,7 @@ export async function executeAPIAgent(
       let resolvedNextStatus: string = transition.nextStatus;
       if (transition.outputFile === 'verify') {
         const { validateVerify } = await import('./phase-output-validator');
-        const verifyValidation = validateVerify(output);
+        const verifyValidation = validateVerify(persistedOutput);
         if (!verifyValidation.ok && verifyValidation.severity >= 80) {
           const { attemptVerifyRepair } = await import('./verify-self-repair');
           // CAS snapshot: the repair's compare-and-swap needs the status the
@@ -243,10 +244,11 @@ export async function executeAPIAgent(
             taskId,
             live?.workflowStatus ?? null,
             verifyValidation.summary,
-            output,
+            persistedOutput,
           );
           if (repair.bounced && repair.newStatus) {
             resolvedNextStatus = repair.newStatus;
+            repairEntryStatus = repair.newStatus as WorkflowAdvanceResult['status'];
           } else if (repair.stale) {
             // The workflow moved past the evaluated status while this verdict
             // was computed — do not advance to verify_done AND do not block.
@@ -304,10 +306,12 @@ export async function executeAPIAgent(
         }
       }
 
-      await prisma.task.update({
-        where: { id: taskId },
-        data: { workflowStatus: resolvedNextStatus },
-      });
+      // The repair transaction already committed this exact version and its queue receipt.
+      if (!repairEntryStatus)
+        await prisma.task.update({
+          where: { id: taskId },
+          data: { workflowStatus: resolvedNextStatus },
+        });
     } else if (transition.outputFile) {
       throw new Error(`${transition.outputFile}.md was not generated`);
     } else {
@@ -329,7 +333,7 @@ export async function executeAPIAgent(
     const finalResult: WorkflowAdvanceResult = {
       success: true,
       role: transition.role,
-      status: transition.nextStatus,
+      status: repairEntryStatus ?? transition.nextStatus,
       output: output.substring(0, 2000), // Truncate to 2000 chars for response
       executionId: execution.id,
     };
