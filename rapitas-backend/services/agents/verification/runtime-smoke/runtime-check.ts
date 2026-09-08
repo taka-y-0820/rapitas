@@ -52,6 +52,30 @@ export function looksLikeEnvironmentFailure(logs: string[]): boolean {
 }
 
 /**
+ * Normalize a `localhost` health/browse URL to `127.0.0.1`. Windows can
+ * resolve `localhost` to the IPv6 loopback (`::1`) while the launched dev
+ * server binds only IPv4, producing a connection failure that looks
+ * identical to "app never started" in the logs. Pure — exported for tests.
+ *
+ * @param url - Candidate URL. / 対象URL
+ * @returns The same URL with a `localhost` host replaced by `127.0.0.1`;
+ *          any other host (including already-IP or external hosts) is
+ *          returned unchanged. / 変換後URL
+ */
+export function normalizeLocalHost(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === 'localhost') {
+      parsed.hostname = '127.0.0.1';
+      return parsed.toString();
+    }
+    return url;
+  } catch {
+    return url;
+  }
+}
+
+/**
  * Pure verdict over smoke findings — the testable core.
  *
  * @param smoke - Browser pass result / ブラウザ確認の結果
@@ -138,22 +162,28 @@ export async function runRuntimeSmokeCheck(
   }
 
   const port = await allocateFreePort();
-  const baseUrl = substitutePort(cfg.url, port);
+  const baseUrl = normalizeLocalHost(substitutePort(cfg.url, port));
   const app = launchApp(substitutePort(cfg.start, port), workdir, port);
   try {
-    const healthy = await waitForHealthy(`${baseUrl}${cfg.healthPath}`, cfg.readyTimeoutMs, {
-      label,
-    });
+    const healthy = await waitForHealthy(
+      `${baseUrl}${cfg.healthPath}`,
+      cfg.readyTimeoutMs,
+      { label },
+      () => app.hasExited(),
+    );
     if (!healthy) {
       const logs = app.logs();
       const tail = logs.slice(-25).join('\n');
+      const exitNote = app.hasExited()
+        ? `（プロセスは exitCode=${app.exitCode()} で終了済み）`
+        : '';
       // Environment failures (broken worktree symlinks, missing tooling) are
       // not fixable by the implementer — fail OPEN with the evidence instead
       // of bouncing the phase into an unfixable repair loop.
       if (looksLikeEnvironmentFailure(logs)) {
         recentEnvFailures.set(workdir, Date.now());
         log.warn(
-          { workdir, label },
+          { workdir, label, exitCode: app.exitCode() },
           '[runtime-smoke] launch failed with an ENVIRONMENT signature — skipping (fail-open)',
         );
         return {
@@ -162,7 +192,7 @@ export async function runRuntimeSmokeCheck(
           ok: true,
           errorCount: 0,
           details:
-            `runtime検証は環境起因の起動失敗のためスキップしました（worktreeセットアップ問題 — 実装の欠陥ではありません）。` +
+            `runtime検証は環境起因の起動失敗のためスキップしました（worktreeセットアップ問題 — 実装の欠陥ではありません）${exitNote}。` +
             `\n--- 起動ログ末尾 ---\n${tail}`,
         };
       }
@@ -173,7 +203,7 @@ export async function runRuntimeSmokeCheck(
         errorCount: 1,
         details:
           `アプリが ${cfg.readyTimeoutMs / 1000}s 以内に起動しませんでした ` +
-          `(${baseUrl}${cfg.healthPath} 無応答)。\n--- 起動ログ末尾 ---\n${tail}`,
+          `(${baseUrl}${cfg.healthPath} 無応答)${exitNote}。\n--- 起動ログ末尾 ---\n${tail}`,
       };
     }
 

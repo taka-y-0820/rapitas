@@ -7,6 +7,8 @@
  */
 import { describe, test, it, expect, mock } from 'bun:test';
 import { tmpdir } from 'os';
+import { mkdtempSync, writeFileSync } from 'fs';
+import path from 'path';
 
 // resolveRuntimeConfig consults Prisma (task theme → theme by workdir) before
 // falling back to rapitas.runtime.json; the real client hung the "no config"
@@ -20,8 +22,12 @@ mock.module('../../../../config/database', () => ({
 }));
 
 const { parseRuntimeConfig, substitutePort } = await import('./runtime-config');
-const { evaluateSmokeFindings, looksLikeEnvironmentFailure, runRuntimeSmokeCheck } =
-  await import('./runtime-check');
+const {
+  evaluateSmokeFindings,
+  looksLikeEnvironmentFailure,
+  normalizeLocalHost,
+  runRuntimeSmokeCheck,
+} = await import('./runtime-check');
 
 describe('looksLikeEnvironmentFailure', () => {
   it('matches worktree/tooling environment signatures', () => {
@@ -41,7 +47,7 @@ describe('looksLikeEnvironmentFailure', () => {
     expect(looksLikeEnvironmentFailure([])).toBe(false);
   });
 });
-import { allocateFreePort } from './app-launcher';
+import { allocateFreePort, computeTurbopackRootOverride, waitForHealthy } from './app-launcher';
 import type { PathFinding } from './browser-smoke';
 
 function finding(overrides: Partial<PathFinding> = {}): PathFinding {
@@ -148,5 +154,64 @@ describe('runRuntimeSmokeCheck', () => {
     } finally {
       delete process.env.RAPITAS_RUNTIME_VERIFY;
     }
+  });
+
+  test('reports the captured exit code instead of spinning the full readyTimeout when the app crashes on launch', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'rt-check-'));
+    const failScript = path.join(dir, 'fail.js');
+    // Matches ENV_FAILURE_RE so this exercises the fail-open/skip branch,
+    // which is where the exit-code diagnostic is most valuable — an
+    // implementer cannot fix a worktree environment failure, but they can
+    // use the exit code to tell it apart from a genuinely hung health check.
+    writeFileSync(
+      failScript,
+      "console.error('points out of the filesystem root'); process.exit(7);",
+    );
+    writeFileSync(
+      path.join(dir, 'rapitas.runtime.json'),
+      JSON.stringify({
+        start: `node ${JSON.stringify(failScript)}`,
+        url: 'http://127.0.0.1:{port}',
+        readyTimeoutMs: 20_000,
+      }),
+    );
+    const start = Date.now();
+    const result = await runRuntimeSmokeCheck(dir, 'diag-test');
+    expect(result).not.toBeNull();
+    expect(result!.ran).toBe(false);
+    expect(result!.ok).toBe(true);
+    expect(result!.details).toContain('exitCode=7');
+    // The early-exit short-circuit must fire well before the 20s readyTimeout.
+    expect(Date.now() - start).toBeLessThan(15_000);
+  }, 20_000);
+});
+
+describe('normalizeLocalHost', () => {
+  test('rewrites a localhost host to 127.0.0.1', () => {
+    expect(normalizeLocalHost('http://localhost:5000/health')).toBe('http://127.0.0.1:5000/health');
+  });
+
+  test('leaves an already-IP or external host unchanged', () => {
+    expect(normalizeLocalHost('http://127.0.0.1:5000/')).toBe('http://127.0.0.1:5000/');
+    expect(normalizeLocalHost('https://example.com/x')).toBe('https://example.com/x');
+  });
+
+  test('returns the input unchanged when it is not a parseable URL', () => {
+    expect(normalizeLocalHost('not a url')).toBe('not a url');
+  });
+});
+
+describe('waitForHealthy shouldAbort short-circuit', () => {
+  test('returns false immediately when shouldAbort is already true, without waiting the timeout', async () => {
+    const start = Date.now();
+    const result = await waitForHealthy('http://127.0.0.1:9/', 10_000, {}, () => true);
+    expect(result).toBe(false);
+    expect(Date.now() - start).toBeLessThan(1_000);
+  });
+});
+
+describe('computeTurbopackRootOverride', () => {
+  test('returns undefined when rapitas-frontend/node_modules does not exist', () => {
+    expect(computeTurbopackRootOverride(tmpdir())).toBeUndefined();
   });
 });

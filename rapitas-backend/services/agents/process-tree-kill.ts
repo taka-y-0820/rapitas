@@ -61,6 +61,27 @@ export function listWindowsProcessSnapshot(): ProcessSnapshotEntry[] {
 }
 
 /**
+ * Walk a process's ancestor chain (parent, grandparent, ...) via the
+ * snapshot's pid->ppid links.
+ *
+ * @param snapshot - Full process snapshot / プロセススナップショット
+ * @param pid - Process whose lineage to walk / 起点PID
+ * @returns Every ancestor pid, `pid` itself excluded / 祖先PID集合（自身は含まない）
+ */
+function collectAncestors(snapshot: ProcessSnapshotEntry[], pid: number): Set<number> {
+  const parentOf = new Map<number, number>();
+  for (const e of snapshot) parentOf.set(e.pid, e.ppid);
+  const ancestors = new Set<number>();
+  let cur = parentOf.get(pid);
+  // guard against a pid->ppid cycle in a malformed/racy snapshot
+  while (cur !== undefined && cur !== 0 && !ancestors.has(cur)) {
+    ancestors.add(cur);
+    cur = parentOf.get(cur);
+  }
+  return ancestors;
+}
+
+/**
  * Compute the kill-target set for a launched app's teardown.
  *
  * Includes every snapshot descendant of `rootPid` and — when `workdir` points
@@ -68,6 +89,22 @@ export function listWindowsProcessSnapshot(): ProcessSnapshotEntry[] {
  * that path (catches subtrees orphaned by a dead intermediate parent).
  * The `.worktrees` restriction is deliberate: a main-checkout path would also
  * match the user's own editors/dev servers for that project.
+ *
+ * The workdir substring match is command-line based, so it can also catch an
+ * ANCESTOR of the calling process — e.g. the shell that invoked it, if the
+ * worktree path happens to appear in that shell's own command line (observed
+ * task 897: `bun <script-with-the-workdir-path-embedded>` matches itself).
+ * `taskkill /T` on that ancestor recursively kills its whole descendant
+ * subtree, which includes the caller — self-termination via a proxy target,
+ * not a direct one, so excluding only `process.pid` does not prevent it. The
+ * same proxy-kill risk applies to the launched app's OWN root: with
+ * `shell:true`, `rootPid` is typically an intermediate shell, and if ITS
+ * ancestor chain also happens to match the workdir substring (e.g. a parent
+ * shell that `cd`'d into the worktree before spawning it), that ancestor
+ * would be added as a target and `/T` would tear down the legitimate root
+ * along with it via the same proxy mechanism. Both the calling process's
+ * lineage and the launch root's lineage are therefore excluded from the
+ * workdir-matched set — not just `process.pid`/`rootPid` themselves.
  *
  * @param snapshot - Full process snapshot / プロセススナップショット
  * @param rootPid - Spawned root process id / 起動ルートのPID
@@ -100,8 +137,17 @@ export function collectKillTargets(
   }
 
   if (workdir && workdir.includes('.worktrees')) {
+    const protectedAncestors = collectAncestors(snapshot, process.pid);
+    const protectedRootAncestors = collectAncestors(snapshot, rootPid);
     for (const e of snapshot) {
-      if (e.pid !== rootPid && e.cmd.includes(workdir)) targets.add(e.pid);
+      if (
+        e.pid !== rootPid &&
+        e.cmd.includes(workdir) &&
+        !protectedAncestors.has(e.pid) &&
+        !protectedRootAncestors.has(e.pid)
+      ) {
+        targets.add(e.pid);
+      }
     }
   }
 
