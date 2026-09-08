@@ -14,6 +14,8 @@ import { AgentOrchestrator } from './agent-orchestrator';
 import { releaseTaskExecutionLock } from './task-execution-lock';
 import { recordThemeStopIntent, readPendingThemeStopTargets } from './theme-stop-intent';
 
+import { settleStoppedSessions } from './settle-stopped-sessions';
+
 const log = createLogger('stop-task-agents');
 
 /** Execution statuses that represent an agent that is still alive. */
@@ -66,28 +68,11 @@ async function stopExecutions(executionIds: number[], reason: string): Promise<n
     }
   }
 
-  // Mark the parent session(s) terminal too. The execution rows above were
-  // cancelled, but leaving the SESSION 'active' made the status endpoint keep
-  // reporting a stale running session (the "zombie 進行中" that never finalized
-  // until a manual reload). Only flips still-active sessions.
-  if (done.length > 0) {
-    const sessionRows = await prisma.agentExecution
-      .findMany({ where: { id: { in: done } }, select: { sessionId: true } })
-      .catch(() => [] as { sessionId: number | null }[]);
-    const sessionIds = [
-      ...new Set(sessionRows.map((r) => r.sessionId).filter((s): s is number => s != null)),
-    ];
-    if (sessionIds.length > 0) {
-      await prisma.agentSession
-        .updateMany({
-          // Cancel BOTH 'active' AND 'running' sessions — verification-retry sets
-          // a session to 'running', so a stop that only cleared 'active' would
-          // leave a 'running' zombie behind (blocking auto-run's next pick).
-          where: { id: { in: sessionIds }, status: { in: ['active', 'running'] } },
-          data: { status: 'cancelled' },
-        })
-        .catch(() => {});
-    }
+  try {
+    await settleStoppedSessions(prisma, done);
+  } catch (err) {
+    failures.push(err);
+    log.error({ err }, '[stopTaskAgents] Failed to settle stopped sessions');
   }
   if (failures.length)
     throw new Error(`One or more execution stops could not be persisted (${failures.length})`);
@@ -259,6 +244,7 @@ export async function stopThemeAgents(
 
   // Release locks for every task we may have been running.
   for (const taskId of taskIds) releaseTaskExecutionLock(taskId);
+  await settleStoppedSessions(prisma, executionIds);
   // Audit failure must not prevent the process stop, but cannot be reported as success.
   if (intentFailure) throw intentFailure;
 
