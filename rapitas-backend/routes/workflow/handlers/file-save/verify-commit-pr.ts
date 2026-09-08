@@ -18,6 +18,8 @@ import {
   type CommitPrCompletionOutcome,
 } from './verify-commit-pr-pipeline';
 import { readConflictPrVerdict } from './conflict-pr-merge-state';
+import { isAwaitingRequiredMerge } from '../../../../services/workflow/verify-settle-artifact-recovery';
+import { holdForRequiredMerge } from '../../../../services/workflow/required-merge-hold';
 
 const log = createLogger('routes:workflow:handlers:files');
 
@@ -111,6 +113,19 @@ export async function runVerifyCommitPrCompletion(params: {
         });
       }
       return { newStatus, taskMarkedDone, autoCommitPRResult };
+    }
+    // The PR is no longer DIRTY, but "not conflicting" is not "merged". When
+    // autoMergePR was requested for this task, completion belongs to the
+    // AutoMergeWatcher after GitHub reports the merge — this branch used to
+    // complete on the non-DIRTY verdict alone (task 895).
+    if (await isAwaitingRequiredMerge(taskId).catch(() => true)) {
+      await holdForRequiredMerge({
+        taskId,
+        fromStatus: 'verify_done',
+        source: 'verify-commit-pr:conflict-resolution',
+        metadata: { prNumber },
+      });
+      return { newStatus: 'verify_done', taskMarkedDone, autoCommitPRResult };
     }
     // Compare-and-swap on verify_done: a concurrent duplicate of this save
     // (task 594 recorded the same completion twice, 242ms apart) must not
