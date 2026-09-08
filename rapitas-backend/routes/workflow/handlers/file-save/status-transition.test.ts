@@ -54,13 +54,14 @@ mock.module('./shared', () => ({
   wasNonConvergenceCutoffJustRecorded: mockWasNonConvergenceCutoffJustRecorded,
 }));
 
+const mockValidateVerify = mock(() => ({
+  ok: false,
+  missingSections: [],
+  severity: 80,
+  summary: 'verify.md self-contradicts',
+}));
 mock.module('../../../../services/workflow/phase-output-validator', () => ({
-  validateVerify: () => ({
-    ok: false,
-    missingSections: [],
-    severity: 80,
-    summary: 'verify.md self-contradicts',
-  }),
+  validateVerify: mockValidateVerify,
 }));
 
 const mockAttemptVerifyRepair = mock(() => Promise.resolve({ bounced: false })) as any;
@@ -81,6 +82,14 @@ function buildParams() {
 
 describe('computeAndApplyStatusTransition — 非収束カットオフの二重記録防止', () => {
   beforeEach(() => {
+    mockValidateVerify
+      .mockReset()
+      .mockReturnValue({
+        ok: false,
+        missingSections: [],
+        severity: 80,
+        summary: 'verify.md self-contradicts',
+      });
     transitionCalls.length = 0;
     mockRecordTransition.mockClear();
     mockTaskUpdate.mockClear();
@@ -101,6 +110,30 @@ describe('computeAndApplyStatusTransition — 非収束カットオフの二重�
     expect(result.newStatus).toBe('plan_approved');
     expect(mockAttemptVerifyRepair).toHaveBeenCalledTimes(1);
   });
+
+  for (const [severity, savedContent] of [
+    [80, '✅ 検証成功\n2 failed'],
+    [90, '実装済みのはずだが空diffで❌ 実装漏れと誤検知された本文'],
+    [100, '[Claude Code] Starting execution...'],
+    [100, ''],
+  ] as const) {
+    test(`current failure ${severity}: ${JSON.stringify(savedContent)} cannot be rescued by a prior pass and PR`, async () => {
+      mockWorkflowTransitionFindFirst.mockResolvedValue({ id: 1 });
+      mockPrisma.task.findUnique.mockResolvedValue({ githubPrId: 100 });
+      mockValidateVerify.mockReturnValue({
+        ok: false,
+        missingSections: [],
+        severity,
+        summary: 'current validation failed',
+      });
+      mockAttemptVerifyRepair.mockResolvedValue({ bounced: true, newStatus: 'plan_approved' });
+      const result = await computeAndApplyStatusTransition({ ...buildParams(), savedContent });
+      expect(result.newStatus).toBe('plan_approved');
+      expect(result.verifyRerunAlreadyDone).toBe(false);
+      expect(mockAttemptVerifyRepair).toHaveBeenCalledTimes(1);
+      expect(mockTaskUpdate).not.toHaveBeenCalled();
+    });
+  }
 
   test('cutoffRecorded:true なら DB 読み取りガードが false でも verify_validation_failed を記録しないこと', async () => {
     mockAttemptVerifyRepair.mockResolvedValueOnce({ bounced: false, cutoffRecorded: true });

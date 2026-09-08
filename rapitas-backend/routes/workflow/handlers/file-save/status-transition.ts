@@ -9,7 +9,6 @@
 
 import { prisma } from '../../../../config';
 import { createLogger } from '../../../../config/logger';
-import { hasNonpassingVerifyVerdict } from '../../../../services/workflow/nonpassing-verify-verdict';
 import type { WorkflowFileType } from '../../core/workflow-helpers';
 import { researchConcludesNoChange } from '../../../../services/workflow/completion-gate';
 import { recordTransition } from '../../../../services/workflow/transition-recorder';
@@ -114,114 +113,87 @@ export async function computeAndApplyStatusTransition(params: {
         await import('../../../../services/workflow/phase-output-validator');
       const verifyValidation = validateVerify(savedContent);
       if (!verifyValidation.ok && verifyValidation.severity >= 80) {
-        // FALSE-NEGATIVE GUARD: a re-run (ci_repair / verify_repair) executes in
-        // a worktree where the work is ALREADY present (committed to the PR branch
-        // or merged to base), so the implementer makes NO change and the verifier
-        // — seeing an empty diff against a plan that lists "new" files — wrongly
-        // reports 実装漏れ ("the artifacts don't exist at all"). If this task has
-        // ALREADY reached verify_passed once AND produced a PR, the implementation
-        // demonstrably exists, so the failure is a false negative. Complete it
-        // instead of looping implement→verify→block forever (observed: task 367,
-        // verify_passed→ci_repair→empty-diff re-run→"実装漏れ"→blocked, PR merged).
-        const priorVerifyPass = await prisma.workflowTransition
-          .findFirst({ where: { taskId, cause: 'verify_passed' }, select: { id: true } })
-          .catch(() => null);
-        const prRow = priorVerifyPass
-          ? await prisma.task
-              .findUnique({ where: { id: taskId }, select: { githubPrId: true } })
-              .catch(() => null)
-          : null;
-        if (
-          priorVerifyPass &&
-          prRow?.githubPrId != null &&
-          !hasNonpassingVerifyVerdict(savedContent)
-        ) {
-          log.warn(
-            { taskId, prId: prRow.githubPrId, summary: verifyValidation.summary },
-            '[Workflow] verify re-run reported a failure, but the task already passed verify and has a PR — completing as already-done (false-negative on already-merged work).',
-          );
-          newStatus = 'completed';
-          verifyRerunAlreadyDone = true;
-        } else {
-          // Self-repair loop: bounce the workflow back to the implementer with
-          // the failure as feedback so the runner re-runs implement → verify,
-          // instead of dead-ending at `blocked`. Only block once the bounded
-          // repair attempts are exhausted.
-          const { attemptVerifyRepair } =
-            await import('../../../../services/workflow/verify-self-repair');
-          const repair = await attemptVerifyRepair(
-            taskId,
-            currentStatus ?? null,
-            verifyValidation.summary,
-            savedContent,
-          );
+        // A historical pass or PR does not establish that this HEAD passed.
+        // Current validation failures must repair or hold; never infer completion
+        // from stale evidence (task 906).
+        // Self-repair loop: bounce the workflow back to the implementer with
+        // the failure as feedback so the runner re-runs implement → verify,
+        // instead of dead-ending at `blocked`. Only block once the bounded
+        // repair attempts are exhausted.
+        const { attemptVerifyRepair } =
+          await import('../../../../services/workflow/verify-self-repair');
+        const repair = await attemptVerifyRepair(
+          taskId,
+          currentStatus ?? null,
+          verifyValidation.summary,
+          savedContent,
+        );
 
-          if (repair.bounced && repair.newStatus) {
-            log.warn(
-              { taskId, attempt: repair.attempt, newStatus: repair.newStatus },
-              '[Workflow] verify.md failed validation — re-running implement→verify (self-repair)',
-            );
-            // Bounce: the runner re-runs the implementer from this status.
-            // attemptVerifyRepair() already persisted task.status/workflowStatus
-            // and recorded its own `verify_repair` transition — newStatus is set
-            // only so the HTTP response reports the real status; the generic
-            // save-transition block below must NOT repeat that work.
-            newStatus = repair.newStatus;
-            verifyRepairBounced = true;
-          } else if (repair.stale) {
-            // The workflow advanced past the evaluated status while this
-            // verdict was in flight (e.g. a re-verify already passed) —
-            // blocking now would clobber a live/terminal state (task 551).
-            log.warn(
-              { taskId, summary: verifyValidation.summary },
-              '[Workflow] stale verify failure — workflow moved on; neither bouncing nor blocking',
-            );
-            verifyRepairBounced = true; // skip the generic save-transition below too
-          } else {
-            log.warn(
-              { taskId, summary: verifyValidation.summary },
-              '[Workflow] verify.md failed validation and repairs exhausted — blocking task',
-            );
-            await prisma.task
-              .update({
-                where: { id: taskId },
-                data: { status: 'blocked', updatedAt: new Date() },
-              })
-              .catch(() => {});
-            // Align the execution/session to failed so the log viewer doesn't show
-            // 「完了」 while the task is blocked (the status gap).
-            await markLatestExecutionFailed(
+        if (repair.bounced && repair.newStatus) {
+          log.warn(
+            { taskId, attempt: repair.attempt, newStatus: repair.newStatus },
+            '[Workflow] verify.md failed validation — re-running implement→verify (self-repair)',
+          );
+          // Bounce: the runner re-runs the implementer from this status.
+          // attemptVerifyRepair() already persisted task.status/workflowStatus
+          // and recorded its own `verify_repair` transition — newStatus is set
+          // only so the HTTP response reports the real status; the generic
+          // save-transition block below must NOT repeat that work.
+          newStatus = repair.newStatus;
+          verifyRepairBounced = true;
+        } else if (repair.stale) {
+          // The workflow advanced past the evaluated status while this
+          // verdict was in flight (e.g. a re-verify already passed) —
+          // blocking now would clobber a live/terminal state (task 551).
+          log.warn(
+            { taskId, summary: verifyValidation.summary },
+            '[Workflow] stale verify failure — workflow moved on; neither bouncing nor blocking',
+          );
+          verifyRepairBounced = true; // skip the generic save-transition below too
+        } else {
+          log.warn(
+            { taskId, summary: verifyValidation.summary },
+            '[Workflow] verify.md failed validation and repairs exhausted — blocking task',
+          );
+          await prisma.task
+            .update({
+              where: { id: taskId },
+              data: { status: 'blocked', updatedAt: new Date() },
+            })
+            .catch(() => {});
+          // Align the execution/session to failed so the log viewer doesn't show
+          // 「完了」 while the task is blocked (the status gap).
+          await markLatestExecutionFailed(
+            taskId,
+            `検証に失敗したためブロックしました: ${verifyValidation.summary}`,
+          );
+          // The non-convergence cutoff already recorded its OWN
+          // `verify_repair_non_convergence` transition for this rejection
+          // (verify-self-repair.ts) — recording `verify_validation_failed`
+          // here too would duplicate it (task 674: two rows 43ms apart;
+          // task 705 independently hit the same duplicate-record defect and
+          // converged on this same DB-read check during merge; task 715
+          // recurred even with that DB-read guard, so `repair.cutoffRecorded`
+          // — the in-band signal from THIS exact attemptVerifyRepair() call,
+          // task 710 — is checked first as the authoritative source).
+          if (!repair.cutoffRecorded && !(await wasNonConvergenceCutoffJustRecorded(taskId))) {
+            await recordTransition({
               taskId,
-              `検証に失敗したためブロックしました: ${verifyValidation.summary}`,
-            );
-            // The non-convergence cutoff already recorded its OWN
-            // `verify_repair_non_convergence` transition for this rejection
-            // (verify-self-repair.ts) — recording `verify_validation_failed`
-            // here too would duplicate it (task 674: two rows 43ms apart;
-            // task 705 independently hit the same duplicate-record defect and
-            // converged on this same DB-read check during merge; task 715
-            // recurred even with that DB-read guard, so `repair.cutoffRecorded`
-            // — the in-band signal from THIS exact attemptVerifyRepair() call,
-            // task 710 — is checked first as the authoritative source).
-            if (!repair.cutoffRecorded && !(await wasNonConvergenceCutoffJustRecorded(taskId))) {
-              await recordTransition({
-                taskId,
-                fromStatus: currentStatus ?? null,
-                toStatus: currentStatus ?? 'in_progress',
-                actor: 'verifier',
-                cause: 'verify_validation_failed',
-                phase: 'verify',
-                metadata: {
-                  sizeBytes: savedContent.length,
-                  reason: verifyValidation.summary,
-                },
-                invariantViolation: true,
-                invariantMessage: verifyValidation.summary,
-              });
-            }
-            // newStatus stays undefined — caller skips the verify_done
-            // transition + auto-commit/PR pipeline below.
+              fromStatus: currentStatus ?? null,
+              toStatus: currentStatus ?? 'in_progress',
+              actor: 'verifier',
+              cause: 'verify_validation_failed',
+              phase: 'verify',
+              metadata: {
+                sizeBytes: savedContent.length,
+                reason: verifyValidation.summary,
+              },
+              invariantViolation: true,
+              invariantMessage: verifyValidation.summary,
+            });
           }
+          // newStatus stays undefined — caller skips the verify_done
+          // transition + auto-commit/PR pipeline below.
         }
       } else {
         log.info(`[Workflow] Verification saved: setting newStatus to verify_done`);
