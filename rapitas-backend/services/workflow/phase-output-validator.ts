@@ -14,6 +14,7 @@
  * misses (no "設計判断の根拠" in plan.md) without rejecting cosmetic variation.
  */
 import { PLAN_FILES_SECTION_HEADINGS } from './plan-declared-files';
+import { hasNonpassingVerifyVerdict } from './nonpassing-verify-verdict';
 
 export interface ValidationResult {
   ok: boolean;
@@ -180,6 +181,15 @@ function stripNonEvidenceRegions(content: string): string {
  */
 export function validateVerify(content: string): ValidationResult {
   if (looksLogPolluted(content)) return pollutedResult('verify.md');
+  if (hasNonpassingVerifyVerdict(content)) {
+    return {
+      ok: false,
+      missingSections: [],
+      severity: 90,
+      summary:
+        'verify.md explicitly reports a failed or partial overall verdict; repair is required.',
+    };
+  }
   const sectionResult = validateSections(content, VERIFY_REQUIRED_SECTIONS, 'verify.md');
   if (!sectionResult.ok) return sectionResult;
 

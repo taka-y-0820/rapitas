@@ -139,16 +139,13 @@ describe('resolveAutomationPolicy — user-settings tier', () => {
     expect(result.source.autoCommit).toBe('env');
   });
 
-  it('userSettings.findFirst throwing is tolerated (falls back to env/default)', async () => {
+  it('unreadable settings cannot silently downgrade required automation to defaults', async () => {
     const prisma = {
       task: { findUnique: () => Promise.resolve({ id: 1 }) },
       userSettings: { findFirst: () => Promise.reject(new Error('DB down')) },
     } as unknown as PrismaClient;
 
-    const result = await resolveAutomationPolicy(prisma, 1);
-
-    expect(result.autoCommit).toBe(true);
-    expect(result.source.autoCommit).toBe('default');
+    await expect(resolveAutomationPolicy(prisma, 1)).rejects.toThrow('DB down');
   });
 });
 
