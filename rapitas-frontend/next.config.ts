@@ -15,11 +15,17 @@ const nextConfig: NextConfig = {
 
   // Turbopackのルートディレクトリをモノレポルートに設定（警告抑制）
   // CI環境でTurbopackが無効化されている場合はこの設定をスキップ
+  // RAPITAS_TURBOPACK_ROOT: git worktree では node_modules が main チェックアウトへの
+  // ジャンクションで、実体パスが worktree ルート外になる。runtime-smoke の app-launcher が
+  // worktree と実体の共通祖先を算出してこの env に設定し、Turbopack の
+  // "points out of the filesystem root" 起動失敗を回避する（未設定時は従来通り）。
   ...(disableTurbopack
     ? {}
     : {
         turbopack: {
-          root: path.resolve(__dirname, '..'),
+          root: process.env.RAPITAS_TURBOPACK_ROOT
+            ? path.resolve(process.env.RAPITAS_TURBOPACK_ROOT)
+            : path.resolve(__dirname, '..'),
         },
       }),
 
