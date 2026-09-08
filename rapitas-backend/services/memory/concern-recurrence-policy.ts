@@ -11,7 +11,7 @@
  * Not responsible for filing itself (concern-backlog-service.ts owns create).
  */
 import { createLogger } from '../../config/logger';
-import type { ConcernSeverity } from './concern-backlog-service';
+import type { ConcernSeverity } from './concern-backlog-types';
 import {
   pickSuppressingCandidate,
   pickLatestDoneCandidate,
@@ -242,6 +242,8 @@ export function annotateRecurrenceOfDone(
 export interface ConcernFilingDecision {
   /** Set when an existing entry was reused (blocked dup, or merged recurrence) — the caller returns this id, no create(). */
   reuseId?: number;
+  /** Why `reuseId` was reused — lets submitConcern report it without re-deriving. */
+  reuseReason?: 'dedup-live-duplicate' | 'recurrence-merged-open';
   severity?: ConcernSeverity;
   detail?: string;
   extraTag?: string;
@@ -270,7 +272,7 @@ export async function resolveFiling(
   const policy = opts.input.recurrencePolicy;
   if (!policy?.enabled) {
     const blockingId = await opts.findBlockingDuplicate(opts.hash);
-    return blockingId != null ? { reuseId: blockingId } : {};
+    return blockingId != null ? { reuseId: blockingId, reuseReason: 'dedup-live-duplicate' } : {};
   }
   const detectedAt = policy.detectedAt ?? Date.now();
   const resolution = await resolveRecurrence(
@@ -285,7 +287,7 @@ export async function resolveFiling(
       where: { id: resolution.targetEntry.id },
       data: { tags: updated.tags, content: updated.content },
     });
-    return { reuseId: resolution.targetEntry.id };
+    return { reuseId: resolution.targetEntry.id, reuseReason: 'recurrence-merged-open' };
   }
   if (resolution.action === 'recurrence-of-done') {
     const annotated = annotateRecurrenceOfDone(

@@ -111,6 +111,14 @@ describe('attemptVerifyRepair — tamper 単独失敗は修復不能として即
     );
   });
 
+  // task 892: tamper と schema-change が同時に NG のとき、tamper-only 誤分類で
+  // schema-change 側の通常リトライ機会を奪ってはいけない。
+  test('isTamperOnlyVerdict は tamper と schema-change の複合失敗では false', () => {
+    const composite =
+      '自動検証に失敗しました（自動検証: tamper=NG(1) / schema-change=NG(1) / lint=ok / typecheck=ok / test=ok）。';
+    expect(isTamperOnlyVerdict(composite)).toBe(false);
+  });
+
   test('tamper 単独失敗は bounce せず、非修復の遷移を記録して cutoffRecorded を返す', async () => {
     mockPrisma.workflowTransition.count.mockResolvedValue(0);
     const result = await attemptVerifyRepair(867, 'verify_done', TAMPER_ONLY, 'verify body');

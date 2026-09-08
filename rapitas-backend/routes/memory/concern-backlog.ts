@@ -62,7 +62,7 @@ export const concernBacklogRoutes = new Elysia()
         return { error: 'タイトルと詳細は必須です' };
       }
       try {
-        const id = await submitConcern({
+        const filing = await submitConcern({
           title: body.title.trim(),
           detail: body.detail.trim(),
           type: normalizeConcernType(body.type),
@@ -72,7 +72,7 @@ export const concernBacklogRoutes = new Elysia()
           themeId: body.themeId ?? undefined,
           source: body.source ?? 'user',
         });
-        return { success: true, id };
+        return { success: true, id: filing.id, outcome: filing.outcome, reason: filing.reason };
       } catch (err) {
         log.error({ err }, 'Failed to file concern');
         set.status = 500;

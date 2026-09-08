@@ -13,14 +13,50 @@ import { createLogger } from '../../config/logger';
 import { createTask } from '../task/task-mutations';
 import { specForConcernSource } from './concern-task-spec';
 import { sanitizeMarkdownContent } from '../../utils/common/mojibake-detector';
-import { narrowEnum } from '../../utils/common/type-guards';
 import { findSaturatedTheme, findNearDuplicate } from './theme-saturation';
 import { resolveTaskThemeId, resolveDefaultThemeId } from './theme-resolution';
-import { resolveFiling, type RecurrencePolicy } from './concern-recurrence-policy';
+import { resolveFiling } from './concern-recurrence-policy';
+import {
+  CONCERN_TYPES,
+  CONCERN_SEVERITIES,
+  CONCERN_STATUSES,
+  normalizeConcernType,
+  normalizeConcernSeverity,
+  SEVERITY_WEIGHT,
+  type ConcernType,
+  type ConcernSeverity,
+  type ConcernStatus,
+  type LinkedIssueRef,
+  type ConcernEntry,
+  type SubmitConcernInput,
+  type ConcernFilingResult,
+} from './concern-backlog-types';
 
 // Re-exported for backward compatibility — log-health-check.ts imports
 // resolveDefaultThemeId from this module.
 export { resolveDefaultThemeId };
+
+// Type/constant/normalizer re-exports — moved to concern-backlog-types.ts (#888)
+// so existing importers (routes, concern-recurrence-policy.ts, the generated
+// guards file) keep working unchanged.
+export {
+  CONCERN_TYPES,
+  CONCERN_SEVERITIES,
+  CONCERN_STATUSES,
+  normalizeConcernType,
+  normalizeConcernSeverity,
+};
+export type {
+  ConcernType,
+  ConcernSeverity,
+  ConcernStatus,
+  LinkedIssueRef,
+  ConcernEntry,
+  SubmitConcernInput,
+  ConcernFilingOutcome,
+  ConcernFilingReason,
+  ConcernFilingResult,
+} from './concern-backlog-types';
 
 // Near-duplicate gate threshold (character-bigram Jaccard). Mirrors the idea box:
 // rejects an almost-identical OPEN concern re-file (e.g. the gen/Prettier-drift
@@ -29,6 +65,14 @@ export { resolveDefaultThemeId };
 const CONCERN_NEARDUP_JACCARD = (() => {
   const v = parseFloat(process.env.RAPITAS_CONCERN_NEARDUP_JACCARD ?? '0.45');
   return Number.isFinite(v) && v > 0 && v <= 1 ? v : 0.45;
+})();
+
+// Theme-saturation additionally requires this whole-title bigram similarity so
+// a single short shared token (e.g. "Codex") can no longer anchor an
+// unrelated concern into the wrong theme (#888, concern #7336).
+const CONCERN_SATURATION_MIN_JACCARD = (() => {
+  const v = parseFloat(process.env.RAPITAS_CONCERN_SATURATION_MIN_JACCARD ?? '0.2');
+  return Number.isFinite(v) && v >= 0 && v <= 1 ? v : 0.2;
 })();
 
 const log = createLogger('memory:concern-backlog');
@@ -45,90 +89,6 @@ const log = createLogger('memory:concern-backlog');
  */
 function isValidConcernId(concernId: number): boolean {
   return Number.isSafeInteger(concernId) && concernId > 0;
-}
-
-/** What kind of concern this is. */
-export const CONCERN_TYPES = ['bug', 'refactor', 'security', 'perf', 'other'] as const;
-export type ConcernType = (typeof CONCERN_TYPES)[number];
-
-/** How serious / urgent the concern is. */
-export const CONCERN_SEVERITIES = ['urgent', 'high', 'medium', 'low'] as const;
-export type ConcernSeverity = (typeof CONCERN_SEVERITIES)[number];
-/**
- * Lifecycle state of a concern.
- * `resolved` is reached when a concern published to GitHub has its issue closed
- * (status is pulled from GitHub on sync — see markConcernResolved).
- */
-export const CONCERN_STATUSES = ['open', 'task_created', 'dismissed', 'resolved'] as const;
-export type ConcernStatus = (typeof CONCERN_STATUSES)[number];
-
-/** A GitHub issue a concern was published to / imported from. */
-export interface LinkedIssueRef {
-  /** GitHubIssue row id (DB), not the issue number. */
-  id: number;
-  issueNumber: number;
-  url: string;
-  /** "open" | "closed" */
-  state: string;
-}
-
-/** Coerces an arbitrary value to a valid concern type (default 'bug'). */
-export function normalizeConcernType(value: unknown): ConcernType {
-  return narrowEnum(value, CONCERN_TYPES, 'bug');
-}
-/** Coerces an arbitrary value to a valid severity (default 'medium'). */
-export function normalizeConcernSeverity(value: unknown): ConcernSeverity {
-  return narrowEnum(value, CONCERN_SEVERITIES, 'medium');
-}
-
-/** Severity → numeric weight, used for ordering (higher = surfaces first). */
-const SEVERITY_WEIGHT: Record<ConcernSeverity, number> = {
-  urgent: 0.95,
-  high: 0.9,
-  medium: 0.6,
-  low: 0.3,
-};
-
-export interface ConcernEntry {
-  id: number;
-  title: string;
-  detail: string;
-  type: ConcernType;
-  severity: ConcernSeverity;
-  /** Code location (file / area) the concern refers to, if known. */
-  location: string | null;
-  status: ConcernStatus;
-  /** Origin label ("agent" | "user" | "vuln_scan" | ...). 'unknown' for pre-source rows. */
-  source: string;
-  /** Task during whose execution the concern was found, if any. */
-  originTaskId: number | null;
-  /** Task created from this concern, if converted. */
-  createdTaskId: number | null;
-  themeId: number | null;
-  createdAt: Date;
-  /** GitHub issue this concern was published to / imported from, if any. */
-  linkedIssue?: LinkedIssueRef | null;
-}
-
-export interface SubmitConcernInput {
-  title: string;
-  detail: string;
-  type?: ConcernType;
-  severity?: ConcernSeverity;
-  location?: string;
-  /** Origin: the task being implemented when the concern was spotted. */
-  originTaskId?: number;
-  themeId?: number;
-  /** Origin label: "agent" | "user" | "code_review" | ... */
-  source?: string;
-  /**
-   * Stable de-duplication key. When set, duplicates are detected by this key
-   * alone instead of title+detail — use it when the detail carries volatile
-   * parts (stack traces, counts, ids) that would otherwise let the same
-   * root-cause concern be filed repeatedly. / 同一原因の重複登録を防ぐ安定キー。
-   */
-  dedupKey?: string;
-  recurrencePolicy?: RecurrencePolicy;
 }
 
 function contentHash(input: string): string {
@@ -184,12 +144,14 @@ async function findBlockingDuplicate(hash: string): Promise<number | null> {
 
 /**
  * Files a concern into the backlog. Deduplicates by `dedupKey` when provided,
- * otherwise by title+detail.
+ * otherwise by title+detail. The returned `outcome`/`reason` let a caller
+ * tell a genuine new filing apart from a merge into an existing row or a
+ * silent anti-monoculture suppression (#888) — `id` alone cannot.
  *
  * @param input - Concern details / 懸念の詳細
- * @returns Created (or existing duplicate) KnowledgeEntry id / 作成・既存のID
+ * @returns The anchoring/created KnowledgeEntry id plus how it got there / ID と起票結果の内訳
  */
-export async function submitConcern(input: SubmitConcernInput): Promise<number> {
+export async function submitConcern(input: SubmitConcernInput): Promise<ConcernFilingResult> {
   // 文字化けチェック＆修正: repair title/detail BEFORE storing so a garbled concern
   // never lands in the backlog (agent submissions over curl/files on Windows can
   // arrive mojibake'd). Only an effective fix is adopted; clean text is untouched.
@@ -211,7 +173,13 @@ export async function submitConcern(input: SubmitConcernInput): Promise<number> 
     : contentHash(`concern:${input.title}:${input.detail}`);
 
   const decision = await resolveFiling(prisma, { input, hash, severity, findBlockingDuplicate });
-  if (decision.reuseId != null) return decision.reuseId;
+  if (decision.reuseId != null) {
+    return {
+      id: decision.reuseId,
+      outcome: 'reused',
+      reason: decision.reuseReason ?? 'dedup-live-duplicate',
+    };
+  }
 
   // Anti-monoculture: concerns are the bigger flood source — the agent re-files
   // near-identical "gen:type-guards / SSOT / Prettier-drift" concerns as it works
@@ -230,7 +198,7 @@ export async function submitConcern(input: SubmitConcernInput): Promise<number> 
         { dupId, title: input.title, threshold: CONCERN_NEARDUP_JACCARD },
         '[concern-backlog] Rejected concern: near-duplicate of an existing concern (anti-monoculture)',
       );
-      return dupId;
+      return { id: dupId, outcome: 'suppressed', reason: 'near-duplicate' };
     }
 
     const anchorId = await findSaturatedTheme(input.title, {
@@ -244,13 +212,14 @@ export async function submitConcern(input: SubmitConcernInput): Promise<number> 
       // NOT trip the gate. Env-tunable. (Idea gate uses SALIENT_LEN=4 / cap=8.)
       salient: Number(process.env.RAPITAS_CONCERN_SATURATION_SALIENT) || 5,
       openConcernOnly: true,
+      minJaccard: CONCERN_SATURATION_MIN_JACCARD,
     });
     if (anchorId != null) {
       log.info(
         { anchorId, title: input.title },
         '[concern-backlog] Rejected concern: theme over-represented / near-duplicate (anti-monoculture)',
       );
-      return anchorId;
+      return { id: anchorId, outcome: 'suppressed', reason: 'theme-saturation' };
     }
   }
 
@@ -304,7 +273,11 @@ export async function submitConcern(input: SubmitConcernInput): Promise<number> 
     },
     'Concern filed',
   );
-  return entry.id;
+  return {
+    id: entry.id,
+    outcome: 'created',
+    reason: decision.detail != null ? 'recurrence-of-done' : 'new',
+  };
 }
 
 interface ConcernRow {

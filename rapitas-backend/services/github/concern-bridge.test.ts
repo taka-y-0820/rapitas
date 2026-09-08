@@ -10,7 +10,9 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
 // Mock declarations are hoisted by bun before static imports.
 const mockGetConcern = mock(() => Promise.resolve(null));
-const mockSubmitConcern = mock(() => Promise.resolve(0));
+const mockSubmitConcern = mock(() =>
+  Promise.resolve({ id: 0, outcome: 'created' as const, reason: 'new' as const }),
+);
 
 mock.module('../memory/concern-backlog-service', () => ({
   getConcern: mockGetConcern,
@@ -133,7 +135,7 @@ const MOCK_ISSUE_ROW = {
 
 function resetMocks() {
   mockGetConcern.mockReset().mockResolvedValue(null);
-  mockSubmitConcern.mockReset().mockResolvedValue(99);
+  mockSubmitConcern.mockReset().mockResolvedValue({ id: 99, outcome: 'created', reason: 'new' });
   mockIntegrationFindUnique.mockReset().mockResolvedValue(null);
   mockIssueFindFirst.mockReset().mockResolvedValue(null);
   mockIssueFindUnique.mockReset().mockResolvedValue(null);
@@ -294,7 +296,7 @@ describe('importIssueAsConcern', () => {
 
   it('正常取り込み: submitConcern と update が呼ばれ concernId を返す', async () => {
     mockIssueFindUnique.mockResolvedValue(MOCK_ISSUE_ROW);
-    mockSubmitConcern.mockResolvedValue(99);
+    mockSubmitConcern.mockResolvedValue({ id: 99, outcome: 'created', reason: 'new' });
 
     const result = await importIssueAsConcern(5);
 
@@ -332,7 +334,7 @@ describe('importIssueAsConcern', () => {
       ...MOCK_ISSUE_ROW,
       labels: '["type:security","priority:urgent"]',
     });
-    mockSubmitConcern.mockResolvedValue(77);
+    mockSubmitConcern.mockResolvedValue({ id: 77, outcome: 'created', reason: 'new' });
 
     await importIssueAsConcern(5);
 

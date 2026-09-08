@@ -49,6 +49,19 @@ describe('computeOverallOk', () => {
     expect(computeOverallOk([check('lint', false), check('acceptance', true)])).toBe(false);
     expect(computeOverallOk([check('test', false), check('scope', false)])).toBe(false);
   });
+
+  // Pins schema-change as a HARD gate (task 892) — unlike scope/acceptance,
+  // it must NOT be added to the advisory exclusion list. A future edit that
+  // excludes it would make this RED.
+  it('fails when schema-change is NG, even with all other checks ok', () => {
+    const checks = [
+      check('lint', true),
+      check('typecheck', true),
+      check('test', true),
+      check('schema-change', false),
+    ];
+    expect(computeOverallOk(checks)).toBe(false);
+  });
 });
 
 describe('generatedSyncCheck', () => {
