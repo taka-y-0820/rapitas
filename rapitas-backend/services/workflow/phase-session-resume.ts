@@ -17,6 +17,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
+import { classifySessionFailureReason } from '../agents/claude-code/failure-reason-markers';
 
 const log = createLogger('workflow:phase-session-resume');
 
@@ -97,22 +98,51 @@ export async function resumeSessionIdFor(
 }
 
 /**
- * Resolve the CLI session id this phase should resume, or null to cold-start.
+ * Why a phase is about to cold-start (or resumed anyway despite a prior
+ * failure). `resumed` covers BOTH the plain resume case and the
+ * auth/transient-recoverable case — workflow-cli-executor.ts only branches on
+ * `prompt_too_long_exhausted` to pick the short structured handoff prompt.
+ */
+export type PhaseResumeColdStartReason =
+  | 'resumed'
+  | 'no_prior_session'
+  | 'prompt_too_long_exhausted'
+  | 'other_failure_exhausted'
+  | 'transcript_missing'
+  | 'lookup_error';
+
+/** Full decision: the session id (or null) plus why. */
+export interface PhaseResumeDecision {
+  sessionId: string | null;
+  coldStartReason: PhaseResumeColdStartReason;
+}
+
+/**
+ * Resolve the CLI session id this phase should resume, plus why (so a
+ * `prompt_too_long_exhausted` cold-start can switch to a short structured
+ * handoff prompt instead of the full context — task 900).
  *
  * Every guard below exists because resuming the WRONG session is worse than
  * cold-starting: the CLI would replay another task's or another role's
  * conversation into this phase.
  *
  * @param q - Task, role, working directory and agent type. / タスク・ロール・作業ディレクトリ・エージェント種別
- * @returns Session id to pass as `--resume`, or null. / `--resume` に渡すID、無ければ null
+ * @returns Session id to pass as `--resume` (or null) plus the cold-start reason. / 再開ID（無ければnull）とコールドスタート理由
  */
-export async function resolvePhaseResumeSessionId(q: PhaseResumeQuery): Promise<string | null> {
-  if (process.env.RAPITAS_PHASE_SESSION_RESUME === '0') return null;
+export async function resolvePhaseResumeDecision(
+  q: PhaseResumeQuery,
+): Promise<PhaseResumeDecision> {
+  const noSession = (coldStartReason: PhaseResumeColdStartReason): PhaseResumeDecision => ({
+    sessionId: null,
+    coldStartReason,
+  });
+
+  if (process.env.RAPITAS_PHASE_SESSION_RESUME === '0') return noSession('no_prior_session');
   // Only the Claude CLI takes a `--resume <uuid>` of this shape; codex and
   // gemini have their own session/checkpoint identifiers.
-  if (q.agentType && q.agentType !== 'claude-code') return null;
-  if (!RESUMABLE_ROLES.has(q.role)) return null;
-  if (!q.workingDirectory) return null;
+  if (q.agentType && q.agentType !== 'claude-code') return noSession('no_prior_session');
+  if (!RESUMABLE_ROLES.has(q.role)) return noSession('no_prior_session');
+  if (!q.workingDirectory) return noSession('no_prior_session');
 
   try {
     // NOTE: Deliberately NOT filtered on AgentSession.worktreePath. That column
@@ -134,20 +164,45 @@ export async function resolvePhaseResumeSessionId(q: PhaseResumeQuery): Promise<
       select: { id: true, claudeSessionId: true },
     });
 
+    // Tracks the reason a candidate was excluded, so the final "give up"
+    // return (below the loop) still reports WHY instead of a generic
+    // no_prior_session — carried across candidates so the LAST exclusion
+    // reason wins if every candidate is disqualified for different reasons.
+    let disqualifyReason: PhaseResumeColdStartReason | null = null;
+
     for (const candidate of candidates) {
       const sessionId = candidate.claudeSessionId;
       if (!sessionId || !claudeSessionExists(q.workingDirectory, sessionId)) continue;
-      // A session whose resume already FAILED is exhausted, not resumable:
+      // A session whose most recent resume already FAILED may still be exhausted:
       // task 894 (2026-09-08) hit "Prompt is too long" on --resume and the
       // runner retried the identical resume three times before blocking.
-      // Cold-start instead — the fresh context is the only thing that can work.
+      // Auth/transient failures are recoverable (re-authenticating or a
+      // provider blip doesn't poison the session), so only prompt_too_long
+      // and unclassified failures stay excluded (task 900).
       const failedResume = await prisma.agentExecution.findFirst({
         where: { claudeSessionId: sessionId, status: 'failed' },
-        select: { id: true },
+        orderBy: { id: 'desc' },
+        select: { id: true, errorMessage: true },
       });
       if (failedResume) {
+        const reason = classifySessionFailureReason(failedResume.errorMessage);
+        if (reason === 'auth' || reason === 'transient') {
+          log.info(
+            {
+              taskId: q.taskId,
+              role: q.role,
+              sessionId,
+              failedExecutionId: failedResume.id,
+              reason,
+            },
+            '[phase-resume] Prior resume failed for a recoverable reason (auth/transient) — still eligible to resume',
+          );
+          return { sessionId, coldStartReason: 'resumed' };
+        }
+        disqualifyReason =
+          reason === 'prompt_too_long' ? 'prompt_too_long_exhausted' : 'other_failure_exhausted';
         log.info(
-          { taskId: q.taskId, role: q.role, sessionId, failedExecutionId: failedResume.id },
+          { taskId: q.taskId, role: q.role, sessionId, failedExecutionId: failedResume.id, reason },
           '[phase-resume] Prior resume of this session failed — cold-starting',
         );
         continue;
@@ -156,7 +211,7 @@ export async function resolvePhaseResumeSessionId(q: PhaseResumeQuery): Promise<
         { taskId: q.taskId, role: q.role, sessionId, previousExecutionId: candidate.id },
         '[phase-resume] Resuming the previous CLI session for this role',
       );
-      return sessionId;
+      return { sessionId, coldStartReason: 'resumed' };
     }
 
     if (candidates.length > 0) {
@@ -165,13 +220,27 @@ export async function resolvePhaseResumeSessionId(q: PhaseResumeQuery): Promise<
         '[phase-resume] No prior CLI transcript under this directory — cold-starting',
       );
     }
-    return null;
+    return noSession(
+      disqualifyReason ?? (candidates.length > 0 ? 'transcript_missing' : 'no_prior_session'),
+    );
   } catch (err) {
     // Never let this optimisation block a phase from running.
     log.warn(
       { err, taskId: q.taskId, role: q.role },
       '[phase-resume] Lookup failed — cold-starting',
     );
-    return null;
+    return noSession('lookup_error');
   }
+}
+
+/**
+ * Resolve the CLI session id this phase should resume, or null to cold-start.
+ * Thin wrapper over {@link resolvePhaseResumeDecision} for callers that only
+ * need the session id (kept so its 8 pre-existing tests need no changes).
+ *
+ * @param q - Task, role, working directory and agent type. / タスク・ロール・作業ディレクトリ・エージェント種別
+ * @returns Session id to pass as `--resume`, or null. / `--resume` に渡すID、無ければ null
+ */
+export async function resolvePhaseResumeSessionId(q: PhaseResumeQuery): Promise<string | null> {
+  return (await resolvePhaseResumeDecision(q)).sessionId;
 }
