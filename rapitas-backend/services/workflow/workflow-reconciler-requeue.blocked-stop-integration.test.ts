@@ -96,6 +96,7 @@ const fakePrisma = {
   userSettings: { findFirst: () => Promise.resolve(null) },
   activityLog: { findFirst: () => Promise.resolve(null) },
   workflowTransition: {
+    findFirst: () => Promise.resolve(null),
     // Drive requeueBlockedTasks past its verify_pr_not_created gate (task 673/
     // 681's lightweight-recovery trigger) and into attemptPrOnlyRecovery for
     // every scenario here — every OTHER cutoff count (verify_repair,

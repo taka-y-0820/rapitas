@@ -1,3 +1,4 @@
+import { recoverCommittedRepair, recoverPendingRepairs } from './verify-repair-recovery';
 import { canAcquireRepairQueue, clearAcquiredRepairReceipt } from './repair-queue-acquire';
 import type { Prisma } from '../../generated/prisma-postgres';
 import { enqueueCommittedRepair } from './verify-repair-queue';
@@ -229,4 +230,41 @@ test('repair preserves the original verification and archives it atomically', as
   expect(
     (await db.workflowFileVersion.findFirstOrThrow({ select: { content: true } })).content,
   ).toBe(input.verifyContent);
+});
+
+test('a fresh database client recovers committed repair delivery without spending budget', async () => {
+  expect((await commit()).committed).toBe(true);
+  await db.$disconnect();
+  db = new PrismaClient({
+    datasources: { db: { url: `file:${join(dir, 'test.db').replaceAll('\\', '/')}` } },
+  });
+  expect(await recoverCommittedRepair(db as unknown as PostgresClient, 1)).toBe('queued');
+  expect(await recoverCommittedRepair(db as unknown as PostgresClient, 1)).toBe('existing');
+  expect(await db.workflowTransition.count({ where: { cause: 'verify_repair' } })).toBe(1);
+  expect(await db.workflowQueueItem.count()).toBe(1);
+});
+test('recovery preserves a stop issued after repair commit', async () => {
+  expect((await commit()).committed).toBe(true);
+  await db.$executeRawUnsafe(
+    "INSERT INTO WorkflowTransition (taskId,cause,createdAt) VALUES (1,'theme_stop_execution_requested',?)",
+    new Date(),
+  );
+  expect(await recoverCommittedRepair(db as unknown as PostgresClient, 1)).toBe('held');
+  expect(await db.workflowQueueItem.count()).toBe(0);
+});
+
+test('periodic recovery waits for the agent, then delivers and wakes processing', async () => {
+  expect((await commit()).committed).toBe(true);
+  let wakes = 0;
+  const later = Date.now() + 120_000;
+  expect(await recoverPendingRepairs(db as unknown as PostgresClient, () => wakes++, later)).toBe(
+    0,
+  );
+  expect(wakes).toBe(0);
+  await db.$executeRawUnsafe("UPDATE AgentExecution SET status='completed'");
+  expect(await recoverPendingRepairs(db as unknown as PostgresClient, () => wakes++, later)).toBe(
+    1,
+  );
+  expect(wakes).toBe(1);
+  expect(await db.workflowTransition.count({ where: { cause: 'verify_repair' } })).toBe(1);
 });

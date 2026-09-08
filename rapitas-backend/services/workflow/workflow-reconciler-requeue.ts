@@ -89,6 +89,17 @@ export async function requeueOrphanTasks(nowMs: number): Promise<number> {
       continue;
     }
     if (await hasLiveExecution(t.id)) continue;
+    // A committed repair may just have been delivered by the preceding heal pass.
+    if (
+      await prisma.workflowQueueItem.findFirst({
+        where: {
+          taskId: t.id,
+          status: { in: ['queued', 'running', 'waiting_approval'] },
+        },
+        select: { id: true },
+      })
+    )
+      continue;
 
     const attempts = await prisma.workflowTransition
       .count({ where: { taskId: t.id, cause: 'reconciler_requeue' } })

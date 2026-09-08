@@ -67,3 +67,12 @@ services/workflow/workflow-api-executor.test.ts
 services/workflow/verify-self-repair-feedback.test.ts
 services/agents/codex-cli-agent/stop-running.test.ts
 services/agents/codex-cli-agent/process-runner.errors.test.ts
+services/workflow/workflow-reconciler.test.ts
+services/workflow/workflow-reconciler-zero-progress.test.ts
+services/workflow/workflow-reconciler-requeue.orphan-merge-hold.test.ts
+services/workflow/workflow-reconciler-requeue.blocked-stop-integration.test.ts
+services/workflow/workflow-reconciler-queue-sweep.test.ts
+services/workflow/workflow-reconciler-queue-stall.test.ts
+services/workflow/workflow-reconciler-question-pause.test.ts
+services/workflow/workflow-reconciler-question-auto-answer.test.ts
+services/workflow/workflow-reconciler-autoapprove.test.ts

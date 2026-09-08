@@ -155,6 +155,11 @@ export async function commitVerifyRepair(
               windowStart: windowStart?.toISOString() ?? null,
               // Recovery retains the exact rejection if feedback delivery fails after commit.
               verifyContent: input.verifyContent,
+              resumeReceipt: {
+                updatedAt: updatedAt.toISOString(),
+                workflowStatus: newStatus,
+                executionId: input.executionId,
+              },
             }),
           },
         });

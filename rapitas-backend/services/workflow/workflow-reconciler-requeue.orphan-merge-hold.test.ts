@@ -15,6 +15,7 @@ const mockPrisma = {
     update: mock(() => Promise.resolve({})),
   },
   agentExecution: { findFirst: mock(() => Promise.resolve(null as unknown)) },
+  workflowQueueItem: { findFirst: mock(async (): Promise<{ id: number } | null> => null) },
   workflowTransition: { count: mock(() => Promise.resolve(0)) },
 };
 const recordTransition = mock(() => Promise.resolve());
@@ -46,6 +47,7 @@ beforeEach(() => {
   mockPrisma.agentExecution.findFirst.mockReset().mockResolvedValue(null);
   mockPrisma.workflowTransition.count.mockReset().mockResolvedValue(0);
   recordTransition.mockReset().mockResolvedValue(undefined);
+  mockPrisma.workflowQueueItem.findFirst.mockReset().mockResolvedValue(null);
   awaitingRequiredMerge = false;
 });
 
@@ -66,6 +68,7 @@ describe('requeueOrphanTasks — verify_done保留中タスクの保護', () => 
   });
 
   test('autoMergePR非要求の verify_done×in-progress は従来どおり回収する', async () => {
+    mockPrisma.workflowQueueItem.findFirst.mockReset().mockResolvedValue(null);
     awaitingRequiredMerge = false;
     mockPrisma.task.findMany.mockResolvedValueOnce([
       { id: 900, title: '本来のオーファン', workflowStatus: 'verify_done' },
@@ -105,4 +108,13 @@ describe('requeueOrphanTasks — verify_done保留中タスクの保護', () => 
 
     expect(requeued).toBe(1);
   });
+});
+
+test('a delivered repair queue item prevents orphan reset', async () => {
+  mockPrisma.task.findMany.mockResolvedValue([
+    { id: 1, title: 'repair', workflowStatus: 'plan_approved' },
+  ]);
+  mockPrisma.workflowQueueItem.findFirst.mockResolvedValue({ id: 10 });
+  expect(await requeueOrphanTasks(NOW)).toBe(0);
+  expect(mockPrisma.task.update).not.toHaveBeenCalled();
 });
