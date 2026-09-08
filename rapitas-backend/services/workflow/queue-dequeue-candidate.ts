@@ -134,7 +134,6 @@ export async function tryDequeueCandidate(
   }
 
   // Start execution (transaction prevents race conditions)
-  if (!(await isQueueThemeRunning(candidate.taskId))) return null;
   const updated = await prisma.$transaction(
     async (tx) => {
       // Re-check status (another worker may have acquired it)
@@ -155,7 +154,11 @@ export async function tryDequeueCandidate(
         });
         return null;
       }
-      if (!(await isQueueThemeRunning(candidate.taskId, tx))) return null;
+      // Only a receipt just validated against the current task/execution/stop
+      // can continue a single task while the theme scheduler is disabled.
+      const validatedRepair =
+        !!current.result && clearAcquiredRepairReceipt(current.result) === null;
+      if (!(await isQueueThemeRunning(candidate.taskId, tx, validatedRepair))) return null;
 
       // Re-check concurrency limit
       const currentRunning = await tx.workflowQueueItem.count({

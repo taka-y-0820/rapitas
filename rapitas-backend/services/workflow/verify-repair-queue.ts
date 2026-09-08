@@ -27,9 +27,23 @@ export async function enqueueCommittedRepair(
             orchestraSessionId: null,
             status: { in: ['queued', 'running', 'waiting_approval'] },
           },
-          select: { id: true },
+          select: { id: true, status: true },
         });
-        if (existing) return 'existing';
+        if (existing) {
+          // A runner may have requeued this item after a newer repair verdict.
+          // Its first-acquire receipt was consumed; renew it only after the
+          // exact committed task/execution version passed eligibility above.
+          if (existing.status === 'queued') {
+            await tx.workflowQueueItem.updateMany({
+              where: { id: existing.id, status: 'queued' },
+              data: {
+                currentPhase: receipt.workflowStatus,
+                result: JSON.stringify({ repairResume: receipt }),
+              },
+            });
+          }
+          return 'existing';
+        }
         await tx.workflowQueueItem.create({
           data: {
             taskId,

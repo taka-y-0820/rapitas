@@ -219,6 +219,8 @@ const noopLogger = {
 };
 
 const prismaMock = {
+  // These fixtures execute phases directly, without a WorkflowRunner owner.
+  workflowQueueItem: { findFirst: () => Promise.resolve(null) },
   // Ordinary phase fixtures have no committed requirement replan.
   workflowTransition: { findFirst: () => Promise.resolve(null) },
   task: {

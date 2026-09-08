@@ -2,6 +2,7 @@ import { recoverCommittedRepair, recoverPendingRepairs } from './verify-repair-r
 import { canAcquireRepairQueue, clearAcquiredRepairReceipt } from './repair-queue-acquire';
 import type { Prisma } from '../../generated/prisma-postgres';
 import { enqueueCommittedRepair } from './verify-repair-queue';
+import { isQueueThemeRunning } from './queue-theme-guard';
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -69,6 +70,27 @@ async function unchanged() {
   });
   expect(await db.workflowTransition.count({ where: { cause: 'verify_repair' } })).toBe(0);
 }
+test('an idle disabled theme admits an exact repair but a later stop invalidates it', async () => {
+  await db.$executeRawUnsafe('ALTER TABLE ThemeAutoRun ADD COLUMN enabled BOOLEAN DEFAULT 0');
+  await db.$executeRawUnsafe(
+    "INSERT INTO ThemeAutoRun (id,themeId,status,enabled) VALUES (1,1,'idle',0)",
+  );
+  await db.$executeRawUnsafe('UPDATE Task SET themeId=1 WHERE id=1');
+  const receipt = await repairReceipt();
+  await enqueueCommittedRepair(db as unknown as PostgresClient, 1, receipt);
+  const item = await db.workflowQueueItem.findFirstOrThrow({
+    select: { taskId: true, result: true },
+  });
+  const tx = db as unknown as Prisma.TransactionClient;
+  expect(await isQueueThemeRunning(1, tx)).toBe(false);
+  expect(await canAcquireRepairQueue(tx, item)).toBe(true);
+  expect(await isQueueThemeRunning(1, tx, true)).toBe(true);
+  await db.$executeRawUnsafe(
+    "INSERT INTO WorkflowTransition (taskId,cause,createdAt) VALUES (1,'theme_stop_execution_requested',?)",
+    new Date(),
+  );
+  expect(await canAcquireRepairQueue(tx, item)).toBe(false);
+});
 test('audit failure rolls back state and budget together', async () => {
   await db.$executeRawUnsafe(
     "CREATE TRIGGER fail_audit BEFORE INSERT ON WorkflowTransition BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END",
@@ -139,6 +161,71 @@ test('concurrent repair delivery creates one durable queue item', async () => {
   expect(results.sort()).toEqual(['existing', 'queued']);
   expect(await db.workflowQueueItem.count()).toBe(1);
 });
+test('requeued repair renews consumed receipt without creating another item or attempt', async () => {
+  const receipt = await repairReceipt();
+  await enqueueCommittedRepair(db as unknown as PostgresClient, 1, receipt);
+  await db.$executeRawUnsafe(
+    "UPDATE WorkflowQueueItem SET result=NULL, currentPhase='in_progress'",
+  );
+  expect(await enqueueCommittedRepair(db as unknown as PostgresClient, 1, receipt)).toBe(
+    'existing',
+  );
+  const item = await db.workflowQueueItem.findFirstOrThrow({
+    select: { taskId: true, result: true, currentPhase: true },
+  });
+  expect(await canAcquireRepairQueue(db as unknown as Prisma.TransactionClient, item)).toBe(true);
+  expect(item.currentPhase).toBe(receipt.workflowStatus);
+  expect(JSON.parse(item.result!)).toEqual({
+    repairResume: { ...receipt, updatedAt: receipt.updatedAt.toISOString() },
+  });
+  expect(await db.workflowQueueItem.count()).toBe(1);
+  expect(await db.workflowTransition.count()).toBe(1);
+});
+
+test('a newer committed repair replaces queued admission while stale delivery cannot overwrite it', async () => {
+  const first = await repairReceipt();
+  await enqueueCommittedRepair(db as unknown as PostgresClient, 1, first);
+  const verify = await db.workflowFile.findUniqueOrThrow({
+    where: { taskId_fileType: { taskId: 1, fileType: 'verify' } },
+    select: { content: true },
+  });
+  const second = await commit({
+    updatedAt: first.updatedAt,
+    workflowStatus: first.workflowStatus,
+    verifyContent: verify.content,
+  });
+  if (!second.committed) throw new Error('Second repair not committed');
+  const receipt = { updatedAt: second.updatedAt, workflowStatus: second.newStatus, executionId: 1 };
+  expect(await enqueueCommittedRepair(db as unknown as PostgresClient, 1, receipt)).toBe(
+    'existing',
+  );
+  expect(await enqueueCommittedRepair(db as unknown as PostgresClient, 1, first)).toBe('held');
+  const item = await db.workflowQueueItem.findFirstOrThrow({
+    select: { taskId: true, result: true },
+  });
+  expect(JSON.parse(item.result!).repairResume.updatedAt).toBe(receipt.updatedAt.toISOString());
+  expect(await canAcquireRepairQueue(db as unknown as Prisma.TransactionClient, item)).toBe(true);
+  await db.$executeRawUnsafe(
+    "INSERT INTO WorkflowTransition (taskId,cause,createdAt) VALUES (1,'theme_stop_execution_requested',?)",
+    new Date(),
+  );
+  expect(await enqueueCommittedRepair(db as unknown as PostgresClient, 1, receipt)).toBe('held');
+  expect(await canAcquireRepairQueue(db as unknown as Prisma.TransactionClient, item)).toBe(false);
+});
+
+test('repair recovery does not overwrite a running queue owner', async () => {
+  const receipt = await repairReceipt();
+  await enqueueCommittedRepair(db as unknown as PostgresClient, 1, receipt);
+  await db.$executeRawUnsafe("UPDATE WorkflowQueueItem SET status='running', result=NULL");
+  expect(await enqueueCommittedRepair(db as unknown as PostgresClient, 1, receipt)).toBe(
+    'existing',
+  );
+  expect(await db.workflowQueueItem.findFirst({ select: { status: true, result: true } })).toEqual({
+    status: 'running',
+    result: null,
+  });
+});
+
 test('failed queue write is observable and the same receipt can retry', async () => {
   const receipt = await repairReceipt();
   await db.$executeRawUnsafe(
