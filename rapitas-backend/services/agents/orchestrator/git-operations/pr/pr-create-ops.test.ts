@@ -205,3 +205,33 @@ describe('createPullRequest — headBranch 明示解決', () => {
     expect(ghWithBodyCalls.length).toBe(0);
   });
 });
+
+describe('createPullRequest — draft PR (task 874)', () => {
+  test('draft:true のとき gh pr create に --draft を付与すること', async () => {
+    ghWithBodyResult = 'https://github.com/x/y/pull/30';
+    script = [
+      { match: /git branch --list develop/, result: 'develop\n' },
+      { match: /git push -u origin feature\/draft-check$/, result: '' },
+      { match: /pr list --head/, result: '' },
+    ];
+
+    const res = await createPullRequest('/repo', 't', 'b', 'develop', 'feature/draft-check', true);
+
+    expect(res.success).toBe(true);
+    expect(ghWithBodyCalls[0]!.baseArgs).toContain('--draft');
+  });
+
+  test('draft 省略時は --draft を付与しないこと（既存動作の回帰確認）', async () => {
+    ghWithBodyResult = 'https://github.com/x/y/pull/31';
+    script = [
+      { match: /git branch --list develop/, result: 'develop\n' },
+      { match: /git push -u origin feature\/no-draft-check$/, result: '' },
+      { match: /pr list --head/, result: '' },
+    ];
+
+    const res = await createPullRequest('/repo', 't', 'b', 'develop', 'feature/no-draft-check');
+
+    expect(res.success).toBe(true);
+    expect(ghWithBodyCalls[0]!.baseArgs).not.toContain('--draft');
+  });
+});

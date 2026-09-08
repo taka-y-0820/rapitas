@@ -16,7 +16,10 @@ const mockPrisma = {
   },
 };
 
-let verifierMode: 'pass' | 'fail' | 'throw' | 'indeterminate' = 'pass';
+let verifierMode: 'pass' | 'fail' | 'throw' | 'indeterminate' | 'acceptance-ng' = 'pass';
+// Captures the options runVerificationGate passed to runAutomatedVerification
+// (task 874: verifies acceptanceCriteria/taskText wiring without a real verifier).
+let capturedVerifyOptions: { acceptanceCriteria?: string[]; taskText?: string } | null = null;
 
 mock.module('../../config/database', () => ({
   ensureDatabaseConnection: () => Promise.resolve(),
@@ -45,55 +48,83 @@ mock.module('../../services/communication/notification-service', () => ({
 }));
 
 mock.module('../../services/agents/verification/automated-verifier', () => ({
-  runAutomatedVerification: mock(async (_worktreePath: string) => {
-    if (verifierMode === 'throw') throw new Error('tool crashed');
-    if (verifierMode === 'fail') {
-      return {
-        ok: false,
-        changedFiles: ['src/broken.ts'],
-        checks: [
-          {
-            name: 'typecheck',
-            ran: true,
-            ok: false,
-            errorCount: 1,
-            details: 'TS2322: Type string is not assignable to number',
-          },
-        ],
-        summary: '1 new typecheck error in src/broken.ts',
-      };
-    }
-    if (verifierMode === 'indeterminate') {
-      // Task 659: triage came back null → the test check is ok:true but flagged.
+  runAutomatedVerification: mock(
+    async (
+      _worktreePath: string,
+      options?: { acceptanceCriteria?: string[]; taskText?: string },
+    ) => {
+      capturedVerifyOptions = options ?? null;
+      if (verifierMode === 'throw') throw new Error('tool crashed');
+      if (verifierMode === 'acceptance-ng') {
+        return {
+          ok: true,
+          changedFiles: ['src/ok.ts'],
+          checks: [
+            { name: 'lint', ran: true, ok: true, errorCount: 0, details: '' },
+            { name: 'acceptance', ran: true, ok: false, errorCount: 1, details: '基準未充足' },
+          ],
+          summary: 'verification passed (acceptance advisory NG)',
+        };
+      }
+      if (verifierMode === 'fail') {
+        return {
+          ok: false,
+          changedFiles: ['src/broken.ts'],
+          checks: [
+            {
+              name: 'typecheck',
+              ran: true,
+              ok: false,
+              errorCount: 1,
+              details: 'TS2322: Type string is not assignable to number',
+            },
+          ],
+          summary: '1 new typecheck error in src/broken.ts',
+        };
+      }
+      if (verifierMode === 'indeterminate') {
+        // Task 659: triage came back null → the test check is ok:true but flagged.
+        return {
+          ok: true,
+          changedFiles: ['src/ok.ts', 'src/ok.test.ts'],
+          checks: [
+            {
+              name: 'test',
+              ran: true,
+              ok: true,
+              errorCount: 0,
+              details: '1 test command(s) failed, but the baseline comparison was indeterminate',
+              indeterminate: true,
+              indeterminateFailures: ['src/ok.test.ts', 'src/other.test.ts'],
+            },
+          ],
+          summary: 'verification passed (test triage indeterminate)',
+        };
+      }
       return {
         ok: true,
-        changedFiles: ['src/ok.ts', 'src/ok.test.ts'],
-        checks: [
-          {
-            name: 'test',
-            ran: true,
-            ok: true,
-            errorCount: 0,
-            details: '1 test command(s) failed, but the baseline comparison was indeterminate',
-            indeterminate: true,
-            indeterminateFailures: ['src/ok.test.ts', 'src/other.test.ts'],
-          },
-        ],
-        summary: 'verification passed (test triage indeterminate)',
+        changedFiles: ['src/ok.ts'],
+        checks: [{ name: 'lint', ran: true, ok: true, errorCount: 0, details: '' }],
+        summary: 'verification passed',
       };
-    }
-    return {
-      ok: true,
-      changedFiles: ['src/ok.ts'],
-      checks: [{ name: 'lint', ran: true, ok: true, errorCount: 0, details: '' }],
-      summary: 'verification passed',
-    };
-  }),
+    },
+  ),
   renderVerificationMarkdown: (result: { summary: string }) =>
     `# Verification\n\n${result.summary}`,
   // The gate also imports this (bug-fix tasks require a test change); the
   // mock previously omitted it, which broke module linking for this whole file.
   looksLikeBugFixTask: () => false,
+  // Real implementation (not a stub) — the gate's verdict computation is the
+  // behavior under test in the "verdict" describe block below.
+  computeVerdict: (
+    checks: Array<{ name: string; ran: boolean; ok: boolean; indeterminate?: boolean }>,
+  ) => {
+    const indeterminate = checks.some((c) => c.indeterminate === true);
+    const advisoryNg = checks.some(
+      (c) => (c.name === 'scope' || c.name === 'acceptance') && c.ran && c.ok === false,
+    );
+    return indeterminate || advisoryNg ? 'unknown' : 'pass';
+  },
 }));
 
 // Spy on concern filing. Full mirror of the real module (bun mock.module is
@@ -105,7 +136,10 @@ mock.module('../../services/memory/concern-backlog-service', () => ({
   submitConcern,
 }));
 
-const { runVerificationGate } =
+const recordTransition = mock((_input: unknown) => Promise.resolve());
+mock.module('../../services/workflow/transition-recorder', () => ({ recordTransition }));
+
+const { runVerificationGate, recordUnknownVerdictMarker } =
   await import('../../services/agents/verification/verification-gate');
 
 function resetMockFunctions(value: unknown): void {
@@ -260,6 +294,7 @@ describe('runVerificationGate — indeterminate triage (task 659)', () => {
     mockPrisma.agentExecutionConfig.findUnique.mockResolvedValue(null);
     submitConcern.mockReset();
     submitConcern.mockResolvedValue(1);
+    capturedVerifyOptions = null;
   });
 
   test('opens the gate and files a concern per unattributed test file', async () => {
@@ -268,6 +303,7 @@ describe('runVerificationGate — indeterminate triage (task 659)', () => {
     const outcome = await runVerificationGate(7, 'C:\\repo\\app\\.worktrees\\task-7', 70);
 
     expect(outcome.ok).toBe(true);
+    expect(outcome.verdict).toBe('unknown');
     expect(outcome.result?.checks[0]?.indeterminate).toBe(true);
     expect(mockPrisma.task.update).not.toHaveBeenCalled();
     expect(mockPrisma.agentSession.update).not.toHaveBeenCalled();
@@ -303,5 +339,75 @@ describe('runVerificationGate — indeterminate triage (task 659)', () => {
     await runVerificationGate(7, 'C:\\repo\\app\\.worktrees\\task-7', 70);
 
     expect(submitConcern).not.toHaveBeenCalled();
+  });
+});
+
+// Task 874: three-way verdict — acceptance/scope advisory NG must downgrade to
+// 'unknown' (not silently 'pass'), and acceptanceCriteria/taskText must reach
+// runAutomatedVerification (previously never wired — see research.md 前提監査4).
+describe('runVerificationGate — verdict (task 874)', () => {
+  beforeEach(() => {
+    resetMockFunctions(mockPrisma);
+    mockPrisma.task.update.mockResolvedValue({});
+    mockPrisma.agentSession.update.mockResolvedValue({});
+    mockPrisma.task.findUnique.mockResolvedValue(null);
+    mockPrisma.agentExecutionConfig.findUnique.mockResolvedValue(null);
+    submitConcern.mockReset();
+    submitConcern.mockResolvedValue(1);
+    capturedVerifyOptions = null;
+  });
+
+  test("verdict is 'unknown' and a downgrade concern is filed when acceptance is advisory NG", async () => {
+    verifierMode = 'acceptance-ng';
+
+    const outcome = await runVerificationGate(8, 'C:\\repo\\app\\.worktrees\\task-8');
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.verdict).toBe('unknown');
+    expect(submitConcern).toHaveBeenCalledWith(
+      expect.objectContaining({ dedupKey: 'verify-unknown:8:acceptance' }),
+    );
+  });
+
+  test("verdict is 'fail' (never computed from checks) when the verifier crashes", async () => {
+    verifierMode = 'throw';
+
+    const outcome = await runVerificationGate(9, 'C:\\repo\\app\\.worktrees\\task-9');
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.verdict).toBe('fail');
+  });
+
+  test('passes acceptanceCriteria and taskText through to runAutomatedVerification', async () => {
+    mockPrisma.task.findUnique.mockResolvedValue({
+      title: 'タイトルX',
+      description: '説明Y',
+      goals: null,
+      constraints: null,
+      acceptanceCriteria: JSON.stringify(['基準1', '基準2']),
+    });
+
+    await runVerificationGate(10, 'C:\\repo\\app\\.worktrees\\task-10');
+
+    expect(capturedVerifyOptions?.acceptanceCriteria).toEqual(['基準1', '基準2']);
+    expect(capturedVerifyOptions?.taskText).toContain('タイトルX');
+  });
+});
+
+describe('recordUnknownVerdictMarker (task 874)', () => {
+  test("records a WorkflowTransition with cause 'verification_unknown' and the given source", async () => {
+    recordTransition.mockClear();
+
+    await recordUnknownVerdictMarker(11, 'C:\\nonexistent-repo', 'workflow-auto-commit');
+
+    expect(recordTransition).toHaveBeenCalledTimes(1);
+    const arg = recordTransition.mock.calls[0]![0] as {
+      taskId: number;
+      cause: string;
+      metadata: { source: string };
+    };
+    expect(arg.taskId).toBe(11);
+    expect(arg.cause).toBe('verification_unknown');
+    expect(arg.metadata.source).toBe('workflow-auto-commit');
   });
 });

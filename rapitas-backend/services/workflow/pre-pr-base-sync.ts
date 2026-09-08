@@ -11,6 +11,7 @@
  * Not responsible for commit/push/PR execution — see workflow-auto-commit.ts.
  */
 import { createLogger } from '../../config/logger';
+import type { VerificationVerdict } from '../agents/verification/automated-verifier';
 
 const log = createLogger('workflow:pre-pr-base-sync');
 
@@ -30,6 +31,8 @@ export interface BaseSyncResult {
   conflicts: string[];
   /** Human-readable detail (kept OUT of completion-classification error blobs). */
   detail: string;
+  /** Re-verification verdict, set only when a re-verify actually ran. */
+  verdict?: VerificationVerdict;
 }
 
 /** Injected side-effect boundary — production defaults live in this module. */
@@ -43,8 +46,12 @@ export interface BaseSyncDeps {
     baseBranch: string;
     conflicts: string[];
   }) => Promise<boolean>;
-  /** Lightweight lint/typecheck re-verification; true = gate open. */
-  runVerify: (taskId: number, gitCwd: string, sessionId?: number) => Promise<boolean>;
+  /** Lightweight lint/typecheck re-verification; ok = gate open, verdict = three-way result. */
+  runVerify: (
+    taskId: number,
+    gitCwd: string,
+    sessionId?: number,
+  ) => Promise<{ ok: boolean; verdict: VerificationVerdict }>;
 }
 
 /** Build the production deps (lazy imports keep the test module graph light). */
@@ -56,7 +63,7 @@ async function defaultDeps(): Promise<BaseSyncDeps> {
     runVerify: async (taskId, gitCwd, sessionId) => {
       const { runVerificationGate } = await import('../agents/verification/verification-gate');
       const gate = await runVerificationGate(taskId, gitCwd, sessionId);
-      return gate.ok;
+      return { ok: gate.ok, verdict: gate.verdict };
     },
   };
 }
@@ -321,13 +328,16 @@ export async function syncBaseIntoBranch(p: {
     }
 
     const changedFiles = await countMergeChangedFiles(deps.runGit, p.gitCwd);
-    const verifyOk = await deps.runVerify(p.taskId, p.gitCwd, p.sessionId).catch(() => false);
+    const { ok: verifyOk, verdict } = await deps
+      .runVerify(p.taskId, p.gitCwd, p.sessionId)
+      .catch(() => ({ ok: false, verdict: 'fail' as const }));
     if (!verifyOk) {
       return {
         status: 'reverify_failed',
         changedFiles,
         conflicts,
         detail: '競合解消後の lint/型 再検証に失敗しました',
+        verdict,
       };
     }
     return {
@@ -335,6 +345,7 @@ export async function syncBaseIntoBranch(p: {
       changedFiles,
       conflicts,
       detail: `競合 ${conflicts.length} 件を解消して origin/${p.baseBranch} を取り込みました`,
+      verdict,
     };
   }
 
@@ -353,15 +364,25 @@ export async function syncBaseIntoBranch(p: {
   if (changedFiles > 0) {
     // The base brought real file changes on top of this task's work — re-run
     // the lightweight gate so a bad interaction never reaches the PR.
-    const verifyOk = await deps.runVerify(p.taskId, p.gitCwd, p.sessionId).catch(() => false);
+    const { ok: verifyOk, verdict } = await deps
+      .runVerify(p.taskId, p.gitCwd, p.sessionId)
+      .catch(() => ({ ok: false, verdict: 'fail' as const }));
     if (!verifyOk) {
       return {
         status: 'reverify_failed',
         changedFiles,
         conflicts: [],
         detail: 'base取り込み後の lint/型 再検証に失敗しました',
+        verdict,
       };
     }
+    return {
+      status: 'clean',
+      changedFiles,
+      conflicts: [],
+      detail: `origin/${p.baseBranch} をクリーンに取り込みました（変更 ${changedFiles} ファイル）`,
+      verdict,
+    };
   }
   return {
     status: 'clean',

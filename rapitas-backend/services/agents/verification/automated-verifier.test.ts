@@ -15,6 +15,7 @@ import {
   coverageCheck,
   generatedSyncCheck,
   computeOverallOk,
+  computeVerdict,
   mergeChecks,
   type VerificationCheck,
   type VerificationResult,
@@ -48,6 +49,46 @@ describe('computeOverallOk', () => {
   it('fails when a correctness check fails, regardless of advisory results', () => {
     expect(computeOverallOk([check('lint', false), check('acceptance', true)])).toBe(false);
     expect(computeOverallOk([check('test', false), check('scope', false)])).toBe(false);
+  });
+});
+
+describe('computeVerdict', () => {
+  const check = (
+    name: VerificationCheck['name'],
+    ok: boolean,
+    extra: Partial<VerificationCheck> = {},
+  ): VerificationCheck => ({
+    name,
+    ran: true,
+    ok,
+    errorCount: ok ? 0 : 1,
+    details: `${name}: ${ok ? 'ok' : 'NG'}`,
+    ...extra,
+  });
+
+  it("returns 'pass' when every check is green with no indeterminate failures", () => {
+    const checks = [check('lint', true), check('typecheck', true), check('test', true)];
+    expect(computeVerdict(checks)).toBe('pass');
+  });
+
+  it("returns 'unknown' when the test check is indeterminate (baseline comparison failed)", () => {
+    const checks = [check('lint', true), check('test', true, { indeterminate: true })];
+    expect(computeVerdict(checks)).toBe('unknown');
+  });
+
+  it("returns 'unknown' when the advisory scope check reports NG", () => {
+    const checks = [check('lint', true), check('scope', false)];
+    expect(computeVerdict(checks)).toBe('unknown');
+  });
+
+  it("returns 'unknown' when the advisory acceptance check reports NG", () => {
+    const checks = [check('lint', true), check('acceptance', false)];
+    expect(computeVerdict(checks)).toBe('unknown');
+  });
+
+  it('ignores a scope/acceptance check that did not run (ran:false)', () => {
+    const checks = [check('lint', true), check('scope', false, { ran: false })];
+    expect(computeVerdict(checks)).toBe('pass');
   });
 });
 

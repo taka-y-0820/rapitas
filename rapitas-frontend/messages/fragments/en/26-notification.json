@@ -205,6 +205,14 @@
       "base_sync_reverify_failed": {
         "title": "Re-verification after syncing base failed",
         "message": "{message}"
+      },
+      "auto_pr_draft_unknown": {
+        "title": "Draft PR created — verification verdict unknown",
+        "message": "{message}"
+      },
+      "auto_merge_awaiting_approval": {
+        "title": "Auto-merge held (awaiting human approval)",
+        "message": "{message}"
       }
     }
   }

@@ -868,6 +868,18 @@ export function computeOverallOk(checks: VerificationCheck[]): boolean {
   return checks.filter((c) => c.name !== 'scope' && c.name !== 'acceptance').every((c) => c.ok);
 }
 
+/** Three-way verdict — call computeVerdict() only when ok:true (ok:false is always 'fail'). */
+export type VerificationVerdict = 'pass' | 'fail' | 'unknown';
+
+/** @param checks - ok:true 検証結果のチェック一覧 @returns indeterminateまたはadvisory NGならunknown、それ以外はpass */
+export function computeVerdict(checks: VerificationCheck[]): 'pass' | 'unknown' {
+  const indeterminate = checks.some((c) => c.indeterminate === true);
+  const advisoryNg = checks.some(
+    (c) => (c.name === 'scope' || c.name === 'acceptance') && c.ran && c.ok === false,
+  );
+  return indeterminate || advisoryNg ? 'unknown' : 'pass';
+}
+
 /**
  * Runs automated lint + typecheck + scoped-test (+ plan-scope) verification on
  * an agent's worktree.

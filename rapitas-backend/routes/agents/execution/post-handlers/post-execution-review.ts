@@ -21,9 +21,16 @@ import {
   type CreatePullRequestResult,
 } from '../../../../services/agents/orchestrator/git-operations/pr/branch-pr-ops';
 import { notify } from '../../../../services/workflow/auto-merge-notify';
-import { runAutomatedVerification } from '../../../../services/agents/verification/automated-verifier';
+import {
+  runAutomatedVerification,
+  computeVerdict,
+} from '../../../../services/agents/verification/automated-verifier';
 import { retryOrBlock } from '../../../../services/agents/verification/verification-retry';
-import { verificationCrashResult } from '../../../../services/agents/verification/verification-gate';
+import {
+  verificationCrashResult,
+  recordUnknownVerdictMarker,
+} from '../../../../services/agents/verification/verification-gate';
+import { parseSpecArray } from '../../../../utils/common/spec-array';
 import { linkAutoCreatedPr } from '../../../../services/github/pr-link';
 import {
   findOpenPrForTask,
@@ -150,7 +157,16 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
   // EXCEPTION: codex agents run without workflow enforcement, so missing
   // plan.md is expected for them. Skip the revert for codex sessions.
   const taskWithStatus = await prisma.task
-    .findUnique({ where: { id: taskId }, select: { workflowStatus: true } })
+    .findUnique({
+      where: { id: taskId },
+      select: {
+        workflowStatus: true,
+        description: true,
+        goals: true,
+        constraints: true,
+        acceptanceCriteria: true,
+      },
+    })
     .catch(() => null);
   const status = taskWithStatus?.workflowStatus;
   const planFile = await prisma.workflowFile
@@ -250,10 +266,23 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
   // already resolves theme.defaultBranch separately below for the PR base
   // branch; resolvePreferredBaseBranch centralizes the same lookup here too.
   const preferredBaseBranchForVerify = await resolvePreferredBaseBranch(taskId);
+  // acceptanceCriteria/taskText mirror verification-gate.ts's own lookup (this path
+  // calls runAutomatedVerification directly, bypassing the shared gate — intentional).
+  // Reuses taskWithStatus fetched above instead of a second round-trip.
+  const acceptanceCriteria = parseSpecArray(taskWithStatus?.acceptanceCriteria);
+  const specText = [
+    taskTitle,
+    taskWithStatus?.description ?? '',
+    ...parseSpecArray(taskWithStatus?.goals),
+    ...parseSpecArray(taskWithStatus?.constraints),
+    ...acceptanceCriteria,
+  ].join('\n');
   const verification = await runAutomatedVerification(executionDir, {
     planContent: planContentForScope,
     preferredBaseBranch: preferredBaseBranchForVerify,
     taskId,
+    acceptanceCriteria,
+    taskText: specText,
   }).catch((err) => {
     log.error({ err, taskId }, 'Automated verification crashed — blocking gate');
     return verificationCrashResult();
@@ -272,6 +301,7 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
     });
     return;
   }
+  const verdict = computeVerdict(verification.checks); // ok:true guaranteed above
 
   // 2. AI Review
   const review = await runAIReview(taskTitle, diff);
@@ -345,7 +375,14 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
       );
       prResult = { success: true, prUrl: existingOpenPr.url, prNumber: existingOpenPr.prNumber };
     } else {
-      prResult = await createPullRequest(executionDir, prTitle, prBody, baseBranch);
+      prResult = await createPullRequest(
+        executionDir,
+        prTitle,
+        prBody,
+        baseBranch,
+        undefined,
+        verdict === 'unknown',
+      );
       if (!prResult.success) {
         // Task-identity mismatch (task 541): the branch's open PR belongs to
         // another task — notify instead of failing silently so the user can
@@ -388,6 +425,15 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
           baseBranch,
           workingDirectory: executionDir,
         });
+        if (verdict === 'unknown') {
+          await recordUnknownVerdictMarker(taskId, executionDir, 'post-execution-review');
+          await notify({
+            taskId,
+            type: 'auto_pr_draft_unknown',
+            title: '検証結果 unknown のため draft PR を作成',
+            message: `タスク ${taskId}: 検証結果が判定不能(unknown)のため PR #${prResult.prNumber} を draft として作成しました。内容を確認し、問題なければ "gh pr ready" で通常のPRに切り替えてください。`,
+          });
+        }
       }
     }
   } finally {
@@ -397,10 +443,11 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
   // 5. Cleanup worktree only after PR is confirmed
   await cleanupWorktree(workDir, executionDir, sessionId);
 
-  // 6. Mark task as done — all steps completed successfully
-  await markTaskDone(taskId);
+  // 6. Mark task as done — UNLESS the verdict is 'unknown': the draft PR still
+  // needs independent CI or human approval before completion (task 874).
+  if (verdict !== 'unknown') await markTaskDone(taskId);
 
-  log.info({ taskId }, 'Post-execution review pipeline completed');
+  log.info({ taskId, verdict }, 'Post-execution review pipeline completed');
 }
 
 /**

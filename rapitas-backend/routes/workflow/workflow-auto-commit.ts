@@ -11,7 +11,11 @@ import { prisma, getProjectRoot } from '../../config';
 import { AgentOrchestrator } from '../../services/agents/agent-orchestrator';
 import { createLogger } from '../../config/logger';
 import { logAutoCommit, logAutoPR } from './workflow-activity-logger';
-import { runVerificationGate } from '../../services/agents/verification/verification-gate';
+import {
+  runVerificationGate,
+  recordUnknownVerdictMarker,
+} from '../../services/agents/verification/verification-gate';
+import type { VerificationVerdict } from '../../services/agents/verification/automated-verifier';
 import { resolveAutomationPolicy } from '../../services/workflow/automation-policy';
 import { linkAutoCreatedPr } from '../../services/github/pr-link';
 import { resolveCommitCwd } from './commit-cwd';
@@ -319,6 +323,9 @@ export async function performAutoCommitAndPR(
         '[Workflow] pre-PR base sync done',
       );
     }
+    // A re-verify inside base sync reflects the branch's LATEST state, so it
+    // takes precedence over the earlier gate result when both ran.
+    const effectiveVerdict: VerificationVerdict = result.baseSyncResult?.verdict ?? gate.verdict;
 
     // Process autoCreatePR (only if autoCommit succeeded)
     if (autoCreatePR && !autoCommit) {
@@ -383,6 +390,7 @@ export async function performAutoCommitAndPR(
                     prBody,
                     targetBranch,
                     branchName ?? undefined,
+                    effectiveVerdict === 'unknown',
                   );
             result.autoPRResult = prResult;
 
@@ -403,6 +411,9 @@ export async function performAutoCommitAndPR(
                   repositoryUrl: task.theme?.repositoryUrl,
                   workingDirectory: gitCwd,
                 });
+                if (effectiveVerdict === 'unknown') {
+                  await recordUnknownVerdictMarker(taskId, gitCwd, 'workflow-auto-commit');
+                }
               }
             } else {
               // NOTE (task 687): "no commits between" / "nothing to commit" is

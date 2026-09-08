@@ -439,8 +439,16 @@ export class AgentOrchestrator {
     body: string,
     baseBranch?: string,
     headBranch?: string,
+    draft?: boolean,
   ): Promise<{ success: boolean; prUrl?: string; prNumber?: number; error?: string }> {
-    return this.gitOps.createPullRequest(workingDirectory, title, body, baseBranch, headBranch);
+    return this.gitOps.createPullRequest(
+      workingDirectory,
+      title,
+      body,
+      baseBranch,
+      headBranch,
+      draft,
+    );
   }
 
   async mergePullRequest(

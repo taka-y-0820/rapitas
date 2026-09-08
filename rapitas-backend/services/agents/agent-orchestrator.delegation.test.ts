@@ -318,13 +318,14 @@ describe('git operations delegation', () => {
     await orchestrator.createPullRequest('/repo', 'title', 'body', 'develop');
     await orchestrator.mergePullRequest('/repo', 42, 3, 'develop');
 
-    // NOTE: headBranch (5th arg) added for task 597 — undefined when the caller
-    // does not pin the PR head (legacy 4-arg call sites).
+    // NOTE: headBranch (5th arg, task 597) and draft (6th arg, task 874) are
+    // undefined when the caller does not pin them (legacy 4-arg call sites).
     expect(gitOpsMocks.createPullRequest).toHaveBeenCalledWith(
       '/repo',
       'title',
       'body',
       'develop',
+      undefined,
       undefined,
     );
     expect(gitOpsMocks.mergePullRequest).toHaveBeenCalledWith('/repo', 42, 3, 'develop');

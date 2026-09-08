@@ -61,18 +61,24 @@ mock.module('../../services/workflow/automation-policy', () => ({
     Promise.resolve({ autoCommit: true, autoCreatePR: true, autoMergePR: false }),
 }));
 
+let gateVerdictFixture: 'pass' | 'unknown' = 'pass';
+const mockRecordUnknownVerdictMarker = mock(() => Promise.resolve());
 mock.module('../../services/agents/verification/verification-gate', () => ({
-  runVerificationGate: () => Promise.resolve({ ok: true }),
+  runVerificationGate: () => Promise.resolve({ ok: true, verdict: gateVerdictFixture }),
+  recordUnknownVerdictMarker: mockRecordUnknownVerdictMarker,
 }));
 
 // One mutable fixture per test drives createPullRequest's outcome and the
 // commit's filesChanged count (both feed isNoChangeCompletion's classifier).
-let prResultFixture: { success: false; error: string } = {
+let prResultFixture:
+  | { success: false; error: string }
+  | { success: true; prUrl: string; prNumber: number } = {
   success: false,
   error: 'no commits between develop and feature/t687',
 };
 let filesChangedFixture = 0;
 let removeWorktreeFixture = true;
+let lastCreatePullRequestArgs: unknown[] = [];
 mock.module('../../services/agents/agent-orchestrator', () => ({
   AgentOrchestrator: {
     getInstance: () => ({
@@ -86,8 +92,9 @@ mock.module('../../services/agents/agent-orchestrator', () => ({
           deletions: 0,
           alreadyCommitted: false,
         }),
-      createPullRequest: () => {
+      createPullRequest: (...args: unknown[]) => {
         createPullRequestCalls++;
+        lastCreatePullRequestArgs = args;
         return Promise.resolve(prResultFixture);
       },
       removeWorktree: () => Promise.resolve(removeWorktreeFixture),
@@ -275,5 +282,39 @@ describe('performAutoCommitAndPR — removeWorktree の戻り値を worktreeClea
       where: { id: 1 },
       data: { worktreePath: null },
     });
+  });
+});
+
+describe('performAutoCommitAndPR — 検証verdict unknown → draft PR + マーカー記録 (task 874)', () => {
+  test("verdict 'unknown' のとき createPullRequest に draft:true を渡し、recordUnknownVerdictMarker を呼ぶ", async () => {
+    filesChangedFixture = 1;
+    revListFixture = '1';
+    gateVerdictFixture = 'unknown';
+    createPullRequestCalls = 0;
+    mockRecordUnknownVerdictMarker.mockClear();
+    prResultFixture = { success: true, prUrl: 'https://github.com/x/y/pull/50', prNumber: 50 };
+
+    await performAutoCommitAndPR(687, '# 検証結果');
+
+    expect(createPullRequestCalls).toBe(1);
+    expect(lastCreatePullRequestArgs[5]).toBe(true); // draft argument
+    expect(mockRecordUnknownVerdictMarker).toHaveBeenCalledTimes(1);
+    expect(mockRecordUnknownVerdictMarker.mock.calls[0]?.[2]).toBe('workflow-auto-commit');
+    gateVerdictFixture = 'pass';
+  });
+
+  test("verdict 'pass' のとき draft を付けず、recordUnknownVerdictMarker を呼ばない（回帰確認）", async () => {
+    filesChangedFixture = 1;
+    revListFixture = '1';
+    gateVerdictFixture = 'pass';
+    createPullRequestCalls = 0;
+    mockRecordUnknownVerdictMarker.mockClear();
+    prResultFixture = { success: true, prUrl: 'https://github.com/x/y/pull/51', prNumber: 51 };
+
+    await performAutoCommitAndPR(687, '# 検証結果');
+
+    expect(createPullRequestCalls).toBe(1);
+    expect(lastCreatePullRequestArgs[5]).toBe(false);
+    expect(mockRecordUnknownVerdictMarker).not.toHaveBeenCalled();
   });
 });

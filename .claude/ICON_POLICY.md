@@ -126,7 +126,7 @@ history is lost.
 | `FileText`                 | 通知の種別「日次サマリー」（`NotificationBell` の daily_summary。レポート/文書全般を表す既存の慣用アイコンの再利用） |
 | `Eye`                      | 通知の種別「PRレビュー依頼」（`NotificationBell` の pr_review_requested。既存の「詳細を見る/表示切替」の Eye と同一の「見る・確認する」概念の再利用） |
 | `PlayCircle`                | 通知の種別「エージェント実行開始」（`NotificationBell` の agent_execution_started。`SystemStatusPanel` の実行中エージェント数と同一概念「実行中」の再利用） |
-| `Hourglass`                | 通知の種別「自動実行: 承認待ち／回答待ち」（auto_run_awaiting_approval, auto_run_awaiting_answer） |
+| `Hourglass`                | 通知の種別「自動実行: 承認待ち／回答待ち」（auto_run_awaiting_approval, auto_run_awaiting_answer。「自動マージ保留（人の承認待ち）」auto_merge_awaiting_approval も同一概念「承認待ち」の再利用） |
 | `TimerOff`                 | 通知の種別「自動実行: 時間上限で停止」（auto_run_hang_backstop） |
 | `SkipForward`               | 通知の種別「自動実行: タスクをスキップ」（auto_run_task_skipped） |
 | `OctagonAlert`              | 通知の種別「ブロックされたタスク／テーマの対応待ち」（auto_run_all_blocked, blocked_escalation, blocked_escalation_needs_answer） |
@@ -143,6 +143,7 @@ history is lost.
 | `Cable`                     | 学習目標のテーマ紐づけ（`StudyGoal`をテーマに関連付け、テーマ配下タスクのポモドーロ作業時間を自動集計する機能。学習ロードマップの目標カード「テーマを紐づけ」ボタン＋紐づけ済みバッジ＋`GoalThemeLinkModal`。注: `Link2`＝ノートエディタのハイパーリンク挿入・依存関係ツリー表示の汎用リンクとは別概念） |
 | `GlassWater`                | ポモドーロ フローティングウィンドウの透過⇄不透明トグル（`pomodoro-float` ページ内のガラスモード切替ボタン。注: `Sparkles`＝AI生成/おすすめ操作とは別概念のため流用しない） |
 | `Minus`                     | ウィンドウのタスクバー最小化（`pomodoro-float-view.tsx` の−ボタン。既存の差分バッジ減少値・複雑度インジケータ等の`Minus`とは画面・文脈が分離しており実利用上の混同リスクは低い） |
+| `CircleHelp`                | 通知の種別「検証結果 unknown（判定不能）」（auto_pr_draft_unknown。三値判定(pass/fail/unknown)導入に伴う新規glyph。注: `Hourglass`＝承認/回答待ち系とは別概念のため流用しない） |
 
 > The table above is also being split into per-letter reference files
 > (`.claude/icon-policy/glyphs-a-f.md`, `glyphs-g-m.md`, `glyphs-n-s.md`,

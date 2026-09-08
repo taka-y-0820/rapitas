@@ -25,6 +25,7 @@ import {
   evaluateAutoMergeChecks,
   readPrChecks,
   readMergeState,
+  readHeadSha,
 } from './auto-merge-checks';
 import { markExhausted } from './auto-merge-exhaustion';
 import { notify } from './auto-merge-notify';
@@ -69,6 +70,39 @@ async function mark(taskId: number, cause: string, reason: string): Promise<void
     phase: 'verify',
     metadata: { reason },
   }).catch(() => {});
+}
+
+/**
+ * Resolves the latest 'verification_unknown' marker for a task (see
+ * verification-gate.ts's recordUnknownVerdictMarker) and decides whether it
+ * still applies to the CURRENT PR head. Fail-open to 'pass' on any ambiguity
+ * (no marker, unparsable metadata, or a stale headSha from a since-pushed
+ * commit) — this is a SUPPLEMENTARY gate on the checkless-CLEAN fallback
+ * only, not a general block, so an unresolved edge case must never freeze an
+ * otherwise-normal merge.
+ *
+ * @param taskId - Candidate task id / 対象タスクID
+ * @param currentHeadSha - The PR's current head commit SHA, or null if unknown / 現在のPR head SHA
+ * @returns 'unknown' only when a marker matches the current head / 現行headに一致するマーカーがある場合のみunknown
+ */
+async function resolveVerificationVerdict(
+  taskId: number,
+  currentHeadSha: string | null,
+): Promise<'pass' | 'unknown'> {
+  const row = await prisma.workflowTransition
+    .findFirst({
+      where: { taskId, cause: 'verification_unknown' },
+      orderBy: { createdAt: 'desc' },
+      select: { metadata: true },
+    })
+    .catch(() => null);
+  if (!row?.metadata) return 'pass';
+  try {
+    const meta = JSON.parse(row.metadata) as { headSha?: string };
+    return meta.headSha && currentHeadSha && meta.headSha === currentHeadSha ? 'unknown' : 'pass';
+  } catch {
+    return 'pass';
+  }
 }
 
 /**
@@ -259,6 +293,21 @@ export class AutoMergeWatcher {
     if (state === 'unknown') {
       const ghState = await readMergeState(c.cwd, c.prNumber);
       if (ghState === 'CLEAN') {
+        // checkless-CLEAN only confirms "no blocking CI is configured", not
+        // that the change was actually verified — a verification verdict of
+        // 'unknown' for THIS head must not be waved through by that alone
+        // (see verification-gate.ts's computeVerdict / recordUnknownVerdictMarker).
+        const headSha = await readHeadSha(c.cwd, c.prNumber);
+        const verdict = await resolveVerificationVerdict(c.taskId, headSha);
+        if (verdict === 'unknown') {
+          await notify({
+            taskId: c.taskId,
+            type: 'auto_merge_awaiting_approval',
+            title: '自動マージ保留（人の承認待ち）',
+            message: `PR #${c.prNumber} は検証結果が判定不能(unknown)のため、CI未設定環境のCLEAN判定のみでは自動マージしません。内容を確認して手動で "gh pr ready" と "gh pr merge" を実行するか、CIを構成してください。`,
+          });
+          return;
+        }
         state = 'pass';
         log.info(
           { taskId: c.taskId, prNumber: c.prNumber },

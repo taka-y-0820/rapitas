@@ -15,7 +15,9 @@ import {
   runAutomatedVerification,
   renderVerificationMarkdown,
   looksLikeBugFixTask,
+  computeVerdict,
   type VerificationResult,
+  type VerificationVerdict,
 } from './automated-verifier';
 import { readWorkflowFile } from '../../workflow/workflow-file-utils';
 import { parsePlanFiles } from './scope-check';
@@ -23,6 +25,11 @@ import { parseSpecArray } from '../../../utils/common/spec-array';
 import { submitConcern } from '../../memory/concern-backlog-service';
 import { writeBlockedStatusDurable } from '../../workflow/durable-blocked-write';
 import { resolvePreferredBaseBranch } from '../../task/task-resolver';
+import { recordTransition } from '../../workflow/transition-recorder';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 const log = createLogger('agents:verification-gate');
 
@@ -61,6 +68,8 @@ export interface GateOutcome {
   ok: boolean;
   /** The verification result, or null when the verifier could not run. */
   result: VerificationResult | null;
+  /** Three-way verdict — 'unknown' means ok:true but not a confirmed pass (see automated-verifier.ts computeVerdict). */
+  verdict: VerificationVerdict;
 }
 
 /** Tooling failures cannot establish correctness or justify code-repair retries. */
@@ -194,6 +203,8 @@ export async function runVerificationGate(
     requireTests,
     preferredBaseBranch,
     taskId,
+    acceptanceCriteria: parseSpecArray(task?.acceptanceCriteria),
+    taskText: specText,
   }).catch((err): VerificationResult => {
     log.error({ err, taskId }, 'Automated verification crashed — blocking gate');
     return verificationCrashResult();
@@ -206,12 +217,81 @@ export async function runVerificationGate(
   await reportIndeterminateTriage(taskId, result);
 
   if (result.ok) {
-    log.info({ taskId, summary: result.summary }, 'Automated verification passed');
-    return { ok: true, result };
+    const verdict = computeVerdict(result.checks);
+    await reportAdvisoryDowngrade(taskId, result, verdict);
+    log.info({ taskId, summary: result.summary, verdict }, 'Automated verification passed');
+    return { ok: true, result, verdict };
   }
 
   await blockTaskForVerification(taskId, result, sessionId);
-  return { ok: false, result };
+  return { ok: false, result, verdict: 'fail' };
+}
+
+/**
+ * Files a non-fatal advisory-downgrade concern when scope/acceptance checks
+ * failed but the gate still passed (verdict:'unknown'). Skips entirely when
+ * the verdict is not 'unknown' (indeterminate-only unknowns are already
+ * covered by {@link reportIndeterminateTriage}, filed separately above).
+ *
+ * @param taskId - Task being verified / 検証対象タスク
+ * @param result - The passing verification result / 検証結果
+ * @param verdict - The computed three-way verdict / 三値判定
+ */
+export async function reportAdvisoryDowngrade(
+  taskId: number,
+  result: VerificationResult,
+  verdict: VerificationVerdict,
+): Promise<void> {
+  if (verdict !== 'unknown') return;
+  const advisoryNg = result.checks.filter(
+    (c) => (c.name === 'scope' || c.name === 'acceptance') && c.ran && c.ok === false,
+  );
+  for (const c of advisoryNg) {
+    await submitConcern({
+      title: `検証結果 unknown（${c.name} advisory NG）: タスク #${taskId}`,
+      detail: `タスク #${taskId} の検証で ${c.name} チェックが助言(advisory) NG を報告し、三値判定は 'unknown' になりました。ハードゲートは通過していますが、内容の確認を推奨します。詳細: ${c.details}`,
+      type: 'other',
+      severity: 'medium',
+      location: c.name,
+      originTaskId: taskId,
+      source: 'verification-gate',
+      dedupKey: `verify-unknown:${taskId}:${c.name}`,
+    }).catch((err: unknown) =>
+      log.warn(
+        { err, taskId, check: c.name },
+        'Failed to submit advisory-downgrade concern (non-fatal)',
+      ),
+    );
+  }
+}
+
+/**
+ * Records a `WorkflowTransition` marker (cause: verification_unknown) so
+ * `AutoMergeWatcher` — a separate process/tick — can later resolve whether
+ * the current PR head still carries an unresolved verdict. Fire-and-forget:
+ * `recordTransition` never throws (see its doc comment), so no try/catch here.
+ *
+ * @param taskId - Task whose PR carries the unknown verdict / 対象タスク
+ * @param gitCwd - Worktree to resolve HEAD sha from / worktree パス
+ * @param source - Which auto-PR path recorded the marker / 記録元
+ */
+export async function recordUnknownVerdictMarker(
+  taskId: number,
+  gitCwd: string,
+  source: 'workflow-auto-commit' | 'post-execution-review',
+): Promise<void> {
+  const headSha = await execAsync('git rev-parse HEAD', { cwd: gitCwd, timeout: 30_000 })
+    .then(({ stdout }) => stdout.trim())
+    .catch(() => undefined);
+  await recordTransition({
+    taskId,
+    fromStatus: 'in_progress',
+    toStatus: 'in_progress',
+    actor: 'system',
+    cause: 'verification_unknown',
+    phase: 'verify',
+    metadata: { headSha, source },
+  });
 }
 
 /**

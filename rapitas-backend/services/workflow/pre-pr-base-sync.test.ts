@@ -45,7 +45,7 @@ function makeGit(opts: {
 function deps(overrides: Partial<BaseSyncDeps> & { runGit: BaseSyncDeps['runGit'] }): BaseSyncDeps {
   return {
     resolveConflicts: mock().mockResolvedValue(false),
-    runVerify: mock().mockResolvedValue(true),
+    runVerify: mock().mockResolvedValue({ ok: true, verdict: 'pass' }),
     ...overrides,
   };
 }
@@ -53,7 +53,7 @@ function deps(overrides: Partial<BaseSyncDeps> & { runGit: BaseSyncDeps['runGit'
 describe('syncBaseIntoBranch', () => {
   it('clean merge with changes → re-verifies → clean (PR proceeds)', async () => {
     const { runGit } = makeGit({ diffFiles: ['a.ts', 'b.ts'] });
-    const runVerify = mock().mockResolvedValue(true);
+    const runVerify = mock().mockResolvedValue({ ok: true, verdict: 'pass' });
     const result = await syncBaseIntoBranch({
       gitCwd: '/wt',
       baseBranch: 'develop',
@@ -62,12 +62,13 @@ describe('syncBaseIntoBranch', () => {
     });
     expect(result.status).toBe('clean');
     expect(result.changedFiles).toBe(2);
+    expect(result.verdict).toBe('pass');
     expect(runVerify).toHaveBeenCalledTimes(1);
   });
 
   it('already up to date → clean with 0 changes and NO re-verification', async () => {
     const { runGit } = makeGit({ mergeStdout: 'Already up to date.' });
-    const runVerify = mock().mockResolvedValue(true);
+    const runVerify = mock().mockResolvedValue({ ok: true, verdict: 'pass' });
     const result = await syncBaseIntoBranch({
       gitCwd: '/wt',
       baseBranch: 'develop',
@@ -99,7 +100,7 @@ describe('syncBaseIntoBranch', () => {
       diffFiles: ['src/x.ts', 'src/y.ts', 'src/z.ts'],
     });
     const resolveConflicts = mock().mockResolvedValue(true);
-    const runVerify = mock().mockResolvedValue(true);
+    const runVerify = mock().mockResolvedValue({ ok: true, verdict: 'pass' });
     const result = await syncBaseIntoBranch({
       gitCwd: '/wt',
       baseBranch: 'develop',
@@ -108,6 +109,7 @@ describe('syncBaseIntoBranch', () => {
       deps: deps({ runGit, resolveConflicts, runVerify }),
     });
     expect(result.status).toBe('resolved');
+    expect(result.verdict).toBe('pass');
     expect(result.conflicts).toEqual(['src/x.ts', 'src/y.ts']);
     expect(resolveConflicts).toHaveBeenCalledWith({
       gitCwd: '/wt',
@@ -170,7 +172,7 @@ describe('syncBaseIntoBranch', () => {
 
   it('clean merge but re-verification NG → reverify_failed (PR withheld)', async () => {
     const { runGit } = makeGit({ diffFiles: ['a.ts'] });
-    const runVerify = mock().mockResolvedValue(false);
+    const runVerify = mock().mockResolvedValue({ ok: false, verdict: 'fail' });
     const result = await syncBaseIntoBranch({
       gitCwd: '/wt',
       baseBranch: 'develop',
@@ -179,6 +181,7 @@ describe('syncBaseIntoBranch', () => {
     });
     expect(result.status).toBe('reverify_failed');
     expect(result.changedFiles).toBe(1);
+    expect(result.verdict).toBe('fail');
   });
 
   it('conflict resolved but re-verification NG → reverify_failed', async () => {
@@ -194,10 +197,11 @@ describe('syncBaseIntoBranch', () => {
       deps: deps({
         runGit,
         resolveConflicts: mock().mockResolvedValue(true),
-        runVerify: mock().mockResolvedValue(false),
+        runVerify: mock().mockResolvedValue({ ok: false, verdict: 'fail' }),
       }),
     });
     expect(result.status).toBe('reverify_failed');
+    expect(result.verdict).toBe('fail');
   });
 
   it('a throwing resolver is treated as failure, not an exception', async () => {

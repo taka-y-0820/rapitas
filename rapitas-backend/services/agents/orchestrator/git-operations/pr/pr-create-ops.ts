@@ -123,6 +123,7 @@ export interface CreatePullRequestResult {
  * @param body - PR description / PRの説明
  * @param baseBranch - Override base branch; auto-detected if omitted / ベースブランチ（省略時は自動検出）
  * @param headBranch - Head branch for the PR; falls back to the checked-out branch if omitted / PRのheadブランチ（省略時はチェックアウト中のブランチ）
+ * @param draft - Create as a draft PR (verification verdict 'unknown'); default false / draft PRとして作成するか
  * @returns Result with success flag, PR URL, and PR number / 成功フラグ・PR URL・PR番号を含む結果
  */
 export async function createPullRequest(
@@ -131,6 +132,7 @@ export async function createPullRequest(
   body: string,
   baseBranch?: string,
   headBranch?: string,
+  draft = false,
 ): Promise<CreatePullRequestResult> {
   try {
     // Check the REMOTE-tracking ref (origin/<b>) as well as a local branch:
@@ -296,7 +298,17 @@ export async function createPullRequest(
     // checkout state (the reuse check above already passes --head; this makes
     // creation consistent with it).
     const prUrl = await runGhCommandWithBody(
-      ['pr', 'create', '--title', title, '--base', targetBranch, '--head', currentBranch],
+      [
+        'pr',
+        'create',
+        '--title',
+        title,
+        '--base',
+        targetBranch,
+        '--head',
+        currentBranch,
+        ...(draft ? ['--draft'] : []),
+      ],
       body,
       workingDirectory,
     );

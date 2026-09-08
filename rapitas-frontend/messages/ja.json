@@ -3313,6 +3313,14 @@
       "base_sync_reverify_failed": {
         "title": "base取り込み後の再検証に失敗しました",
         "message": "{message}"
+      },
+      "auto_pr_draft_unknown": {
+        "title": "検証結果 unknown のため draft PR を作成",
+        "message": "{message}"
+      },
+      "auto_merge_awaiting_approval": {
+        "title": "自動マージ保留（人の承認待ち）",
+        "message": "{message}"
       }
     }
   },

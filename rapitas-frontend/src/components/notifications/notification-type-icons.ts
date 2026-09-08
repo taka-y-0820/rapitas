@@ -14,6 +14,7 @@ import {
   Check,
   CheckCircle2,
   CircleAlert,
+  CircleHelp,
   CircleOff,
   Eye,
   Files,
@@ -91,6 +92,9 @@ const typeColors: Record<string, string> = {
   auto_pr_merge_failed: 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400',
   auto_pr_identity_mismatch:
     'bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400',
+  auto_pr_draft_unknown: 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400',
+  auto_merge_awaiting_approval:
+    'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400',
   system: 'bg-gray-100 dark:bg-gray-900/30 text-gray-600 dark:text-gray-400',
 };
 
@@ -144,6 +148,8 @@ const typeIconComponents: Record<string, LucideIcon> = {
   auto_pr_merged: GitMerge,
   auto_pr_merge_failed: CircleAlert,
   auto_pr_identity_mismatch: CircleAlert,
+  auto_pr_draft_unknown: CircleHelp,
+  auto_merge_awaiting_approval: Hourglass,
 };
 
 /** Icon + background color for a notification's circular badge. */
