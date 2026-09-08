@@ -111,7 +111,9 @@ export async function resolveAutomationPolicy(
 
   // Global defaults set on the "タスク設定" page (UserSettings). These sit between
   // a per-task override and the env/hardcoded fallback.
-  const userSettings = (await prisma.userSettings.findFirst().catch(() => null)) as {
+  // A failed read is not an absent setting: falling back could silently disable
+  // a required merge. Let publication/completion callers withhold and retry.
+  const userSettings = (await prisma.userSettings.findFirst()) as {
     autoCommitDefault?: boolean | null;
     autoCreatePRDefault?: boolean | null;
     autoMergePRDefault?: boolean | null;

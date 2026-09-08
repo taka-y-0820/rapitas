@@ -32,6 +32,7 @@ import {
   VERIFY_NON_CONVERGENCE_CAUSE,
 } from './blocked-task-policy';
 import { resolveBlockedTaskEvidence } from './blocked-task-evidence';
+import { resolveAutomationPolicy } from './automation-policy';
 import { escalateBlockedTask, reescalateIfOverdue } from './blocked-task-escalation';
 
 const log = createLogger('workflow-reconciler');
@@ -63,7 +64,7 @@ async function findBlockedCandidates(nowMs: number): Promise<
 > {
   // Respect user stops: only heal blocked tasks in themes that are still armed.
   const armed = await prisma.themeAutoRun
-    .findMany({ where: { enabled: true }, select: { themeId: true } })
+    .findMany({ where: { enabled: true, status: 'running' }, select: { themeId: true } })
     .catch(() => [] as { themeId: number }[]);
   const armedThemeIds = armed.map((a) => a.themeId);
   if (armedThemeIds.length === 0) return [];
@@ -127,6 +128,11 @@ export async function correctBlockedByEvidence(nowMs: number): Promise<number> {
 
     const evidence = await resolveBlockedTaskEvidence(prisma, t.id);
     if (!evidence.isSuccess) continue;
+
+    // Local PR rows cannot prove a required remote merge. The authoritative
+    // merge watcher owns that completion; an unreadable policy also withholds it.
+    const policy = await resolveAutomationPolicy(prisma, t.id).catch(() => null);
+    if (!policy || policy.autoMergePR) continue;
 
     await prisma.task
       .update({

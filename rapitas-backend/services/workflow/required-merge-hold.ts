@@ -37,6 +37,14 @@ export const AWAITING_REQUIRED_MERGE_CAUSE = 'verify_awaiting_required_merge';
  * @param p.sessionId - Session to attribute the transition to, if any. / 紐づけるセッションID
  * @param p.source - Caller name, for the log line. / 呼び出し元の名前（ログ用）
  * @param p.metadata - Extra transition metadata. / 追加メタデータ
+ * @param p.fromStatusIn - Task.status values eligible for this CAS. Defaults to
+ *   the set every ordinary caller uses (`todo`/`in-progress`/`in_progress`).
+ *   Widening this (e.g. to include `blocked`) is the caller's decision AND the
+ *   caller's responsibility: this function does not itself re-derive whether a
+ *   `blocked` row is stop-derived — see blocked-pr-retry-recovery.ts's
+ *   `canReviveBlockedPrRetry`, which must be checked before passing a widened
+ *   set. Never pass a status here that this function has not been explicitly
+ *   asked to trust. / このCASが許容する Task.status の集合（既定は変更しない）
  * @returns True when this call actually parked the task. / 実際に保留した場合 true
  */
 export async function holdForRequiredMerge(p: {
@@ -46,13 +54,14 @@ export async function holdForRequiredMerge(p: {
   sessionId?: number;
   source: string;
   metadata?: Record<string, unknown>;
+  fromStatusIn?: string[];
 }): Promise<boolean> {
   const held = await prisma.task
     .updateMany({
       where: {
         id: p.taskId,
         workflowStatus: p.fromStatus,
-        status: { in: ['todo', 'in-progress', 'in_progress'] },
+        status: { in: p.fromStatusIn ?? ['todo', 'in-progress', 'in_progress'] },
       },
       data: { status: 'in-progress', workflowStatus: 'verify_done', updatedAt: new Date() },
     })

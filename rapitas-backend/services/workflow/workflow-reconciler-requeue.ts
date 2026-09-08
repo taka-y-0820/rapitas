@@ -20,6 +20,7 @@ import {
   VERIFY_NON_CONVERGENCE_CAUSE,
   PR_RETRY_LIGHTWEIGHT_CAUSE,
 } from './blocked-task-policy';
+import { isAwaitingRequiredMerge } from './verify-settle-artifact-recovery';
 
 const log = createLogger('workflow-reconciler');
 
@@ -75,6 +76,18 @@ export async function requeueOrphanTasks(nowMs: number): Promise<number> {
   let requeued = 0;
   for (const t of tasks) {
     if (t.workflowStatus === 'completed' || t.workflowStatus === 'awaiting_question') continue;
+    // A task parked at verify_done/in-progress can be legitimately AWAITING the
+    // AutoMergeWatcher's confirmation (task 895), not orphaned — its PENDING_TIMEOUT_MS
+    // (90 min) is longer than STALE_TASK_MS (45 min), so this scan would otherwise
+    // reset it to 'todo' mid-wait and dispatch a duplicate execution while the
+    // original PR is still pending CI/merge. Fail-closed: an unreadable policy
+    // must not be read as "not awaiting a merge".
+    if (
+      t.workflowStatus === 'verify_done' &&
+      (await isAwaitingRequiredMerge(t.id).catch(() => true))
+    ) {
+      continue;
+    }
     if (await hasLiveExecution(t.id)) continue;
 
     const attempts = await prisma.workflowTransition
@@ -118,7 +131,7 @@ export async function requeueBlockedTasks(nowMs: number): Promise<number> {
 
   // Respect user stops: only retry blocked tasks in themes that are still armed.
   const armed = await prisma.themeAutoRun
-    .findMany({ where: { enabled: true }, select: { themeId: true } })
+    .findMany({ where: { enabled: true, status: 'running' }, select: { themeId: true } })
     .catch(() => [] as { themeId: number }[]);
   const armedThemeIds = armed.map((a) => a.themeId);
   if (armedThemeIds.length === 0) return 0;
@@ -251,15 +264,29 @@ export async function requeueBlockedTasks(nowMs: number): Promise<number> {
         .catch(() => 0);
       if (lightweightAttempted === 0) {
         const { attemptPrOnlyRecovery } = await import('./blocked-pr-retry-recovery');
-        const recovered = await attemptPrOnlyRecovery(t.id).catch((err) => {
+        const outcome = await attemptPrOnlyRecovery(t.id).catch((err) => {
           log.warn({ err, taskId: t.id }, '[reconciler] Lightweight PR retry threw');
-          return false;
+          return 'failed' as const;
         });
-        if (recovered) {
+        if (outcome === 'held' || outcome === 'completed') {
           retried++;
           log.info(
-            { taskId: t.id },
+            { taskId: t.id, outcome },
             '[reconciler] Lightweight PR retry recovered blocked task (no full reset)',
+          );
+          continue;
+        }
+        // 'declined_stopped' (theme/task stopped) and 'cas_lost' (row already
+        // moved on concurrently) must NOT fall through to the blind full reset
+        // below — resetting either would re-dispatch a brand-new execution,
+        // which is exactly the post-stop automatic action AGENTS.md forbids, or
+        // would overwrite whatever state the row concurrently moved to (task
+        // 895 verifier finding, 2nd repair round). Only a genuine 'failed'
+        // (real PR-creation failure) is safe for the existing fallback below.
+        if (outcome === 'declined_stopped' || outcome === 'cas_lost') {
+          log.info(
+            { taskId: t.id, outcome },
+            '[reconciler] Lightweight PR retry declined (stop-derived or concurrent state change) — leaving blocked untouched, not falling through to full reset',
           );
           continue;
         }

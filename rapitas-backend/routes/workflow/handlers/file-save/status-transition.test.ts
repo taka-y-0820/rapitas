@@ -19,7 +19,10 @@ mock.module('../../../../config/logger', () => ({
 const mockTaskUpdate = mock(() => Promise.resolve({})) as any;
 const mockWorkflowTransitionFindFirst = mock(() => Promise.resolve(null)) as any;
 const mockPrisma = {
-  task: { update: mockTaskUpdate, findUnique: mock(() => Promise.resolve(null)) },
+  task: {
+    update: mockTaskUpdate,
+    findUnique: mock(() => Promise.resolve(null as { githubPrId: number } | null)),
+  },
   workflowTransition: { findFirst: mockWorkflowTransitionFindFirst },
 };
 mock.module('../../../../config', () => ({ prisma: mockPrisma }));
@@ -81,9 +84,22 @@ describe('computeAndApplyStatusTransition — 非収束カットオフの二重�
     transitionCalls.length = 0;
     mockRecordTransition.mockClear();
     mockTaskUpdate.mockClear();
+    mockPrisma.task.findUnique.mockReset().mockResolvedValue(null);
     mockMarkLatestExecutionFailed.mockClear();
     mockWorkflowTransitionFindFirst.mockReset().mockResolvedValue(null);
     mockAttemptVerifyRepair.mockReset().mockResolvedValue({ bounced: false });
+  });
+
+  test('a prior pass and existing PR cannot override the current partial verdict', async () => {
+    mockWorkflowTransitionFindFirst.mockResolvedValue({ id: 1 });
+    mockPrisma.task.findUnique.mockResolvedValue({ githubPrId: 100 });
+    mockAttemptVerifyRepair.mockResolvedValue({ bounced: true, newStatus: 'plan_approved' });
+    const result = await computeAndApplyStatusTransition({
+      ...buildParams(),
+      savedContent: '| 全体判定 | ⚠️ 一部失敗 |',
+    });
+    expect(result.newStatus).toBe('plan_approved');
+    expect(mockAttemptVerifyRepair).toHaveBeenCalledTimes(1);
   });
 
   test('cutoffRecorded:true なら DB 読み取りガードが false でも verify_validation_failed を記録しないこと', async () => {
