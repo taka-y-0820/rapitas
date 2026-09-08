@@ -88,7 +88,7 @@ let savedFlag: string | undefined;
 beforeEach(() => {
   rows = [];
   savedFlag = process.env.RAPITAS_PROMPT_AUTO_APPROVE;
-  delete process.env.RAPITAS_PROMPT_AUTO_APPROVE;
+  process.env.RAPITAS_PROMPT_AUTO_APPROVE = 'true';
 });
 
 afterEach(() => {
@@ -97,6 +97,18 @@ afterEach(() => {
 });
 
 describe('autoApproveEligibleProposals', () => {
+  test.each([undefined, '', 'false', '1', 'TRUE'])(
+    'does not implicitly approve with flag %s',
+    async (flag) => {
+      if (flag === undefined) delete process.env.RAPITAS_PROMPT_AUTO_APPROVE;
+      else process.env.RAPITAS_PROMPT_AUTO_APPROVE = flag;
+      rows = [proposedRow(1, '- Run lint before submitting changes')];
+      const result = await autoApproveEligibleProposals();
+      expect(result.approved).toBe(0);
+      expect(rows[0].status).toBe('proposed');
+    },
+  );
+
   test('両ガードを通過した候補は人手クリック無しでapprovedになる', async () => {
     rows = [proposedRow(1, '- 提出前にlintを実行する\n- 型チェックを通す')];
 

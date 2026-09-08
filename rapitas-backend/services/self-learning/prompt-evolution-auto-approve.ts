@@ -25,14 +25,12 @@ const log = createLogger('self-learning:prompt-evolution-auto-approve');
 const AUTO_APPROVE_BATCH = 3;
 
 /**
- * Whether unattended approval is enabled. Default ON: the guards above plus
- * the post-approval revert in prompt-evolution-settle form the safety net the
- * human click used to provide. Set RAPITAS_PROMPT_AUTO_APPROVE=false to
- * return to approve-by-hand.
- * / 無人承認の有効判定（既定オン。false 明示でオプトアウト）
+ * Legacy quality-only approval requires explicit opt-in. Additive wording and
+ * post-adoption rollback do not establish comparative benefit. Task 894 replaces
+ * this path with measured trials; keeping it off is not completion of that work.
  */
 export function autoApproveEnabled(): boolean {
-  return process.env.RAPITAS_PROMPT_AUTO_APPROVE !== 'false';
+  return process.env.RAPITAS_PROMPT_AUTO_APPROVE === 'true';
 }
 
 export interface AutoApproveResult {
