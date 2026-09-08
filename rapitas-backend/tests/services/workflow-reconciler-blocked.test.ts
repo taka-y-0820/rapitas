@@ -23,6 +23,10 @@ const mockPrisma = {
   activityLog: { findFirst: mock(() => Promise.resolve(null as unknown)) },
 };
 const recordTransition = mock(() => Promise.resolve());
+const automationPolicy = mock(async () => ({ autoMergePR: false }));
+mock.module('../../services/workflow/automation-policy', () => ({
+  resolveAutomationPolicy: automationPolicy,
+}));
 const resolveBlockedTaskEvidence = mock(() =>
   Promise.resolve({ isSuccess: false, source: 'none' as const }),
 );
@@ -82,6 +86,7 @@ function blockedTask(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 beforeEach(() => {
+  automationPolicy.mockReset().mockResolvedValue({ autoMergePR: false });
   mockPrisma.task.findMany.mockReset().mockResolvedValue([]);
   mockPrisma.task.update.mockReset().mockResolvedValue({});
   mockPrisma.agentExecution.findFirst.mockReset().mockResolvedValue(null);
@@ -98,6 +103,28 @@ beforeEach(() => {
 });
 
 describe('correctBlockedByEvidence（受入基準1・3）', () => {
+  test.each(['open', 'merged'])(
+    'required merge cannot complete from a local %s PR row',
+    async (prState) => {
+      mockPrisma.task.findMany.mockResolvedValue([blockedTask()]);
+      automationPolicy.mockResolvedValue({ autoMergePR: true });
+      resolveBlockedTaskEvidence.mockResolvedValue({
+        isSuccess: true,
+        source: 'linked_pr',
+        prState,
+      });
+      expect(await correctBlockedByEvidence(NOW)).toBe(0);
+      expect(mockPrisma.task.update).not.toHaveBeenCalled();
+      expect(recordTransition).not.toHaveBeenCalled();
+    },
+  );
+  test('unreadable automation policy cannot authorize completion', async () => {
+    mockPrisma.task.findMany.mockResolvedValue([blockedTask()]);
+    automationPolicy.mockRejectedValue(new Error('database unavailable'));
+    resolveBlockedTaskEvidence.mockResolvedValue({ isSuccess: true, source: 'linked_pr' });
+    expect(await correctBlockedByEvidence(NOW)).toBe(0);
+    expect(mockPrisma.task.update).not.toHaveBeenCalled();
+  });
   test('成功証拠あり → done + workflowStatus completed へ是正し blocked_evidence_done を記録', async () => {
     mockPrisma.task.findMany.mockResolvedValue([blockedTask()]);
     resolveBlockedTaskEvidence.mockResolvedValue({
