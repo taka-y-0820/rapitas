@@ -61,6 +61,13 @@ interface PatternRule {
   reason: CooldownReason;
   /** Substring (case-insensitive) or RegExp to match. */
   pattern: RegExp;
+  /**
+   * When true, this rule only matches in strict mode if an ERROR/FATAL/
+   * Exception/Traceback marker is also present in the message. Bare
+   * "429"/"too many requests" appear innocently in successful plan/code
+   * prose that merely discusses HTTP rate limiting (execution3874, task 898).
+   */
+  weak?: boolean;
 }
 
 // Order matters: more specific patterns first so they win.
@@ -167,10 +174,17 @@ const RULES: PatternRule[] = [
   // --- Google / Gemini CLI ---
   { provider: 'gemini', reason: 'quota', pattern: /resource_exhausted/i },
   { provider: 'gemini', reason: 'quota', pattern: /quota exceeded/i },
+  // NOTE: Bare "429"/"too many requests" matched successful plan prose that
+  // merely discussed local HTTP 429 handling (execution3874, task 898),
+  // triggering a spurious fallback re-run of an already-successful phase.
+  // `weak: true` requires an ERROR/FATAL/Exception/Traceback marker in
+  // strict mode (used to validate SUCCESSFUL run output); lenient/failed-run
+  // classification is unaffected.
   {
     provider: 'gemini',
     reason: 'rate_limit',
     pattern: /(too many requests|429)/i,
+    weak: true,
   },
   {
     provider: 'gemini',
@@ -221,8 +235,14 @@ export function classifyAgentError(
   const message = (input ?? '').slice(0, 4000);
   if (!message.trim()) return null;
 
+  // Only fire when the keyword sits next to an ERROR/FATAL marker so we
+  // don't trip on "implements rate limiting" or similar prose. Hoisted above
+  // the RULES loop so `weak` rules can gate on it in strict mode too.
+  const errorContext = /(^|\n)\s*(ERROR|FATAL|Exception|Traceback)/i.test(message);
+
   for (const rule of RULES) {
     if (rule.pattern.test(message)) {
+      if (strict && rule.weak && !errorContext) continue;
       return {
         reason: rule.reason,
         provider: rule.provider,
@@ -248,9 +268,6 @@ export function classifyAgentError(
   }
 
   // Last-resort: HTTP-style status hints commonly present in tool output.
-  // Only fire when the keyword sits next to an ERROR/FATAL marker so we
-  // don't trip on "implements rate limiting" or similar prose.
-  const errorContext = /(^|\n)\s*(ERROR|FATAL|Exception|Traceback)/i.test(message);
   if (errorContext) {
     if (/\b(429|rate[_ ]?limit(ed|ing)?)\b/i.test(message)) {
       return {
