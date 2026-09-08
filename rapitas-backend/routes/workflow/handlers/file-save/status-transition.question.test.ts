@@ -170,7 +170,11 @@ test('DB read failure propagates without mutation or transition', async () => {
   expect(recordTransition).not.toHaveBeenCalled();
 });
 
-for (const cause of ['manual_execution_stop_revert', 'manual_execution_stop_withdraw']) {
+for (const cause of [
+  'manual_execution_stop_revert',
+  'manual_execution_stop_withdraw',
+  'auto_run_stop_revert',
+]) {
   test(`stopped todo with ${cause} remains unchanged; running resume can save`, async () => {
     status = 'todo';
     userCause = cause;
