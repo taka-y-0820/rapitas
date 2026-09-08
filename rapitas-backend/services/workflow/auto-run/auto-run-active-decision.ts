@@ -84,6 +84,10 @@ export async function advanceActiveTaskLocked(
   if (lastRunAt && tenureMs >= MAX_TASK_WALL_MS) {
     if (await isAwaitingUserAnswer(prisma, currentTaskId)) {
       await notifyAwaitingUserAnswer(themeId, currentTaskId);
+      if (!(await liveOrQueuedBehind(prisma, currentTaskId))) {
+        await setCurrentTask(themeId, null);
+        broadcastAutoRunUpdateImpl(themeId);
+      }
       return;
     }
     // EXEMPT a task held by the overlap guard (task 793): the implementer has
@@ -262,6 +266,12 @@ export async function advanceActiveTaskLocked(
     ['todo', 'in-progress', 'blocked'].includes(task.status)
   ) {
     await notifyAwaitingUserAnswer(themeId, currentTaskId);
+    // Preserve the unanswered task, but release the theme slot so unrelated
+    // eligible tasks can run on the next tick. Never stop/revert the task here.
+    if (!(await liveOrQueuedBehind(prisma, currentTaskId))) {
+      await setCurrentTask(themeId, null);
+      broadcastAutoRunUpdateImpl(themeId);
+    }
     return;
   }
 

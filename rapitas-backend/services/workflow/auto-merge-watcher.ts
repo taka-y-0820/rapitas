@@ -30,6 +30,7 @@ import { markExhausted } from './auto-merge-exhaustion';
 import { notify } from './auto-merge-notify';
 import { findCandidates, type Candidate } from './auto-merge-candidates';
 import { countWithFailClosed } from '../../utils/database/fail-closed-count';
+import { canContinueAutoMerge } from './auto-merge-task-guard';
 
 const log = createLogger('workflow:auto-merge-watcher');
 
@@ -49,13 +50,18 @@ const MAX_CONFLICT_RETRIES = 2;
  * Mark a task row done/completed (idempotent). Used when the watcher is the one
  * that reaches a task's completion point under staged completion.
  */
-async function completeTaskRow(taskId: number): Promise<void> {
-  await prisma.task
-    .update({
-      where: { id: taskId },
+async function completeTaskRow(taskId: number): Promise<boolean> {
+  if (!(await canContinueAutoMerge(taskId))) return false;
+  const result = await prisma.task
+    .updateMany({
+      where: { id: taskId, status: { in: ['in-progress', 'in_progress', 'done', 'completed'] } },
       data: { status: 'done', workflowStatus: 'completed', completedAt: new Date() },
     })
-    .catch((err) => log.warn({ err, taskId }, '[auto-merge] completeTaskRow failed'));
+    .catch((err) => {
+      log.warn({ err, taskId }, '[auto-merge] completeTaskRow failed');
+      return { count: 0 };
+    });
+  return result.count > 0;
 }
 
 /** Record a terminal auto-merge outcome so the candidate is not reprocessed. */
@@ -117,6 +123,7 @@ export class AutoMergeWatcher {
       const blocking = blockingChecks();
       for (const c of candidates) {
         try {
+          if (!(await canContinueAutoMerge(c.taskId))) continue;
           await this.process(c, blocking);
         } catch (err) {
           log.warn({ err, taskId: c.taskId }, '[auto-merge] Candidate failed');
@@ -285,7 +292,7 @@ export class AutoMergeWatcher {
     if (state === 'pass') {
       // PR mode: CI is green and we DO NOT merge — completion is reaching green.
       if (c.mode === 'pr') {
-        await completeTaskRow(c.taskId);
+        if (!(await completeTaskRow(c.taskId))) return;
         await mark(c.taskId, 'pr_ci_completed', `PR #${c.prNumber} CI green`);
         await notify({
           taskId: c.taskId,
@@ -300,12 +307,15 @@ export class AutoMergeWatcher {
         return;
       }
 
-      const res = await mergePullRequest(c.cwd, c.prNumber, c.threshold, c.baseBranch);
+      const res = await mergePullRequest(c.cwd, c.prNumber, c.threshold, c.baseBranch, () =>
+        canContinueAutoMerge(c.taskId),
+      );
+      if (!(await canContinueAutoMerge(c.taskId))) return;
       if (res.success) {
         // Under staged completion the task is still in-progress at verify_done;
         // completing on merge is the merge-mode completion point. Idempotent for
         // the legacy path where the task was already done.
-        await completeTaskRow(c.taskId);
+        if (!(await completeTaskRow(c.taskId))) return;
         // Sync the LOCAL PR mirror to merged. The watcher merged on GitHub, but
         // nothing else updates the local GitHubPullRequest row (there is no webhook
         // in dev), so it kept showing 'open' even though the PR was merged — the

@@ -47,6 +47,15 @@ describe('countResumeAttempts', () => {
 });
 
 describe('decideAutoResume', () => {
+  it('does not resume work while the theme is stopped or paused', () => {
+    expect(decideAutoResume(exec(), { ...OK_OPTS, themeRunAllowed: false }).resume).toBe(false);
+  });
+  it.each(['canceled', 'canceling'])(
+    'preserves %s instead of automatically resuming',
+    (taskStatus) => {
+      expect(decideAutoResume(exec(), { ...OK_OPTS, taskStatus }).resume).toBe(false);
+    },
+  );
   it('resumes a fresh interrupted execution with no prior attempts', () => {
     expect(decideAutoResume(exec(), OK_OPTS).resume).toBe(true);
   });

@@ -82,9 +82,12 @@ export function decideAutoResume(
     taskStatus: string | null;
     hasWorkingDirectory: boolean;
     hasActiveLock: boolean;
+    themeRunAllowed?: boolean;
   },
 ): AutoResumeDecision {
   if (exec.status !== 'interrupted') return { resume: false, reason: `status=${exec.status}` };
+  if (opts.themeRunAllowed === false)
+    return { resume: false, reason: 'theme auto-run is stopped or paused' };
   if (!opts.hasWorkingDirectory) return { resume: false, reason: 'no themeWorkingDirectory' };
   if (opts.hasActiveLock) {
     return { resume: false, reason: 'a task-execution lock is already held for this task' };
@@ -95,6 +98,8 @@ export function decideAutoResume(
   if (
     opts.taskStatus === 'done' ||
     opts.taskStatus === 'cancelled' ||
+    opts.taskStatus === 'canceled' ||
+    opts.taskStatus === 'canceling' ||
     opts.taskStatus === 'blocked' ||
     opts.taskStatus === 'failed'
   ) {
@@ -143,6 +148,7 @@ export async function autoResumeInterruptedExecutions(executionIds: number[]): P
                   task: {
                     select: {
                       id: true,
+                      themeId: true,
                       title: true,
                       description: true,
                       status: true,
@@ -170,12 +176,20 @@ export async function autoResumeInterruptedExecutions(executionIds: number[]): P
         select: { id: true },
       });
 
+      const themeRun =
+        task.themeId == null
+          ? null
+          : await prisma.themeAutoRun.findUnique({
+              where: { themeId: task.themeId },
+              select: { enabled: true, status: true },
+            });
       const decision = decideAutoResume(execution, {
         now: new Date(),
         hasNewerExecution: !!newer,
         taskStatus: task.status,
         hasWorkingDirectory: !!task.theme?.workingDirectory,
         hasActiveLock: isTaskExecutionLocked(task.id),
+        themeRunAllowed: !themeRun || (themeRun.enabled && themeRun.status === 'running'),
       });
       if (!decision.resume) {
         log.info({ executionId, taskId: task.id, reason: decision.reason }, '[auto-resume] skip');

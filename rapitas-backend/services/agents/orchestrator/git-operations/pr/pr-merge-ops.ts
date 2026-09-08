@@ -46,6 +46,7 @@ export async function mergePullRequest(
   prNumber: number,
   commitThreshold: number = 5,
   baseBranch: string = 'master',
+  canProceed?: () => Promise<boolean>,
 ): Promise<{
   success: boolean;
   mergeStrategy?: 'squash' | 'merge';
@@ -67,11 +68,36 @@ export async function mergePullRequest(
     const mergeStrategy = commitCount >= commitThreshold ? 'squash' : 'merge';
     const mergeFlag = mergeStrategy === 'squash' ? '--squash' : '--merge';
 
+    if (canProceed && !(await canProceed()))
+      return { success: false, error: 'Merge canceled before publication' };
+
     await execFileAsync(ghPath(), ['pr', 'merge', String(prNumber), mergeFlag, '--delete-branch'], {
       cwd: workingDirectory,
       encoding: 'utf8',
       timeout: GIT_SLOW_OP_TIMEOUT_MS,
     });
+
+    const confirmation = await execFileAsync(
+      ghPath(),
+      ['pr', 'view', String(prNumber), '--json', 'number,state,mergedAt,baseRefName'],
+      { cwd: workingDirectory, encoding: 'utf8', timeout: GIT_SLOW_OP_TIMEOUT_MS },
+    );
+    const actual = JSON.parse(confirmation.stdout);
+    if (
+      actual.number !== prNumber ||
+      actual.baseRefName !== baseBranch ||
+      actual.state !== 'MERGED' ||
+      typeof actual.mergedAt !== 'string' ||
+      !Number.isFinite(Date.parse(actual.mergedAt))
+    ) {
+      return {
+        success: false,
+        retriable: true,
+        error: 'GitHub has not confirmed the requested PR merge',
+      };
+    }
+    if (canProceed && !(await canProceed()))
+      return { success: false, error: 'Task stopped after merge; local follow-up skipped' };
 
     // Post-merge local sync. On the PRIMARY checkout this `git checkout` + pull
     // would switch the developer's branch and could clobber uncommitted work —
@@ -117,6 +143,8 @@ export async function mergePullRequest(
     // caller (AutoMergeWatcher) retries the merge once checks are green again.
     if (isHeadBehindError(msg)) {
       try {
+        if (canProceed && !(await canProceed()))
+          return { success: false, error: 'Merge canceled before branch update' };
         await execFileAsync(ghPath(), ['pr', 'update-branch', String(prNumber)], {
           cwd: workingDirectory,
           encoding: 'utf8',
