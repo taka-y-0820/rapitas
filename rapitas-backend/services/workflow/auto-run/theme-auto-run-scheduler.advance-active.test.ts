@@ -1,3 +1,7 @@
+import {
+  mockStopTaskTreeAgents,
+  mockResumeTransition,
+} from './theme-auto-run-scheduler.test-support.collaborator-mocks';
 /**
  * theme-auto-run-scheduler.advance-active.test
  *
@@ -19,6 +23,8 @@ import {
   mockNotifyAwaitingUserAnswer,
   mockNotifyHangBackstop,
   mockTaskUpdate,
+  mockRevertChanges,
+  mockResolveTaskWorkingDirectory,
   mockTransitionCount,
   mockOnTaskFailed,
   mockOnTaskCompleted,
@@ -51,6 +57,8 @@ function freshLastRunAt(): string {
 
 beforeEach(() => {
   resetAllMocks();
+  mockResumeTransition.mockReset().mockResolvedValue(null);
+  mockStopTaskTreeAgents.mockClear();
   resetSchedulerSingleton();
   scheduler = ThemeAutoRunScheduler.getInstance();
   // Default: no active queue item and no terminal item, so tests that only
@@ -60,6 +68,35 @@ beforeEach(() => {
 });
 
 describe('advanceTheme — hang backstop', () => {
+  it.each(['todo', 'in-progress', 'blocked'])(
+    'preserves %s question waits but releases the theme slot',
+    async (status) => {
+      mockResolveTaskWorkflowState.mockResolvedValue({
+        id: 100,
+        status,
+        workflowStatus: 'awaiting_question',
+        workflowMode: null,
+        parentId: null,
+      });
+      for (let tick = 0; tick < 3; tick++) {
+        await internal(scheduler).advanceTheme(1, 100, 'priority', 0, freshLastRunAt());
+      }
+      expect(mockEnqueue).not.toHaveBeenCalled();
+      expect(mockStopTaskTreeAgents).not.toHaveBeenCalled();
+      expect(mockTaskUpdate).not.toHaveBeenCalled();
+      expect(mockNotifyAwaitingUserAnswer).toHaveBeenCalledWith(1, 100);
+      expect(mockSetCurrentTask).toHaveBeenCalledWith(1, null);
+      mockResolveTaskWorkflowState.mockResolvedValue({
+        id: 100,
+        status: 'in-progress',
+        workflowStatus: 'draft',
+        workflowMode: null,
+        parentId: null,
+      });
+      await internal(scheduler).advanceTheme(1, 100, 'priority', 0, freshLastRunAt());
+      expect(mockEnqueue).toHaveBeenCalledTimes(1);
+    },
+  );
   it('holds (does not stop) a wedged task that is awaiting a user answer', async () => {
     mockIsAwaitingUserAnswer.mockResolvedValue(true);
 
@@ -594,4 +631,85 @@ describe('advanceTheme — vanished queue item (neither active nor terminal)', (
       internal(scheduler).advanceTheme(1, 100, 'priority', 0, freshLastRunAt()),
     ).resolves.toBeUndefined();
   });
+});
+
+it('uses the durable answer time even when the scheduler holds an old tenure snapshot', async () => {
+  mockResumeTransition.mockResolvedValue({ createdAt: new Date() });
+  mockGetThemeActiveQueueItems.mockResolvedValue([{ id: 1, taskId: 100, status: 'running' }]);
+  await internal(scheduler).advanceTheme(
+    1,
+    100,
+    'priority',
+    1,
+    new Date(Date.now() - TEST_MAX_TASK_WALL_MS * 4).toISOString(),
+  );
+  expect(mockNotifyHangBackstop).not.toHaveBeenCalled();
+  expect(mockTaskUpdate).not.toHaveBeenCalled();
+  expect(mockResumeTransition).toHaveBeenCalledWith(
+    expect.objectContaining({
+      where: expect.objectContaining({
+        taskId: 100,
+        fromStatus: 'awaiting_question',
+        cause: { in: ['intake_question_answered', 'question_resolved'] },
+      }),
+    }),
+  );
+});
+
+it('a resumed run still reaches the hard ceiling after its own budget expires', async () => {
+  mockResumeTransition.mockResolvedValue({
+    createdAt: new Date(Date.now() - TEST_MAX_TASK_WALL_MS * 3 - 500),
+  });
+  mockHasLiveExecution.mockResolvedValue(true);
+  await internal(scheduler).advanceTheme(
+    1,
+    100,
+    'priority',
+    1,
+    new Date(Date.now() - TEST_MAX_TASK_WALL_MS * 4).toISOString(),
+  );
+  expect(mockNotifyHangBackstop).toHaveBeenCalled();
+});
+
+it('a hang timeout stops execution but preserves uncommitted work for diagnosis and retry', async () => {
+  mockResolveTaskWorkingDirectory.mockResolvedValue({
+    themeId: 1,
+    workingDirectory: '/repo/work',
+    theme: null,
+  });
+  await internal(scheduler).advanceTheme(1, 100, 'priority', 1, staleLastRunAt());
+  expect(mockStopTaskTreeAgents).toHaveBeenCalledWith(100);
+  expect(mockRevertChanges).not.toHaveBeenCalled();
+  expect(mockTaskUpdate).toHaveBeenCalledWith({ where: { id: 100 }, data: { status: 'blocked' } });
+});
+
+it('actual scheduler waits for a same-task lifecycle owner before reading the hang budget', async () => {
+  const { withTaskLifecycleLock } = await import('../task-lifecycle-lock');
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const answer = withTaskLifecycleLock(100, async () => {
+    await gate;
+  });
+  const tick = internal(scheduler).advanceTheme(
+    1,
+    100,
+    'priority',
+    1,
+    new Date(Date.now() - TEST_MAX_TASK_WALL_MS * 4).toISOString(),
+  );
+  try {
+    await withTaskLifecycleLock(101, async () => {});
+    expect(mockResumeTransition).not.toHaveBeenCalled();
+    expect(mockNotifyHangBackstop).not.toHaveBeenCalled();
+    // Model the committed answer visible when ownership is released.
+    mockResumeTransition.mockResolvedValue({ createdAt: new Date() });
+    mockGetThemeActiveQueueItems.mockResolvedValue([{ id: 1, taskId: 100, status: 'running' }]);
+  } finally {
+    release();
+    await Promise.all([answer, tick]);
+  }
+  expect(mockResumeTransition).toHaveBeenCalled();
+  expect(mockNotifyHangBackstop).not.toHaveBeenCalled();
 });

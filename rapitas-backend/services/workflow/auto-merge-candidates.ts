@@ -169,10 +169,13 @@ export async function findCandidates(): Promise<Candidate[]> {
     const isCompleted = task.status === 'done' || task.status === 'completed';
     // Under staged completion the task is still in-progress at verify_done while
     // its PR's CI runs; pick those up so the watcher can complete them.
-    const isAwaitingCi = staged && task.workflowStatus === 'verify_done' && !isCompleted;
+    const policy = await resolveAutomationPolicy(prisma, taskId).catch(() => null);
+    const isAwaitingCi =
+      (staged || policy?.autoMergePR === true) &&
+      task.workflowStatus === 'verify_done' &&
+      ['in-progress', 'in_progress'].includes(task.status);
     if (!isCompleted && !isAwaitingCi) continue;
 
-    const policy = await resolveAutomationPolicy(prisma, taskId).catch(() => null);
     // merge mode in any era; pr mode (complete on CI green, no merge) only when
     // staged completion is enabled — otherwise pr-mode tasks already completed at
     // verify and the watcher must not touch them.

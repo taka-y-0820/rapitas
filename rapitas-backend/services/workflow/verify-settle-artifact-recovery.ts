@@ -11,8 +11,15 @@
 import { prisma } from '../../config';
 import { createLogger } from '../../config/logger';
 import { recordTransition } from './transition-recorder';
+import { resolveAutomationPolicy } from './automation-policy';
 
 const log = createLogger('workflow:verify-settle-artifact-recovery');
+
+/** A recorded PR with a required merge belongs to the merge watcher. */
+export async function isAwaitingRequiredMerge(taskId: number): Promise<boolean> {
+  const policy = await resolveAutomationPolicy(prisma, taskId);
+  return policy.autoMergePR && !!(await findLandedPullRequest(taskId));
+}
 
 /**
  * Whether a pull request is on record for the task, via the app-linked
@@ -54,11 +61,18 @@ async function findLandedPullRequest(
  */
 export async function recoverFromLandedArtifact(taskId: number): Promise<boolean> {
   try {
+    // PR existence cannot satisfy a required merge. The watcher confirms GitHub.
+    const policy = await resolveAutomationPolicy(prisma, taskId);
+    if (policy.autoMergePR) return false;
     const landed = await findLandedPullRequest(taskId);
     if (!landed) return false;
 
     const flipped = await prisma.task.updateMany({
-      where: { id: taskId, workflowStatus: 'verify_done' },
+      where: {
+        id: taskId,
+        workflowStatus: 'verify_done',
+        status: { in: ['todo', 'in-progress', 'in_progress'] },
+      },
       data: { status: 'done', workflowStatus: 'completed', completedAt: new Date() },
     });
     if (flipped.count === 0) {

@@ -46,11 +46,13 @@ export async function checkNeedsFallback(
 
   let needsFallback = !result.success;
 
-  if (!needsFallback && !disableFallback) {
+  // Successful prose/code may legitimately discuss 429 or provider limits.
+  // Only explicit error metadata can contradict success; never scan task output.
+  if (!needsFallback && !disableFallback && result.errorMessage?.trim()) {
     const { classifyAgentError } = await import('../../ai/agent-error-classifier');
     const { agentTypeToProvider } = await import('../../ai/agent-fallback');
     const hint = agentTypeToProvider(agentType) ?? undefined;
-    const classified = classifyAgentError(errorBlob, { hint, strict: true });
+    const classified = classifyAgentError(result.errorMessage, { hint, strict: true });
 
     if (classified?.retryWithFallback) {
       needsFallback = true;

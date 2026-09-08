@@ -32,7 +32,8 @@ mock.module('../../../../services/workflow/transition-recorder', () => ({
   recordTransition: mock(() => Promise.resolve()),
 }));
 mock.module('../../../../services/workflow/automation-policy', () => ({
-  resolveLandingMode: () => 'none',
+  resolveLandingMode: (policy: { autoMergePR?: boolean }) =>
+    policy.autoMergePR ? 'merge' : 'none',
 }));
 const markLatestExecutionFailedMock = mock(() => Promise.resolve());
 mock.module('./shared', () => ({
@@ -77,6 +78,40 @@ mock.module('../../workflow-auto-commit', () => ({
 }));
 
 const { runVerifyCommitPrPipeline } = await import('./verify-commit-pr-pipeline');
+
+describe('requested merge is a completion requirement', () => {
+  test.each([undefined, 'false', 'true'])(
+    'keeps deferred merge pending with staged=%s',
+    async (flag) => {
+      const previous = process.env.RAPITAS_STAGED_COMPLETION;
+      if (flag === undefined) delete process.env.RAPITAS_STAGED_COMPLETION;
+      else process.env.RAPITAS_STAGED_COMPLETION = flag;
+      performAutoCommitAndPRMock.mockImplementationOnce(() =>
+        Promise.resolve({
+          requested: { autoCommit: true, autoCreatePR: true, autoMergePR: true },
+          autoCommitResult: { success: true, filesChanged: 0 },
+          autoPRResult: { success: true, prNumber: 623 },
+          autoMergeResult: { success: false, deferred: true },
+        }),
+      );
+      const before = sideEffectsCalls.length;
+      try {
+        const outcome = await runVerifyCommitPrPipeline({
+          taskId: 897,
+          savedContent: '# 検証結果',
+          preferredBaseBranchForVerify: null,
+        });
+        expect(outcome.taskMarkedDone).toBe(false);
+        expect(outcome.newStatus).toBe('verify_done');
+        expect(sideEffectsCalls.length).toBe(before);
+      } finally {
+        sideEffectsCalls.splice(before);
+        if (previous === undefined) delete process.env.RAPITAS_STAGED_COMPLETION;
+        else process.env.RAPITAS_STAGED_COMPLETION = previous;
+      }
+    },
+  );
+});
 
 describe('runVerifyCommitPrPipeline — リカバリ後の再試行を待つこと', () => {
   test('再試行(2回目の performAutoCommitAndPR)が解決するまでパイプラインが完了しないこと', async () => {

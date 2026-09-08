@@ -6,7 +6,7 @@
  * design explicitly rejected those), and a task with no phase data falls
  * back to the flat log list instead of rendering nothing.
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { PhaseTimeline } from '../PhaseTimeline';
 
 vi.mock('next-intl', () => ({
@@ -48,7 +48,66 @@ describe('PhaseTimeline', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it('discovers a planner starting between phases while the parent remains idle', async () => {
+    vi.useFakeTimers();
+    let plannerStarted = false;
+    mockFetch.mockImplementation((url: string) =>
+      jsonResponse(
+        url.includes('phase-timeline')
+          ? {
+              success: true,
+              workflowMode: 'standard',
+              taskStatus: 'in-progress',
+              phases: plannerStarted
+                ? [{ phaseType: 'plan', iterations: [iterationFixture({ status: 'running' })] }]
+                : [{ phaseType: 'research', iterations: [iterationFixture()] }],
+            }
+          : { success: true, logs: [{ logChunk: 'Planner started after research' }] },
+      ),
+    );
+    const view = render(<PhaseTimeline taskId={9010} isRunning={false} liveLogs={[]} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    plannerStarted = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(screen.getByRole('tab', { name: /plan/ })).toHaveAttribute('aria-selected', 'true');
+    view.unmount();
+  });
+
+  it('polls a running plan even when the parent execution state is idle', async () => {
+    vi.useFakeTimers();
+    mockFetch.mockImplementation((url: string) =>
+      jsonResponse(
+        url.includes('phase-timeline')
+          ? {
+              success: true,
+              workflowMode: 'standard',
+              phases: [
+                { phaseType: 'plan', iterations: [iterationFixture({ status: 'running' })] },
+              ],
+            }
+          : { success: true, logs: [] },
+      ),
+    );
+    const view = render(<PhaseTimeline taskId={9007} isRunning={false} liveLogs={[]} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const count = () =>
+      mockFetch.mock.calls.filter(([url]) => url.includes('phase-timeline')).length;
+    const before = count();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(count()).toBeGreaterThan(before);
+    view.unmount();
   });
 
   it('renders phase TABS and auto-selects the running phase (#796 tab redesign)', async () => {

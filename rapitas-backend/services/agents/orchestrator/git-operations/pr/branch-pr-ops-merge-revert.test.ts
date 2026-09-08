@@ -30,6 +30,16 @@ function runScripted(cmd: string, opts?: { timeout?: number }): { stdout: string
       return { stdout: s.result, stderr: '' };
     }
   }
+  if (cmd.includes('--json number,state,mergedAt,baseRefName'))
+    return {
+      stdout: JSON.stringify({
+        number: 42,
+        state: 'MERGED',
+        mergedAt: '2026-09-08T00:00:00Z',
+        baseRefName: 'develop',
+      }),
+      stderr: '',
+    };
   return { stdout: '', stderr: '' };
 }
 
@@ -163,6 +173,23 @@ describe('revertChanges — PRIMARY working tree guard', () => {
 });
 
 describe('mergePullRequest — squash vs merge commit-count threshold', () => {
+  test.each([
+    { number: 42, state: 'OPEN', mergedAt: null, baseRefName: 'develop' },
+    { number: 99, state: 'MERGED', mergedAt: '2026-09-08T00:00:00Z', baseRefName: 'develop' },
+    { number: 42, state: 'MERGED', mergedAt: null, baseRefName: 'develop' },
+  ])('does not trust CLI success without the requested merge evidence: %j', async (actual) => {
+    script = [
+      { match: /--json number,state,mergedAt,baseRefName/, result: JSON.stringify(actual) },
+    ];
+    expect((await mergePullRequest('/repo', 42, 5, 'develop')).success).toBe(false);
+    expect(calls.some((c) => c.startsWith('git checkout'))).toBe(false);
+  });
+  test('does not publish after the stop guard rejects', async () => {
+    expect((await mergePullRequest('/repo', 42, 5, 'develop', async () => false)).success).toBe(
+      false,
+    );
+    expect(calls.some((c) => /pr merge|pr update-branch/.test(c))).toBe(false);
+  });
   test('uses --squash when commit count >= threshold', async () => {
     script = [
       { match: /pr view 42 --json commits/, result: '6' },

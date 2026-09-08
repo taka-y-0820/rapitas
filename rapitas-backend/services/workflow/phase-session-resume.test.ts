@@ -11,8 +11,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 const findMany = mock(() => Promise.resolve<Array<Record<string, unknown>>>([]));
+const findFirst = mock(() => Promise.resolve<Record<string, unknown> | null>(null));
 mock.module('../../config/database', () => ({
-  prisma: { agentExecution: { findMany } },
+  prisma: { agentExecution: { findMany, findFirst } },
 }));
 
 const { resolvePhaseResumeSessionId, claudeProjectDirFor, claudeSessionExists } =
@@ -36,6 +37,8 @@ function plantTranscript(cwd: string, sessionId: string): void {
 beforeEach(() => {
   findMany.mockReset();
   findMany.mockResolvedValue([]);
+  findFirst.mockReset();
+  findFirst.mockResolvedValue(null);
   sandbox = mkdtempSync(join(tmpdir(), 'phase-resume-'));
   realProfile = process.env.USERPROFILE;
   realHome = process.env.HOME;
@@ -97,6 +100,16 @@ describe('resolvePhaseResumeSessionId', () => {
     expect(
       await resolvePhaseResumeSessionId({ ...base, ...overrides, workingDirectory }),
     ).toBeNull();
+  });
+
+  test('cold-starts when a prior resume of that session already failed (task 894)', async () => {
+    const workingDirectory = 'C:\\wt\\task-641';
+    plantTranscript(workingDirectory, SESSION);
+    findMany.mockResolvedValue([{ id: 9, claudeSessionId: SESSION }]);
+    findFirst.mockResolvedValue({ id: 3879 });
+    expect(await resolvePhaseResumeSessionId({ ...base, workingDirectory })).toBeNull();
+    const where = (findFirst.mock.calls[0] as unknown[])[0] as { where: Record<string, unknown> };
+    expect(where.where).toMatchObject({ claudeSessionId: SESSION, status: 'failed' });
   });
 
   test('cold-starts when the CLI transcript is gone (a --resume would fail the run)', async () => {

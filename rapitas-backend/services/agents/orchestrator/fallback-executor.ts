@@ -200,7 +200,10 @@ export async function executeWithFallbackAgent(
     const { classifyAgentError: reclassify } = await import('../../ai/agent-error-classifier');
     const { agentTypeToProvider } = await import('../../ai/agent-fallback');
     const retryHint = agentTypeToProvider(newAgentConfig.type) ?? undefined;
-    const retryClassified = reclassify(retryBlob, { hint: retryHint, strict: true });
+    const retryEvidence = retryResult.success ? retryResult.errorMessage?.trim() : retryBlob;
+    const retryClassified = retryEvidence
+      ? reclassify(retryEvidence, { hint: retryHint, strict: true })
+      : null;
     const retryHasError = !!retryClassified?.retryWithFallback;
     const retryActuallySucceeded = retryResult.success && !retryHasError;
 

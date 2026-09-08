@@ -7,8 +7,9 @@
  * themselves best-effort, the no-outputFile (implementer) status-advance
  * branch, and the two 1s-delayed `setTimeout` auto-advance chains
  * (implementer → verifier, and plan-auto-approved-within-this-run →
- * implementer). Worktree resolution, non-verify output parsing, and the
- * verify-phase completion gate are covered in the sibling split files.
+ * implementer), and the AgentSession terminal-status write that closes the
+ * session the phase opened. Worktree resolution, non-verify output parsing,
+ * and the verify-phase completion gate are covered in the sibling split files.
  */
 import { describe, test, expect, beforeEach, mock } from 'bun:test';
 import {
@@ -255,5 +256,58 @@ describe('executeCLIAgent — learning ledger on the completion flip', () => {
 
     expect(spies.agentExecutionUpdateMany).toHaveBeenCalledTimes(1);
     expect(recordExecutionOutcome).not.toHaveBeenCalled();
+  });
+});
+
+describe('executeCLIAgent — AgentSession の終端化', () => {
+  beforeEach(() => {
+    resetWfMockState();
+  });
+
+  test('成功したフェーズはセッションを completed にする', async () => {
+    await run(implementerTransition(), noopAdvance);
+
+    expect(spies.agentSessionUpdate).toHaveBeenCalledTimes(1);
+    const [call] = spies.agentSessionUpdate.mock.calls[0] as [
+      { where: { id: number }; data: { status: string; lastActivityAt: Date } },
+    ];
+    expect(call.where).toEqual({ id: 100 });
+    expect(call.data.status).toBe('completed');
+    expect(call.data.lastActivityAt).toBeInstanceOf(Date);
+  });
+
+  test('失敗したフェーズはセッションを failed にする', async () => {
+    wf.executeTaskImpl = async () => ({
+      success: false,
+      output: '',
+      errorMessage: 'agent crashed',
+    });
+
+    const result = await run(implementerTransition(), noopAdvance);
+
+    expect(result.success).toBe(false);
+    const [call] = spies.agentSessionUpdate.mock.calls[0] as [{ data: { status: string } }];
+    expect(call.data.status).toBe('failed');
+  });
+
+  test('エピローグが例外を投げてもセッションは failed で終端化され、例外は再送出される', async () => {
+    // 実装者フェーズの status 前進書き込み（runPhaseEpilogue 内）を失敗させる。
+    wf.taskWorkflowState = { ...wf.taskWorkflowState!, workflowStatus: 'plan_approved' };
+    spies.taskUpdate.mockImplementationOnce(() => Promise.reject(new Error('epilogue exploded')));
+
+    await expect(run(implementerTransition(), noopAdvance)).rejects.toThrow('epilogue exploded');
+
+    expect(spies.agentSessionUpdate).toHaveBeenCalledTimes(1);
+    const [call] = spies.agentSessionUpdate.mock.calls[0] as [{ data: { status: string } }];
+    // 例外時点では effectiveSuccess が確定していない — active のまま放置せず failed に落とす。
+    expect(call.data.status).toBe('failed');
+  });
+
+  test('セッション更新の失敗はフェーズ結果に影響しない', async () => {
+    spies.agentSessionUpdate.mockImplementationOnce(() => Promise.reject(new Error('db down')));
+
+    const result = await run(implementerTransition(), noopAdvance);
+
+    expect(result.success).toBe(true);
   });
 });

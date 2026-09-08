@@ -17,7 +17,6 @@
  */
 import { existsSync, writeFileSync, unlinkSync } from 'fs';
 import { dirname, extname, join, relative, resolve } from 'path';
-import { createLogger } from '../../../config/logger';
 import { buildScopedTestCommands, findRelatedTestFiles, TEST_FILE_RE } from './related-tests';
 import { triageTestFailures } from './test-triage';
 import { buildTriagedTestCheck } from './test-triage-report';
@@ -26,8 +25,6 @@ import { evaluateAcceptanceSelfCheck } from './acceptance-self-check';
 import { schemaChangeGateCheck, collectHardGateChecks } from './schema-change-gate';
 import { runProjectChecks, spawnQuiet } from './quiet-verification';
 import { assertSafeGitRef } from '../../../utils/common/branch-name-generator';
-
-const log = createLogger('agents:automated-verifier');
 
 /** Code extensions worth linting / typechecking. */
 const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
@@ -971,13 +968,9 @@ export async function runAutomatedVerification(
   // static failure bounces anyway. A runtime failure joins the same
   // verify-repair loop as any other check.
   if (staticOk) {
-    try {
-      const { runRuntimeSmokeCheck } = await import('./runtime-smoke');
-      const runtime = await runRuntimeSmokeCheck(workdir, 'adhoc', options.taskId);
-      if (runtime) checks.push(runtime);
-    } catch (e) {
-      log.warn({ err: e, workdir }, '[verify] runtime smoke stage crashed — skipping (fail-open)');
-    }
+    const { runRuntimeVerificationStage } = await import('./runtime-verification-stage');
+    const runtime = await runRuntimeVerificationStage(workdir, options.taskId);
+    if (runtime) checks.push(runtime);
   }
 
   const unverifiable = checks.some((c) => c.unverifiable);

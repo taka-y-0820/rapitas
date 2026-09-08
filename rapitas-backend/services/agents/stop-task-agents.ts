@@ -52,7 +52,7 @@ async function stopExecutions(executionIds: number[], reason: string): Promise<n
       // Ask BOTH orchestrators — only the owner can taskkill the CLI handle.
       await agentWorkerManager.stopExecution(executionId).catch(() => false);
       await mainOrchestrator.stopExecution(executionId).catch(() => false);
-      await prisma.agentExecutionLog.deleteMany({ where: { executionId } }).catch(() => {});
+      // Retain diagnostic output: cancellation must not erase evidence needed for recovery.
       await prisma.agentExecution
         .update({
           where: { id: executionId },
@@ -233,4 +233,29 @@ export async function stopThemeAgents(
     );
   }
   return { stoppedCount: executionIds.length, executionIds };
+}
+
+/** Stop a timed-out task and its descendants without touching sibling tasks. */
+export async function stopTaskTreeAgents(taskId: number): Promise<StopTaskAgentsResult> {
+  const taskIds = new Set([taskId]);
+  let frontier = [taskId];
+  while (frontier.length) {
+    const children = await prisma.task.findMany({
+      where: { parentId: { in: frontier } },
+      select: { id: true },
+    });
+    frontier = children.map((child) => child.id).filter((id) => !taskIds.has(id));
+    for (const id of frontier) taskIds.add(id);
+  }
+  const ids = [...taskIds];
+  await prisma.workflowQueueItem.updateMany({
+    where: { taskId: { in: ids }, status: { in: ['queued', 'running', 'waiting_approval'] } },
+    data: { status: 'cancelled', completedAt: new Date(), errorMessage: 'Task timed out' },
+  });
+  await abortRunnerLoops(ids);
+  const memoryIds = await AgentOrchestrator.getInstance(prisma).stopAllForTasks(taskIds);
+  const executionIds = await stopExecutions(await findActiveExecutionIds(ids), 'Task timed out');
+  for (const id of ids) releaseTaskExecutionLock(id);
+  const stopped = [...new Set([...memoryIds, ...executionIds])];
+  return { stoppedCount: stopped.length, executionIds: stopped };
 }

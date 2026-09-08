@@ -27,6 +27,29 @@ import { resumeSessionIdFor } from './phase-session-resume';
 export { canReuseWorktree } from '../agents/orchestrator/git-operations/worktree/worktree-usable';
 
 /**
+ * Drive the AgentSession this phase created to a terminal status.
+ *
+ * NOTE: the session was created 'active' and nothing ever updated it, so every
+ * CLI-driven role left its session 'active' until the orphan sweep relabelled
+ * it 'interrupted'. That erased the population every outcome measurement reads
+ * (prompt-evolution, role evidence) — task 893. Best-effort by design: a
+ * bookkeeping write must never change the phase's own result.
+ *
+ * @param sessionId - Session opened for this phase. / このフェーズのセッションID
+ * @param success - Whether the phase succeeded. / フェーズが成功したか
+ */
+async function finalizeAgentSession(sessionId: number, success: boolean): Promise<void> {
+  try {
+    await prisma.agentSession.update({
+      where: { id: sessionId },
+      data: { status: success ? 'completed' : 'failed', lastActivityAt: new Date() },
+    });
+  } catch {
+    /* session bookkeeping is never worth failing (or delaying) the phase for */
+  }
+}
+
+/**
  * Execute a CLI agent (claude-code, codex, gemini) via AgentOrchestrator.
  *
  * The agent is given a prompt that includes language instructions and a curl
@@ -109,88 +132,98 @@ export async function executeCLIAgent(
   // means the artifact this phase produced was already judged and bounced.
   const phaseStartedAt = new Date();
 
-  const result = await orchestrator.executeTask(
-    {
-      id: taskId,
-      title: `[${transition.role}] ${task.title}`,
-      description: fullPrompt,
-      workingDirectory: effectiveWorkDir,
-    },
-    {
-      taskId,
-      sessionId: session.id,
-      agentConfigId: agentConfig.id,
-      workingDirectory: effectiveWorkDir,
-      modelIdOverride: agentConfig.modelId || undefined,
-      // Repair bounce: continue the CLI session this role already built.
-      resumeSessionId: await resumeSessionIdFor(
+  // Everything past this point is wrapped so the session reaches a terminal
+  // status on the success path, the failure path, AND when the epilogue /
+  // post-processing throws. `finally` performs a side effect only — it never
+  // returns or throws, so the original result/exception propagates unchanged.
+  let sessionSucceeded = false;
+  try {
+    const result = await orchestrator.executeTask(
+      {
+        id: taskId,
+        title: `[${transition.role}] ${task.title}`,
+        description: fullPrompt,
+        workingDirectory: effectiveWorkDir,
+      },
+      {
         taskId,
-        transition.role,
-        effectiveWorkDir,
-        agentConfig.agentType,
-      ),
-      // Role-aware wall-clock cap: implementer gets 2x the base (task 546).
-      timeout: getAgentTimeoutMs(transition.role),
-      autoCompleteTask: false,
-      investigationMode: isInvestigationPhase,
-      // Phase-specific output type. Drives codex's positional headline
-      // (`# 調査レポート` vs `# 実装計画` vs `# レビュー指摘`) so each
-      // role's CLI invocation produces an artifact in the correct shape.
-      // Without this, planner phases were force-shaped as research reports
-      // and the validator flagged plan.md for missing 設計判断の根拠 /
-      // 実装チェックリスト sections.
-      investigationOutputType:
-        transition.outputFile === 'plan'
-          ? 'plan'
-          : transition.outputFile === 'verify'
-            ? 'verify'
-            : 'research',
-      // For investigation phases, codex writes its final message to a TEMP
-      // file via -o. We read that temp file after the run and upload it to
-      // the workflow API ourselves — codex never gets to touch the
-      // workflow file path directly. (outputLastMessageFile is currently
-      // always unused — no CLI path sets a temp file — but the option is
-      // kept wired for when one does.)
-      outputLastMessageFile: undefined,
-    },
-  );
+        sessionId: session.id,
+        agentConfigId: agentConfig.id,
+        workingDirectory: effectiveWorkDir,
+        modelIdOverride: agentConfig.modelId || undefined,
+        // Repair bounce: continue the CLI session this role already built.
+        resumeSessionId: await resumeSessionIdFor(
+          taskId,
+          transition.role,
+          effectiveWorkDir,
+          agentConfig.agentType,
+        ),
+        // Role-aware wall-clock cap: implementer gets 2x the base (task 546).
+        timeout: getAgentTimeoutMs(transition.role),
+        autoCompleteTask: false,
+        investigationMode: isInvestigationPhase,
+        // Phase-specific output type. Drives codex's positional headline
+        // (`# 調査レポート` vs `# 実装計画` vs `# レビュー指摘`) so each
+        // role's CLI invocation produces an artifact in the correct shape.
+        // Without this, planner phases were force-shaped as research reports
+        // and the validator flagged plan.md for missing 設計判断の根拠 /
+        // 実装チェックリスト sections.
+        investigationOutputType:
+          transition.outputFile === 'plan'
+            ? 'plan'
+            : transition.outputFile === 'verify'
+              ? 'verify'
+              : 'research',
+        // For investigation phases, codex writes its final message to a TEMP
+        // file via -o. We read that temp file after the run and upload it to
+        // the workflow API ourselves — codex never gets to touch the
+        // workflow file path directly. (outputLastMessageFile is currently
+        // always unused — no CLI path sets a temp file — but the option is
+        // kept wired for when one does.)
+        outputLastMessageFile: undefined,
+      },
+    );
 
-  await harvestInvestigationOutput({
-    taskId,
-    transition,
-    result,
-    isInvestigationPhase,
-    phaseStartedAt,
-  });
+    await harvestInvestigationOutput({
+      taskId,
+      transition,
+      result,
+      isInvestigationPhase,
+      phaseStartedAt,
+    });
 
-  const { effectiveSuccess, phaseStatus, phaseError } = await runPhaseEpilogue({
-    taskId,
-    transition,
-    session,
-    result,
-    resolvedWorktreePath,
-    language,
-    phaseStartedAt,
-  });
+    const { effectiveSuccess, phaseStatus, phaseError } = await runPhaseEpilogue({
+      taskId,
+      transition,
+      session,
+      result,
+      resolvedWorktreePath,
+      language,
+      phaseStartedAt,
+    });
 
-  const finalResult: WorkflowAdvanceResult = {
-    success: effectiveSuccess,
-    role: transition.role,
-    status: phaseStatus,
-    output: result.output,
-    error: effectiveSuccess ? undefined : phaseError,
-  };
+    sessionSucceeded = effectiveSuccess;
+    const finalResult: WorkflowAdvanceResult = {
+      success: effectiveSuccess,
+      role: transition.role,
+      status: phaseStatus,
+      output: result.output,
+      error: effectiveSuccess ? undefined : phaseError,
+    };
 
-  await runPostProcessing({
-    taskId,
-    transition,
-    session,
-    language,
-    effectiveSuccess,
-    phaseStatus,
-    isInvestigationPhase,
-    advanceWorkflow,
-  });
+    await runPostProcessing({
+      taskId,
+      transition,
+      session,
+      language,
+      effectiveSuccess,
+      phaseStatus,
+      isInvestigationPhase,
+      advanceWorkflow,
+    });
 
-  return finalResult;
+    return finalResult;
+  } finally {
+    await finalizeAgentSession(session.id, sessionSucceeded);
+  }
 }

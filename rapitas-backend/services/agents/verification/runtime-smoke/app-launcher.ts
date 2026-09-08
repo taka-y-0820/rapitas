@@ -7,6 +7,8 @@
  */
 import { spawn, type ChildProcess } from 'child_process';
 import { createServer } from 'net';
+import { existsSync, realpathSync } from 'fs';
+import { dirname, join } from 'path';
 import { createLogger } from '../../../../config/logger';
 import { killProcessTreeSafely } from '../../agent-process-tracker';
 
@@ -39,6 +41,37 @@ export interface LaunchedApp {
   /** Kill the whole process tree. Idempotent. */
   stop(): void;
   pid: number | undefined;
+  /** True once the process has exited, whether crashed or intentionally stopped. */
+  hasExited(): boolean;
+  /** Exit code once the process has exited, else null. */
+  exitCode(): number | null;
+}
+
+/**
+ * Compute a `turbopack.root` override that covers a worktree's
+ * `rapitas-frontend/node_modules` junction, which links back to the main
+ * checkout and therefore resolves OUTSIDE the worktree root that
+ * `next.config.ts` uses by default. Turbopack refuses to start when its root
+ * doesn't contain every real path it touches ("points out of the filesystem
+ * root"), so the override must be the common ancestor of the worktree and the
+ * junction's real target — two directories above the resolved node_modules
+ * (`.../rapitas-frontend/node_modules` -> `.../rapitas-frontend` -> the repo
+ * root shared by every worktree and the main checkout).
+ *
+ * @param cwd - App launch cwd (expected to contain `rapitas-frontend/`). / 起動cwd
+ * @returns Common-ancestor path, or undefined when not resolvable (non-worktree
+ *          layouts, missing node_modules) — callers should leave the existing
+ *          turbopack root untouched in that case. / 解決不能なら undefined
+ */
+export function computeTurbopackRootOverride(cwd: string): string | undefined {
+  try {
+    const nodeModulesPath = join(cwd, 'rapitas-frontend', 'node_modules');
+    if (!existsSync(nodeModulesPath)) return undefined;
+    const realNodeModules = realpathSync(nodeModulesPath);
+    return dirname(dirname(realNodeModules));
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -59,12 +92,19 @@ export function launchApp(command: string, cwd: string, port: number): LaunchedA
     }
   };
 
-  log.info({ command, cwd, port }, '[runtime-smoke] launching app under test');
+  const turbopackRoot = computeTurbopackRootOverride(cwd);
+  log.info({ command, cwd, port, turbopackRoot }, '[runtime-smoke] launching app under test');
   const proc: ChildProcess = spawn(command, {
     shell: true,
     cwd,
     windowsHide: true,
-    env: { ...process.env, PORT: String(port), BROWSER: 'none', CI: '1' },
+    env: {
+      ...process.env,
+      PORT: String(port),
+      BROWSER: 'none',
+      CI: '1',
+      ...(turbopackRoot ? { RAPITAS_TURBOPACK_ROOT: turbopackRoot } : {}),
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   proc.stdout?.on('data', push);
@@ -72,9 +112,28 @@ export function launchApp(command: string, cwd: string, port: number): LaunchedA
   proc.on('error', (err) => push(`[spawn error] ${err.message}`));
 
   let stopped = false;
+  let exited = false;
+  let lastExitCode: number | null = null;
+  proc.on('exit', (code) => {
+    exited = true;
+    lastExitCode = code;
+    if (!stopped) {
+      // Exiting before anyone called stop() means the app crashed on its
+      // own — this is the fast, precise failure signal that used to be
+      // masked by waitForHealthy() spinning for the full readyTimeoutMs
+      // before falling back to a log-text guess.
+      log.warn(
+        { command, cwd, port, exitCode: code, logsTail: lines.slice(-25).join('\n') },
+        '[runtime-smoke] app exited unexpectedly before it was stopped',
+      );
+    }
+  });
+
   return {
     pid: proc.pid,
     logs: () => [...lines],
+    hasExited: () => exited,
+    exitCode: () => lastExitCode,
     stop: () => {
       if (stopped) return;
       stopped = true;
@@ -107,12 +166,16 @@ const HEALTH_LOG_EVERY_N_ATTEMPTS = 5;
  * @param url - Health URL / ヘルスチェックURL
  * @param timeoutMs - Overall deadline / 全体タイムアウト
  * @param logContext - Extra fields (e.g. taskId) merged into every log line for correlation. / ログ相関用の追加フィールド
+ * @param shouldAbort - Checked every poll iteration; returning true short-circuits
+ *   the wait immediately instead of spinning until timeoutMs (e.g. the launched
+ *   process already crashed). / 早期終了判定
  * @returns true when responsive within the deadline / 応答すれば true
  */
 export async function waitForHealthy(
   url: string,
   timeoutMs: number,
   logContext: Record<string, unknown> = {},
+  shouldAbort?: () => boolean,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   const startedAt = Date.now();
@@ -121,6 +184,13 @@ export async function waitForHealthy(
   let lastError = '';
   log.info({ url, timeoutMs, ...logContext }, '[runtime-smoke] polling health endpoint');
   while (Date.now() < deadline) {
+    if (shouldAbort?.()) {
+      log.warn(
+        { url, attempt, elapsedMs: Date.now() - startedAt, ...logContext },
+        '[runtime-smoke] health poll aborted — launched process already exited',
+      );
+      return false;
+    }
     attempt++;
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(4_000) });

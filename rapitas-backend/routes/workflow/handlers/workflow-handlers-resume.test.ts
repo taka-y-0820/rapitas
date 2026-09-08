@@ -431,6 +431,27 @@ describe('handleAnswerWorkflowQuestion', () => {
 });
 
 describe('handleResumeFromQuestion', () => {
+  test('uses the recorded source phase even when metadata is null', async () => {
+    mockResolveTaskWorkflowState.mockResolvedValue({
+      id: 503,
+      workflowStatus: 'awaiting_question',
+    });
+    mockFindFirstTransition.mockResolvedValue({ metadata: null, fromStatus: 'research_done' });
+    const result = await handleResumeFromQuestion({ params: { taskId: '503' }, set: {} });
+    expect(result.toStatus).toBe('research_done');
+    expect(result.source).toBe('transition_metadata');
+  });
+
+  test('does not resume back into a question self-transition', async () => {
+    mockResolveTaskWorkflowState.mockResolvedValue({
+      id: 503,
+      workflowStatus: 'awaiting_question',
+    });
+    mockFindFirstTransition.mockResolvedValue({ metadata: {}, fromStatus: 'awaiting_question' });
+    const result = await handleResumeFromQuestion({ params: { taskId: '503' }, set: {} });
+    expect(result.toStatus).toBe('in_progress');
+    expect(result.source).toBe('fallback');
+  });
   test('resumes to the previousStatus recorded in the awaiting_question transition metadata', async () => {
     mockResolveTaskWorkflowState.mockResolvedValue({
       id: 503,
@@ -526,4 +547,53 @@ describe('handleResumeFromQuestion', () => {
       'boom',
     );
   });
+});
+
+test('the actual answer handler holds lifecycle ownership until its persistence finishes', async () => {
+  const { withTaskLifecycleLock } = await import('../../../services/workflow/task-lifecycle-lock');
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  mockFindUnique.mockResolvedValue({
+    id: 503,
+    description: '',
+    goals: '[]',
+    workflowStatus: 'awaiting_question',
+    status: 'blocked',
+  });
+  mockUpdate.mockImplementationOnce(async () => {
+    entered();
+    await gate;
+    return {};
+  });
+  const answer = handleAnswerWorkflowQuestion({
+    params: { taskId: '503' },
+    body: { answer: 'Resume design review' },
+    set: {},
+    headers: { 'x-rapitas-source': 'operator' },
+  });
+  let decisionEntered = false;
+  let decision: Promise<void> | undefined;
+  try {
+    await started;
+    decision = withTaskLifecycleLock(503, async () => {
+      decisionEntered = true;
+    });
+    await withTaskLifecycleLock(504, async () => {});
+    expect(decisionEntered).toBe(false);
+    expect(mockRecordTransition).not.toHaveBeenCalled();
+  } finally {
+    release();
+    await answer;
+    await decision;
+  }
+  expect(decisionEntered).toBe(true);
+  expect(mockRecordTransition).toHaveBeenCalledWith(
+    expect.objectContaining({ cause: 'intake_question_answered' }),
+  );
 });
