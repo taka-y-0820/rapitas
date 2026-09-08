@@ -118,3 +118,31 @@ test('a delivered repair queue item prevents orphan reset', async () => {
   expect(await requeueOrphanTasks(NOW)).toBe(0);
   expect(mockPrisma.task.update).not.toHaveBeenCalled();
 });
+
+test('unreadable live execution never authorizes orphan reset', async () => {
+  mockPrisma.task.findMany.mockResolvedValue([
+    { id: 1, title: 'repair', workflowStatus: 'plan_approved' },
+  ]);
+  mockPrisma.agentExecution.findFirst.mockRejectedValueOnce(
+    new Error('execution lookup unavailable'),
+  );
+  await expect(requeueOrphanTasks(NOW)).rejects.toThrow('execution lookup unavailable');
+  expect(mockPrisma.task.update).not.toHaveBeenCalled();
+  expect(recordTransition).not.toHaveBeenCalled();
+});
+test('unreadable retry count never resets the orphan budget', async () => {
+  mockPrisma.task.findMany.mockResolvedValue([
+    { id: 1, title: 'repair', workflowStatus: 'plan_approved' },
+  ]);
+  mockPrisma.workflowTransition.count.mockRejectedValueOnce(new Error('budget lookup unavailable'));
+  await expect(requeueOrphanTasks(NOW)).rejects.toThrow('budget lookup unavailable');
+  expect(mockPrisma.task.update).not.toHaveBeenCalled();
+});
+test('failed orphan update is not counted or audited as a successful recovery', async () => {
+  mockPrisma.task.findMany.mockResolvedValue([
+    { id: 1, title: 'repair', workflowStatus: 'plan_approved' },
+  ]);
+  mockPrisma.task.update.mockRejectedValueOnce(new Error('state update unavailable'));
+  await expect(requeueOrphanTasks(NOW)).rejects.toThrow('state update unavailable');
+  expect(recordTransition).not.toHaveBeenCalled();
+});

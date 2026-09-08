@@ -40,12 +40,10 @@ const UNDISPATCHABLE_SETTLE_MS = 24 * 60 * 60 * 1000;
 
 /** True when the task still has a live agent execution. */
 async function hasLiveExecution(taskId: number): Promise<boolean> {
-  const live = await prisma.agentExecution
-    .findFirst({
-      where: { session: { config: { taskId } }, status: { in: ACTIVE_EXEC } },
-      select: { id: true },
-    })
-    .catch(() => null);
+  const live = await prisma.agentExecution.findFirst({
+    where: { session: { config: { taskId } }, status: { in: ACTIVE_EXEC } },
+    select: { id: true },
+  });
   return !!live;
 }
 
@@ -101,14 +99,15 @@ export async function requeueOrphanTasks(nowMs: number): Promise<number> {
     )
       continue;
 
-    const attempts = await prisma.workflowTransition
-      .count({ where: { taskId: t.id, cause: 'reconciler_requeue' } })
-      .catch(() => 0);
+    const attempts = await prisma.workflowTransition.count({
+      where: { taskId: t.id, cause: 'reconciler_requeue' },
+    });
     if (attempts >= MAX_ORPHAN_REQUEUE) continue;
 
-    await prisma.task
-      .update({ where: { id: t.id }, data: { status: 'todo', updatedAt: new Date() } })
-      .catch(() => {});
+    await prisma.task.update({
+      where: { id: t.id },
+      data: { status: 'todo', updatedAt: new Date() },
+    });
     await recordTransition({
       taskId: t.id,
       fromStatus: t.workflowStatus,
