@@ -69,12 +69,15 @@ export async function waitForVerifyCompletion(
 ): Promise<'completed' | 'moved' | 'stuck'> {
   const deadline = Date.now() + VERIFY_SETTLE_TIMEOUT_MS;
   const hardDeadline = Date.now() + VERIFY_SETTLE_HARD_CAP_MS;
+  const mergeDeadline = Date.now() + 90 * 60_000;
   // First check immediately — the automation often completes before this runs.
   for (;;) {
     const t = await resolveTaskWorkflowState(taskId);
     if (!t) return (await recoverFromLandedArtifact(taskId)) ? 'completed' : 'stuck';
     if (t.workflowStatus === 'completed' || t.status === 'done') return 'completed';
     if (t.workflowStatus !== 'verify_done') return 'moved';
+    if (['blocked', 'failed', 'canceling', 'canceled', 'cancelled'].includes(t.status))
+      return 'stuck';
     if (signal.aborted) return 'stuck';
     // Never call a task stuck WHILE its commit/PR automation is still
     // running: that work is unbounded (scoped tests, git push, `gh pr create`
@@ -85,13 +88,21 @@ export async function waitForVerifyCompletion(
     // pipeline still fails eventually.
     const stillWorking = hasVerifyCompletionInFlight(taskId) && Date.now() < hardDeadline;
     if (!stillWorking && Date.now() >= deadline) {
-      // Last check before blocking: the registry is an in-memory inference,
-      // but a PR row is a fact. Task 658 (task 660) sat unregistered while
-      // its jury deliberated and was blocked 3.5 minutes before PR #458
-      // landed — if the evidence of success is already on record, complete
-      // the task from it instead of parking a success as blocked. A task
-      // with no PR on record still fails here exactly as before.
-      return (await recoverFromLandedArtifact(taskId)) ? 'completed' : 'stuck';
+      const pendingMerge = await import('./verify-settle-artifact-recovery')
+        .then(
+          (m) =>
+            typeof m.isAwaitingRequiredMerge === 'function' && m.isAwaitingRequiredMerge(taskId),
+        )
+        .catch(() => false);
+      if (!(pendingMerge && Date.now() < mergeDeadline)) {
+        // Last check before blocking: the registry is an in-memory inference,
+        // but a PR row is a fact. Task 658 (task 660) sat unregistered while
+        // its jury deliberated and was blocked 3.5 minutes before PR #458
+        // landed — if the evidence of success is already on record, complete
+        // the task from it instead of parking a success as blocked. A task
+        // with no PR on record still fails here exactly as before.
+        return (await recoverFromLandedArtifact(taskId)) ? 'completed' : 'stuck';
+      }
     }
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, VERIFY_SETTLE_POLL_MS);

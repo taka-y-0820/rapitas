@@ -60,6 +60,9 @@ mock.module('../../utils/database/fail-closed-count', () => ({
 
 const mockUpdateMany = mock(() => Promise.resolve({ count: 1 }));
 const mockTaskUpdate = mock(() => Promise.resolve({}));
+const mockTaskComplete = mock(() => Promise.resolve({ count: 1 }));
+const mockCanContinue = mock(() => Promise.resolve(true));
+mock.module('./auto-merge-task-guard', () => ({ canContinueAutoMerge: mockCanContinue }));
 const mockPrisma = {
   workflowTransition: {
     count: mock(() => Promise.resolve(0)),
@@ -75,6 +78,7 @@ const mockPrisma = {
   task: {
     findUnique: mock(() => Promise.resolve({ themeId: 1 })),
     update: mockTaskUpdate,
+    updateMany: mockTaskComplete,
   },
 };
 mock.module('../../config/database', () => ({ prisma: mockPrisma }));
@@ -130,10 +134,27 @@ beforeEach(() => {
   mockResolveIntegrationId.mockImplementation(() => Promise.resolve<number | null>(1));
   mockUpdateMany.mockClear();
   mockTaskUpdate.mockClear();
+  mockTaskComplete.mockClear();
+  mockTaskComplete.mockResolvedValue({ count: 1 });
+  mockCanContinue.mockReset().mockResolvedValue(true);
   mockNotify.mockClear();
 });
 
 describe('AutoMergeWatcher — post-merge local mirror sync', () => {
+  test('does not complete or notify after a stop during merge', async () => {
+    mockCanContinue.mockResolvedValue(false);
+    await getProcess()(candidate, new Set(['Lint Code']));
+    expect(mockTaskComplete).not.toHaveBeenCalled();
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+  test('does not notify when cancellation wins the completion CAS', async () => {
+    mockTaskComplete.mockResolvedValue({ count: 0 });
+    await getProcess()(candidate, new Set(['Lint Code']));
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockTaskComplete.mock.calls[0][0]).toMatchObject({
+      where: { status: { in: ['in-progress', 'in_progress', 'done', 'completed'] } },
+    });
+  });
   test("scopes the updateMany to the candidate repo's integrationId", async () => {
     await getProcess()(candidate, new Set(['Lint Code']));
 
@@ -153,7 +174,7 @@ describe('AutoMergeWatcher — post-merge local mirror sync', () => {
     await getProcess()(candidate, new Set(['Lint Code']));
 
     expect(mockUpdateMany).not.toHaveBeenCalled();
-    expect(mockTaskUpdate).toHaveBeenCalledTimes(1); // completeTaskRow still ran
+    expect(mockTaskComplete).toHaveBeenCalledTimes(1); // completeTaskRow still ran
     expect(mockNotify).toHaveBeenCalledTimes(1); // auto_merge_success still sent
   });
 });

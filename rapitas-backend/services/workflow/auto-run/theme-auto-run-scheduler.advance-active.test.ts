@@ -69,7 +69,7 @@ beforeEach(() => {
 
 describe('advanceTheme — hang backstop', () => {
   it.each(['todo', 'in-progress', 'blocked'])(
-    'holds %s question waits across ticks and resumes after the answer',
+    'preserves %s question waits but releases the theme slot',
     async (status) => {
       mockResolveTaskWorkflowState.mockResolvedValue({
         id: 100,
@@ -85,6 +85,7 @@ describe('advanceTheme — hang backstop', () => {
       expect(mockStopTaskTreeAgents).not.toHaveBeenCalled();
       expect(mockTaskUpdate).not.toHaveBeenCalled();
       expect(mockNotifyAwaitingUserAnswer).toHaveBeenCalledWith(1, 100);
+      expect(mockSetCurrentTask).toHaveBeenCalledWith(1, null);
       mockResolveTaskWorkflowState.mockResolvedValue({
         id: 100,
         status: 'in-progress',
