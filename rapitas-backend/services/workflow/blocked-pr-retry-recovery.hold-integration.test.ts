@@ -63,6 +63,7 @@ mock.module('../../config/database', () => ({
     agentExecution: {
       findFirst: () => Promise.resolve(latestExecution),
     },
+    workflowTransition: { findFirst: async () => null },
     gitHubPullRequest: {
       // taskHasLinkedPr's primary lookup — null so it falls back to task.githubPrId.
       findFirst: () => Promise.resolve(null),

@@ -90,3 +90,7 @@ services/workflow/workflow-orchestrator-overlap-guard.test.ts
 services/workflow/workflow-orchestrator-context.test.ts
 services/workflow/artifact-reuse-reconciler.test.ts
 services/workflow/workflow-mode-config.test.ts
+services/workflow/auto-merge-task-guard.test.ts
+services/workflow/blocked-pr-retry-recovery.test.ts
+services/workflow/blocked-pr-retry-recovery.hold-integration.test.ts
+services/workflow/supervisor-publication-safety.test.ts
