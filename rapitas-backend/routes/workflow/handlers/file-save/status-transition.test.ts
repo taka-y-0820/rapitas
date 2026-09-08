@@ -82,14 +82,12 @@ function buildParams() {
 
 describe('computeAndApplyStatusTransition — 非収束カットオフの二重記録防止', () => {
   beforeEach(() => {
-    mockValidateVerify
-      .mockReset()
-      .mockReturnValue({
-        ok: false,
-        missingSections: [],
-        severity: 80,
-        summary: 'verify.md self-contradicts',
-      });
+    mockValidateVerify.mockReset().mockReturnValue({
+      ok: false,
+      missingSections: [],
+      severity: 80,
+      summary: 'verify.md self-contradicts',
+    });
     transitionCalls.length = 0;
     mockRecordTransition.mockClear();
     mockTaskUpdate.mockClear();
