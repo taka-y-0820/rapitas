@@ -33,7 +33,15 @@ type CodexItemPayload = {
   command?: string;
   exit_code?: number;
   status?: 'in_progress' | 'completed' | 'failed';
+  aggregated_output?: string;
 };
+
+/**
+ * Max chars of a failed command's aggregated_output shown inline in the live
+ * log — mirrors the stderr tail length used on process close
+ * (process-runner.ts's `state.errorBuffer.slice(-4096)`).
+ */
+const FAILED_COMMAND_OUTPUT_TAIL_LIMIT = 4096;
 
 /**
  * Process a single parsed JSON event object from Codex CLI stdout.
@@ -117,7 +125,18 @@ export function processJsonEvent(
     case 'item.completed': {
       const item = json.item as CodexItemPayload | undefined;
       if (item?.type === 'agent_message' && typeof item.text === 'string') {
-        displayOutput += item.text;
+        const messageId = typeof item.id === 'string' ? item.id : undefined;
+        // NOTE: same first-occurrence-wins pattern as state.turnFailed above —
+        // a retried turn can re-send an item.completed for an id already
+        // flushed to displayOutput, which would otherwise double the final
+        // AgentExecutionResult.output. Items without an id can't be
+        // deduplicated and are always appended (unchanged prior behaviour).
+        if (!messageId || !state.seenAgentMessageIds.has(messageId)) {
+          displayOutput += item.text;
+          if (messageId) state.seenAgentMessageIds.add(messageId);
+        } else {
+          logger.info(`${logPrefix} Skipped duplicate agent_message item.completed: ${messageId}`);
+        }
       } else if (item?.type === 'command_execution') {
         const command = typeof item.command === 'string' ? item.command : '(unknown command)';
         const started =
@@ -129,6 +148,8 @@ export function processJsonEvent(
         const failed = exitCode !== undefined ? exitCode !== 0 : item.status === 'failed';
         const exitLabel = exitCode !== undefined ? `exit ${exitCode}` : (item.status ?? 'unknown');
         const label = failed ? 'Command Failed' : 'Command Done';
+        const aggregatedOutput =
+          typeof item.aggregated_output === 'string' ? item.aggregated_output : undefined;
 
         // NOTE: this is a log-visibility distinction only — a non-zero exit
         // from a single command must not, by itself, decide the overall
@@ -136,9 +157,25 @@ export function processJsonEvent(
         // state.turnFailed (see process-runner-close-result.ts).
         displayOutput += `[${label}] ${command} (${durationLabel}${exitLabel})\n`;
         if (failed) {
-          logger.warn(`${logPrefix} ${label}: ${command} (${exitLabel})`);
+          logger.warn(
+            { command, exitCode, aggregatedOutputLength: aggregatedOutput?.length ?? 0 },
+            `${logPrefix} ${label}: ${command} (${exitLabel})`,
+          );
+          // NOTE: surfaced inline (tail only) so a failing command's output is
+          // visible in the live log at the point of failure, not only on the
+          // stderr-tail diagnostic that process-runner.ts logs at process close.
+          if (aggregatedOutput) {
+            const tail =
+              aggregatedOutput.length > FAILED_COMMAND_OUTPUT_TAIL_LIMIT
+                ? aggregatedOutput.slice(-FAILED_COMMAND_OUTPUT_TAIL_LIMIT)
+                : aggregatedOutput;
+            displayOutput += `${tail}\n`;
+          }
         } else {
-          logger.info(`${logPrefix} ${label}: ${command} (${exitLabel})`);
+          logger.info(
+            { command, exitCode, aggregatedOutputLength: aggregatedOutput?.length ?? 0 },
+            `${logPrefix} ${label}: ${command} (${exitLabel})`,
+          );
         }
         if (typeof item.id === 'string') state.activeCodexCommands.delete(item.id);
       } else {

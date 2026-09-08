@@ -137,6 +137,21 @@ export async function resolvePhaseResumeSessionId(q: PhaseResumeQuery): Promise<
     for (const candidate of candidates) {
       const sessionId = candidate.claudeSessionId;
       if (!sessionId || !claudeSessionExists(q.workingDirectory, sessionId)) continue;
+      // A session whose resume already FAILED is exhausted, not resumable:
+      // task 894 (2026-09-08) hit "Prompt is too long" on --resume and the
+      // runner retried the identical resume three times before blocking.
+      // Cold-start instead — the fresh context is the only thing that can work.
+      const failedResume = await prisma.agentExecution.findFirst({
+        where: { claudeSessionId: sessionId, status: 'failed' },
+        select: { id: true },
+      });
+      if (failedResume) {
+        log.info(
+          { taskId: q.taskId, role: q.role, sessionId, failedExecutionId: failedResume.id },
+          '[phase-resume] Prior resume of this session failed — cold-starting',
+        );
+        continue;
+      }
       log.info(
         { taskId: q.taskId, role: q.role, sessionId, previousExecutionId: candidate.id },
         '[phase-resume] Resuming the previous CLI session for this role',

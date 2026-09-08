@@ -15,11 +15,13 @@ import { realtimeService } from '../../communication/realtime-service';
 import { hasPromotableBacklog, promoteBacklogForTheme } from './backlog-task-promoter';
 import { logCycleEvent } from '../../observability';
 import { getThemeActiveQueueItems, hasItemAwaitingApproval } from './auto-run-selection';
+import { eligibleTopLevelTodoWhere } from './auto-run-eligibility';
 import { recordTransition } from '../transition-recorder';
 import {
   resumeAutoRun,
   finalizeStop,
   startAutoRun,
+  isAutoResumablePauseStatus,
   type ThemeAutoRunState,
 } from './theme-auto-run-service';
 import {
@@ -93,13 +95,15 @@ async function processArmedIdleTheme(
   idleStopMinutes: number,
   now: Date,
 ): Promise<boolean> {
-  // Mirror selectNextTask's eligibility (parentId:null — the scheduler only
-  // drives TOP-LEVEL tasks; subtasks are run by AIOrchestra). Counting
-  // subtasks here let a stuck todo SUBTASK resume the theme, which then went
-  // straight back to all_done because selection skips it — a 12s idle⇄running
-  // flap that never made progress.
+  // Mirror selectNextTask's eligibility via eligibleTopLevelTodoWhere
+  // (parentId:null — the scheduler only drives TOP-LEVEL tasks; subtasks are
+  // run by AIOrchestra — plus workflowDisabled/awaiting_question exclusion).
+  // Counting a task selectNextTask would refuse (subtask, workflowDisabled,
+  // or awaiting_question) resumes the theme, which then goes straight back to
+  // idle/all_done because selection skips it — a 12s idle⇄running flap that
+  // never made progress (task 635, task 884).
   const todo = await prisma.task
-    .count({ where: { themeId: state.themeId, status: 'todo', parentId: null } })
+    .count({ where: eligibleTopLevelTodoWhere(state.themeId) })
     .catch(() => 0);
 
   if (!state.idleSince) {
@@ -185,15 +189,11 @@ async function processStoppedIdleTheme(
 ): Promise<void> {
   if (!state.idleStoppedAt) return; // user stop → stay stopped
 
+  // Same reason as processArmedIdleTheme (task 884): count only tasks
+  // selectNextTask would also accept, or a re-arm here just bounces straight
+  // back to idle once the auto-run loop rejects the same task.
   const manualTodo = await prisma.task
-    .count({
-      where: {
-        themeId: state.themeId,
-        status: 'todo',
-        parentId: null,
-        autoCreatedFromBacklog: false,
-      },
-    })
+    .count({ where: eligibleTopLevelTodoWhere(state.themeId, { autoCreatedFromBacklog: false }) })
     .catch(() => 0);
   if (manualTodo > 0) {
     await resumeIdleTheme(state.themeId, 'manual_task_rearm', manualTodo);
@@ -262,9 +262,12 @@ export async function processIdleThemesImpl(
 
 /**
  * For paused themes, check whether approval was granted and auto-resume.
+ * Only themes paused for approval (status='paused_approval') are eligible —
+ * an explicit user pause or the reason-unknown legacy pause must never be
+ * silently overridden by this polling safety net (task 883).
  *
  * @param prisma - Prisma client / Prismaクライアント
- * @param paused - Themes currently in 'paused' status / 一時停止中テーマ一覧
+ * @param paused - Themes currently in a paused status / 一時停止中テーマ一覧
  */
 export async function processPausedThemesImpl(
   prisma: PrismaClient,
@@ -272,6 +275,7 @@ export async function processPausedThemesImpl(
 ): Promise<void> {
   for (const state of paused) {
     if (!state.currentTaskId) continue;
+    if (!isAutoResumablePauseStatus(state.status)) continue;
     try {
       // If the queue item is no longer 'waiting_approval' (e.g. user approved in UI)
       // AND the ThemeAutoRun was not already resumed by onPlanApproved(), resume now.

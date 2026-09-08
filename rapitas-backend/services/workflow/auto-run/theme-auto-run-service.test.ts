@@ -35,6 +35,7 @@ const {
   resumeAutoRun,
   isThemeAutoRunActive,
   finalizeStop,
+  onAwaitingPlanApproval,
 } = await import('./theme-auto-run-service');
 
 // ---------------------------------------------------------------------------
@@ -90,6 +91,18 @@ describe('isThemeAutoRunActive', () => {
       desc: 'returns true when status is paused',
       themeId: 42,
       mockValue: { status: 'paused' },
+      expected: true,
+    },
+    {
+      desc: 'returns true when status is paused_user (task 883)',
+      themeId: 42,
+      mockValue: { status: 'paused_user' },
+      expected: true,
+    },
+    {
+      desc: 'returns true when status is paused_approval (task 883)',
+      themeId: 42,
+      mockValue: { status: 'paused_approval' },
       expected: true,
     },
     {
@@ -158,15 +171,31 @@ describe('startAutoRun', () => {
 describe('pauseAutoRun', () => {
   beforeEach(resetMocks);
 
-  it('sets status to paused', async () => {
-    mockUpsert.mockResolvedValue(makeRecord({ status: 'paused' }));
+  it('sets status to paused_user so auto-resume never overrides an explicit pause (task 883)', async () => {
+    mockUpsert.mockResolvedValue(makeRecord({ status: 'paused_user' }));
     const result = await pauseAutoRun(42);
     expect(mockUpsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        update: expect.objectContaining({ status: 'paused' }),
+        create: expect.objectContaining({ status: 'paused_user' }),
+        update: expect.objectContaining({ status: 'paused_user' }),
       }),
     );
-    expect(result.status).toBe('paused');
+    expect(result.status).toBe('paused_user');
+  });
+});
+
+describe('onAwaitingPlanApproval', () => {
+  beforeEach(resetMocks);
+
+  it('sets status to paused_approval on the running→paused transition (task 883)', async () => {
+    mockUpdateMany.mockResolvedValue({ count: 1 });
+    await onAwaitingPlanApproval(42);
+    expect(mockUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { themeId: 42, status: 'running' },
+        data: expect.objectContaining({ status: 'paused_approval' }),
+      }),
+    );
   });
 });
 
@@ -188,8 +217,8 @@ describe('stopAutoRun', () => {
 describe('resumeAutoRun', () => {
   beforeEach(resetMocks);
 
-  it('transitions paused → running', async () => {
-    mockFindUnique.mockResolvedValue(makeRecord({ status: 'paused' }));
+  it('transitions paused_approval → running', async () => {
+    mockFindUnique.mockResolvedValue(makeRecord({ status: 'paused_approval' }));
     mockUpdate.mockResolvedValue(makeRecord({ status: 'running' }));
 
     const result = await resumeAutoRun(42);
@@ -204,6 +233,22 @@ describe('resumeAutoRun', () => {
 
     const result = await resumeAutoRun(42);
     expect(result?.status).toBe('running');
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('no-ops when paused for a user-initiated pause (paused_user, task 883)', async () => {
+    mockFindUnique.mockResolvedValue(makeRecord({ status: 'paused_user' }));
+
+    const result = await resumeAutoRun(42);
+    expect(result?.status).toBe('paused_user');
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('no-ops for a reason-unknown legacy pause (bare "paused", task 883)', async () => {
+    mockFindUnique.mockResolvedValue(makeRecord({ status: 'paused' }));
+
+    const result = await resumeAutoRun(42);
+    expect(result?.status).toBe('paused');
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 

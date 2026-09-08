@@ -68,6 +68,34 @@ beforeEach(() => {
 });
 
 describe('advanceTheme — hang backstop', () => {
+  it.each(['todo', 'in-progress', 'blocked'])(
+    'holds %s question waits across ticks and resumes after the answer',
+    async (status) => {
+      mockResolveTaskWorkflowState.mockResolvedValue({
+        id: 100,
+        status,
+        workflowStatus: 'awaiting_question',
+        workflowMode: null,
+        parentId: null,
+      });
+      for (let tick = 0; tick < 3; tick++) {
+        await internal(scheduler).advanceTheme(1, 100, 'priority', 0, freshLastRunAt());
+      }
+      expect(mockEnqueue).not.toHaveBeenCalled();
+      expect(mockStopTaskTreeAgents).not.toHaveBeenCalled();
+      expect(mockTaskUpdate).not.toHaveBeenCalled();
+      expect(mockNotifyAwaitingUserAnswer).toHaveBeenCalledWith(1, 100);
+      mockResolveTaskWorkflowState.mockResolvedValue({
+        id: 100,
+        status: 'in-progress',
+        workflowStatus: 'draft',
+        workflowMode: null,
+        parentId: null,
+      });
+      await internal(scheduler).advanceTheme(1, 100, 'priority', 0, freshLastRunAt());
+      expect(mockEnqueue).toHaveBeenCalledTimes(1);
+    },
+  );
   it('holds (does not stop) a wedged task that is awaiting a user answer', async () => {
     mockIsAwaitingUserAnswer.mockResolvedValue(true);
 

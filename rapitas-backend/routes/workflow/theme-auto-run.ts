@@ -14,6 +14,7 @@ import {
   startAutoRun,
   pauseAutoRun,
   stopAutoRun,
+  toPublicAutoRunState,
 } from '../../services/workflow/auto-run/theme-auto-run-service';
 import { ThemeAutoRunScheduler } from '../../services/workflow/auto-run/theme-auto-run-scheduler';
 import { logCycleEvent } from '../../services/observability';
@@ -57,7 +58,7 @@ export const themeAutoRunRoutes = new Elysia()
 
       return {
         success: true,
-        autoRun: state,
+        autoRun: toPublicAutoRunState(state),
         currentTask,
         remainingCount,
       };
@@ -147,7 +148,7 @@ export const themeAutoRunRoutes = new Elysia()
           );
         }
 
-        return { success: true, autoRun: state };
+        return { success: true, autoRun: toPublicAutoRunState(state) };
       } catch (err) {
         log.error({ err, themeId, action }, '[theme-auto-run] Action failed');
         context.set.status = HTTP_STATUS.INTERNAL_SERVER_ERROR;

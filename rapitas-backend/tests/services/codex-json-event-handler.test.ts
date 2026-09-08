@@ -33,6 +33,7 @@ function createHarness() {
     turnFailed: false,
     turnFailureMessage: null,
     activeCodexCommands: new Map(),
+    seenAgentMessageIds: new Set(),
   };
   const callbacks: ProcessRunnerCallbacks = {
     emitOutput: (text) => emitted.push(text),
@@ -258,6 +259,125 @@ describe('codex json-event-handler', () => {
     );
 
     expect(h.state.outputBuffer).toContain('[Command Failed] git status');
+  });
+
+  test('a second item.completed(agent_message) with the same id is skipped, not appended again', () => {
+    const h = createHarness();
+
+    processJsonEvent(
+      { type: 'item.completed', item: { id: 'msg-1', type: 'agent_message', text: '回答A' } },
+      h.state,
+      h.callbacks,
+      {},
+      '[Codex]',
+    );
+    processJsonEvent(
+      { type: 'item.completed', item: { id: 'msg-1', type: 'agent_message', text: '回答A' } },
+      h.state,
+      h.callbacks,
+      {},
+      '[Codex]',
+    );
+
+    expect(h.state.outputBuffer.match(/回答A/g)?.length).toBe(1);
+    expect(h.emitted.filter((t) => t.includes('回答A')).length).toBe(1);
+  });
+
+  test('item.completed(agent_message) with different ids are both appended', () => {
+    const h = createHarness();
+
+    processJsonEvent(
+      { type: 'item.completed', item: { id: 'msg-1', type: 'agent_message', text: '回答A' } },
+      h.state,
+      h.callbacks,
+      {},
+      '[Codex]',
+    );
+    processJsonEvent(
+      { type: 'item.completed', item: { id: 'msg-2', type: 'agent_message', text: '回答B' } },
+      h.state,
+      h.callbacks,
+      {},
+      '[Codex]',
+    );
+
+    expect(h.state.outputBuffer).toContain('回答A');
+    expect(h.state.outputBuffer).toContain('回答B');
+  });
+
+  test('item.completed with command_execution failure appends the aggregated_output tail to the output buffer', () => {
+    const h = createHarness();
+
+    processJsonEvent(
+      {
+        type: 'item.completed',
+        item: {
+          id: 'cmd-1',
+          type: 'command_execution',
+          command: 'npm test',
+          exit_code: 1,
+          aggregated_output: 'FAIL src/foo.test.ts\n1 failing\n',
+        },
+      },
+      h.state,
+      h.callbacks,
+      {},
+      '[Codex]',
+    );
+
+    expect(h.state.outputBuffer).toContain('[Command Failed] npm test');
+    expect(h.state.outputBuffer).toContain('FAIL src/foo.test.ts');
+    expect(h.state.outputBuffer).toContain('1 failing');
+  });
+
+  test('item.completed with command_execution success does not append aggregated_output to the output buffer', () => {
+    const h = createHarness();
+
+    processJsonEvent(
+      {
+        type: 'item.completed',
+        item: {
+          id: 'cmd-2',
+          type: 'command_execution',
+          command: 'echo ok',
+          exit_code: 0,
+          aggregated_output: 'ok\n',
+        },
+      },
+      h.state,
+      h.callbacks,
+      {},
+      '[Codex]',
+    );
+
+    expect(h.state.outputBuffer).toContain('[Command Done] echo ok');
+    expect(h.state.outputBuffer).not.toContain('ok\nok\n');
+    expect(h.state.outputBuffer.endsWith('ok\n')).toBe(false);
+  });
+
+  test('a failed command_execution with aggregated_output longer than the tail limit is truncated to the tail', () => {
+    const h = createHarness();
+    const longOutput = 'x'.repeat(5000) + 'END_MARKER';
+
+    processJsonEvent(
+      {
+        type: 'item.completed',
+        item: {
+          id: 'cmd-3',
+          type: 'command_execution',
+          command: 'build.sh',
+          exit_code: 1,
+          aggregated_output: longOutput,
+        },
+      },
+      h.state,
+      h.callbacks,
+      {},
+      '[Codex]',
+    );
+
+    expect(h.state.outputBuffer).toContain('END_MARKER');
+    expect(h.state.outputBuffer.length).toBeLessThan(longOutput.length);
   });
 
   test('item.completed with command_execution and no matching item.started omits the duration but still shows the command', () => {

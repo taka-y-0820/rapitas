@@ -71,9 +71,32 @@ export interface RuleFinding {
 }
 
 /**
+ * Compute a rate, avoiding division by zero.
+ *
+ * @param count - Numerator. / 分子
+ * @param denominator - Denominator (execution volume). / 分母（実行量）
+ * @returns The rate, or null when the denominator is zero. / 分母が0のときは null
+ */
+export function calcRate(count: number, denominator: number): number | null {
+  return denominator > 0 ? count / denominator : null;
+}
+
+/**
+ * Format a rate for display in a concern's detail text.
+ *
+ * @param rate - The rate, or null. / 率、または null
+ * @returns A percentage string, or 'N/A' when null. / パーセント文字列、または 'N/A'
+ */
+export function formatPct(rate: number | null): string {
+  return rate === null ? 'N/A' : `${(rate * 100).toFixed(2)}%`;
+}
+
+/**
  * Apply the stagnation rules to the newest two windows. Pure — the testable
- * core of the watcher. A rule fires when current >= MIN_SIGNAL AND
- * current >= previous (no improvement).
+ * core of the watcher. A rule fires when current >= MIN_SIGNAL AND either
+ * the absolute count is not improving OR the rate against execution volume
+ * (completed transitions) is worsening — a shrinking absolute count can
+ * still hide a worsening rate when execution volume shrinks faster.
  *
  * @param current - Newest window. / 直近の窓
  * @param previous - The window before it. / その前の窓
@@ -87,13 +110,28 @@ export function evaluateRules(
   for (const rule of RULES) {
     const cur = current.counts[rule.metric];
     const prev = previous.counts[rule.metric];
-    if (cur < MIN_SIGNAL || cur < prev) continue;
+    if (cur < MIN_SIGNAL) continue;
+
+    const curCompleted = current.counts.completed;
+    const prevCompleted = previous.counts.completed;
+    const curRate = calcRate(cur, curCompleted);
+    const prevRate = calcRate(prev, prevCompleted);
+
+    const absoluteWorsened = cur >= prev;
+    const rateWorsened = curRate !== null && prevRate !== null && curRate > prevRate;
+    if (!absoluteWorsened && !rateWorsened) continue;
+
+    const reasons: string[] = [];
+    if (absoluteWorsened) reasons.push('絶対件数');
+    if (rateWorsened) reasons.push('率');
+
     findings.push({
       key: rule.key,
       title: rule.title,
       detail:
-        `直近窓 (${current.from.slice(0, 10)}〜${current.to.slice(0, 10)}) で ${rule.metric} = ${cur} 件` +
-        `（前窓 ${prev} 件、完了 ${current.counts.completed} 件）。改善傾向が見られません。\n\n` +
+        `直近窓 (${current.from.slice(0, 10)}〜${current.to.slice(0, 10)}) で ${rule.metric} = ${cur} 件 / 完了 ${curCompleted} 件（${formatPct(curRate)}）` +
+        `　前窓は ${prev} 件 / 完了 ${prevCompleted} 件（${formatPct(prevRate)}）` +
+        `。悪化要因: ${reasons.join('・')}。\n\n` +
         `調査の起点: ${rule.hint}\n\n` +
         `メトリクスの全体は GET /backlog/loop-metrics で取得できます。`,
     });

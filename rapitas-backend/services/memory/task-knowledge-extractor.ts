@@ -15,6 +15,7 @@ import { memoryTaskQueue } from './index';
 import { getInsensitiveMode } from '../../config/db-provider';
 import { findSemanticDuplicate, findLexicalDuplicate } from './dedup';
 import { boostDecayOnAccess } from './forgetting';
+import { readWorkflowFile } from '../workflow/workflow-file-utils';
 import { notifyKnowledgeExtracted } from '../communication/notification-service';
 
 const log = createLogger('memory:task-knowledge');
@@ -52,7 +53,7 @@ export async function extractKnowledgeFromTask(taskId: number): Promise<number[]
     }
 
     // Load verify.md content
-    const verifyContent = await loadVerifyContent(taskId, task.theme?.categoryId, task.themeId);
+    const verifyContent = (await readWorkflowFile(taskId, 'verify')) ?? '';
 
     // Build extraction context
     const context = buildExtractionContext(task, verifyContent);
@@ -191,11 +192,7 @@ export async function reflectOnFailure(taskId: number, finalStatus: string): Pro
     // A clean completion with no trouble has no failure to reflect on.
     if (!causeSummary && finalStatus === 'completed') return entryIds;
 
-    const verifyContent = await loadVerifyContent(
-      taskId,
-      task.theme?.categoryId,
-      task.themeId,
-    ).catch(() => '');
+    const verifyContent = (await readWorkflowFile(taskId, 'verify').catch(() => null)) ?? '';
     const context = [
       `タスク: ${task.title}`,
       task.description ? `説明: ${task.description.slice(0, 400)}` : '',
@@ -547,27 +544,6 @@ export async function searchCrossProjectKnowledge(
 }
 
 // ──── Helper Functions ────
-
-async function loadVerifyContent(
-  taskId: number,
-  categoryId: number | null | undefined,
-  themeId: number | null,
-): Promise<string> {
-  try {
-    const { join } = await import('path');
-    const { readFile } = await import('fs/promises');
-    const dir = join(
-      process.cwd(),
-      'tasks',
-      String(categoryId ?? 0),
-      String(themeId ?? 0),
-      String(taskId),
-    );
-    return await readFile(join(dir, 'verify.md'), 'utf-8');
-  } catch {
-    return '';
-  }
-}
 
 function buildExtractionContext(
   task: {

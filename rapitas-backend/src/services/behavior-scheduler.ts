@@ -135,9 +135,16 @@ export class BehaviorScheduler {
           });
       }
 
-      // 7:05 daily: settle approved prompt addenda once enough post-approval
-      // sessions exist — records the measured delta and reverts regressions.
+      // 7:05 daily: close the prompt-evolution loop unattended. Auto-approval
+      // runs FIRST so an addendum approved today starts accruing its
+      // post-approval window immediately. Daily (not weekly) because
+      // experiment-lifecycle can raise a 'proposed' row at any time.
       if (h === 7 && m === 5) {
+        await import('../../services/self-learning/prompt-evolution-auto-approve')
+          .then(({ autoApproveEligibleProposals }) => autoApproveEligibleProposals())
+          .catch((err: Error) => {
+            log.error({ err }, '[BehaviorScheduler] Prompt evolution auto-approval failed');
+          });
         await import('../../services/self-learning/prompt-evolution-settle')
           .then(({ settleApprovedEvolutions }) => settleApprovedEvolutions(prisma as never))
           .catch((err: Error) => {

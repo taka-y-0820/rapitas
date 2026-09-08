@@ -10,11 +10,17 @@
 import type { CodexCliAgentConfig } from './types';
 import { createLogger } from '../../../config/logger';
 import { buildSanitizedSpawnEnv } from '../../../utils/agent';
+import { escapeWindowsShellArg } from '../../../utils/common';
 
 const logger = createLogger('codex-cli-agent/process-runner-args');
 
 /**
  * Build the final spawn command and args for the given platform.
+ *
+ * On Windows, `codexPath` resolves to a `.cmd` shim whose body re-expands
+ * `%*` into a second command line that `cmd.exe` parses again, so `args`
+ * (unlike `codexPath` itself) needs the meta-character escape applied
+ * twice — see `escapeWindowsShellArg`'s `doubleEscapeMetaChars` parameter.
  */
 export function buildSpawnCommand(
   codexPath: string,
@@ -23,16 +29,8 @@ export function buildSpawnCommand(
 ): [string, string[]] {
   if (!isWindows) return [codexPath, args];
 
-  const argsString = args
-    .map((arg) => {
-      if (arg.includes(' ') || arg.includes('&') || arg.includes('|') || arg.includes('\n')) {
-        return `"${arg.replace(/"/g, '\\"')}"`;
-      }
-      return arg;
-    })
-    .join(' ');
-
-  const quotedPath = codexPath.includes(' ') ? `"${codexPath}"` : codexPath;
+  const argsString = args.map((arg) => escapeWindowsShellArg(arg, true)).join(' ');
+  const quotedPath = escapeWindowsShellArg(codexPath, false);
   return [`chcp 65001 >NUL 2>&1 && ${quotedPath} ${argsString}`, []];
 }
 
@@ -96,7 +94,13 @@ export function buildCodexArgs(
   prompt: string,
   logPrefix: string,
 ): ArgsResult {
-  const args: string[] = ['exec'];
+  const args: string[] = [];
+  // Approval is a top-level CLI option, so place it before the subcommand.
+  const approvalPolicy = config.investigationMode ? 'never' : config.approvalPolicy;
+  if (approvalPolicy && (!config.yolo || config.investigationMode)) {
+    args.push('--ask-for-approval', approvalPolicy);
+  }
+  args.push('exec');
 
   // NOTE(security): Unlike Claude Code (`--strict-mcp-config`, see
   // claude-execution-runner.ts), Codex CLI has no single flag that restricts
@@ -129,11 +133,15 @@ export function buildCodexArgs(
     args.push('--dangerously-bypass-approvals-and-sandbox');
   } else if (config.sandboxMode) {
     args.push('--sandbox', config.sandboxMode);
-    if (config.outputLastMessageFile) {
-      args.push('--output-last-message', config.outputLastMessageFile);
-    }
+  } else if (approvalPolicy) {
+    args.push('--sandbox', 'workspace-write');
   } else {
     args.push('--full-auto');
+  }
+
+  // Output capture is independent of the sandbox selection (including research).
+  if (config.outputLastMessageFile) {
+    args.push('--output-last-message', config.outputLastMessageFile);
   }
 
   // Model setting (skip in investigation mode)
@@ -150,7 +158,8 @@ export function buildCodexArgs(
   const resumeId = config.resumeSessionId;
 
   if (resumeId) {
-    args.push('resume', resumeId);
+    args.push('resume', resumeId, '-');
+    promptForStdin = prompt;
     logger.info(`${logPrefix} Resuming session: ${resumeId}`);
   } else if (config.investigationMode) {
     const outputType = config.investigationOutputType ?? 'research';
