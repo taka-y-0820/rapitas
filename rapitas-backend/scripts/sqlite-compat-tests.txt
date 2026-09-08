@@ -94,3 +94,8 @@ services/workflow/auto-merge-task-guard.test.ts
 services/workflow/blocked-pr-retry-recovery.test.ts
 services/workflow/blocked-pr-retry-recovery.hold-integration.test.ts
 services/workflow/supervisor-publication-safety.test.ts
+utils/ai-client/aux-cli-cleanup.test.ts
+utils/ai-client/claude-cli-provider.test.ts
+utils/ai-client/claude-cli-provider.errors.test.ts
+utils/ai-client/claude-cli-provider.parsing.test.ts
+utils/ai-client/claude-cli-provider.tracking.test.ts
