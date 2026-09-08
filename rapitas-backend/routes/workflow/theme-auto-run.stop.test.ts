@@ -5,8 +5,9 @@ const db = {
 mock.module('../../config', () => ({ prisma: db }));
 mock.module('../../config/logger', () => ({ createLogger: () => ({ info() {}, error() {} }) }));
 mock.module('../../services/observability', () => ({ logCycleEvent() {} }));
+const startScheduler = mock((_processQueue?: boolean) => {});
 mock.module('../../services/workflow/auto-run/theme-auto-run-scheduler', () => ({
-  ThemeAutoRunScheduler: { getInstance: () => ({ start() {} }) },
+  ThemeAutoRunScheduler: { getInstance: () => ({ start: startScheduler }) },
 }));
 const state = { currentTaskId: null, enabled: false, status: 'stopping' };
 mock.module('../../services/workflow/auto-run/theme-auto-run-service', () => ({
@@ -22,6 +23,7 @@ mock.module('../../services/agents/stop-task-agents', () => ({ stopThemeAgents: 
 mock.module('../../services/agents/settle-stopped-tasks', () => ({ settleStoppedTasks: settle }));
 const { themeAutoRunRoutes } = await import('./theme-auto-run');
 beforeEach(() => {
+  startScheduler.mockClear();
   stop.mockReset().mockResolvedValue({ stoppedCount: 2, executionIds: [91, 92] });
   settle.mockReset().mockResolvedValue([1, 2]);
 });
@@ -38,12 +40,14 @@ test('null current task still settles every stopped execution before reporting s
   expect(response.status).toBe(200);
   expect((await response.json()).success).toBe(true);
   expect(settle).toHaveBeenCalledWith(db, [91, 92]);
+  expect(startScheduler).toHaveBeenCalledWith(false);
 });
 test('settlement failure is reported as failure, never successful stop', async () => {
   settle.mockRejectedValueOnce(new Error('DB unavailable'));
   const response = await request();
   expect(response.status).toBe(500);
   expect((await response.json()).success).toBe(false);
+  expect(startScheduler).toHaveBeenCalledWith(false);
 });
 test('agent stop failure is not converted to an empty successful stop', async () => {
   stop.mockRejectedValueOnce(new Error('stop unavailable'));

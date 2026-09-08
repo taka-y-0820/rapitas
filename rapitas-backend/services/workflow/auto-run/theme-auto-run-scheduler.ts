@@ -63,14 +63,15 @@ export class ThemeAutoRunScheduler {
   }
 
   /** Start the scheduler (idempotent). */
-  start(): void {
+  start(processQueue = true): void {
     // CRITICAL: the WorkflowRunner is what actually DEQUEUES and executes queued
     // items (via advanceWorkflow → role agent). It is only auto-started by
     // AIOrchestra.enqueueTask — which this scheduler bypasses by enqueuing
     // through WorkflowQueueService directly. Without this, auto-run items sit at
     // 'queued' forever and never run (observed: tasks enqueued but no agent ran).
     // startProcessing() is idempotent, so calling it on every start() is safe.
-    WorkflowRunner.getInstance().startProcessing();
+    // Stop recovery needs the polling loop, never permission to dequeue work.
+    if (processQueue) WorkflowRunner.getInstance().startProcessing();
 
     // Capture the commit this backend booted on so the optional dry-restart only
     // fires once new commits actually land (avoids restarting on every dry tick).
@@ -98,8 +99,7 @@ export class ThemeAutoRunScheduler {
    * Recover on server restart:
    *  - Any ThemeAutoRun still in 'running'/'paused' OR idle-but-ARMED
    *    (enabled:true) should resume — start the scheduler so its tick drives them.
-   *  - 'stopping' records are cleaned up (the previous execution was killed by
-   *    the restart; treat as idle).
+   *  - 'stopping' records retry normal stop settlement before becoming idle.
    *
    * CRITICAL for the perpetual loop: an `all_done` theme parks at status:'idle'
    * with enabled:true (armed) waiting for processIdleThemes to auto-resume it when
@@ -110,21 +110,18 @@ export class ThemeAutoRunScheduler {
    * loop permanently dead. Resuming on enabled:true closes that self-defeating gap.
    */
   async recoverOnStartup(): Promise<void> {
-    // Clean up 'stopping' records left from a crash during stop
-    await prisma.themeAutoRun.updateMany({
-      where: { status: 'stopping' },
-      data: { status: 'idle', enabled: false, currentTaskId: null },
-    });
-
-    const running = await findByStatuses(['running', ...PAUSED_AUTO_RUN_STATUSES]);
+    // A restart does not prove task/session settlement succeeded. Retry the
+    // durable stop targets through the normal stopping handler before finalizing.
+    const pending = await findByStatuses(['stopping', 'running', ...PAUSED_AUTO_RUN_STATUSES]);
+    const running = pending.filter((state) => state.status !== 'stopping');
     const armed = await prisma.themeAutoRun
       .count({ where: { enabled: true, status: 'idle' } })
       .catch(() => 0);
-    if (running.length > 0 || armed > 0) {
+    if (pending.length > 0 || armed > 0) {
       log.info(
         `[ThemeAutoRunScheduler] Resuming after restart (running/paused=${running.length}, armed-idle=${armed})`,
       );
-      this.start();
+      this.start(running.length > 0 || armed > 0);
     }
   }
 

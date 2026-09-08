@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { PrismaClient } from '../../generated/prisma-sqlite';
 import type { PrismaClient as PostgresClient } from '../../generated/prisma-postgres';
 import { settleStoppedTasks } from './settle-stopped-tasks';
+import { settleStoppedSessions } from './settle-stopped-sessions';
 import {
   recordThemeStopIntent,
   readThemeStopIntent,
@@ -78,6 +79,44 @@ async function cancelledExecution() {
   await db.$executeRawUnsafe('INSERT INTO AgentSession VALUES (1,1)');
   await db.$executeRawUnsafe("INSERT INTO AgentExecution VALUES (1,1,'cancelled',?)", now);
 }
+
+test('session update failure propagates and durable targets allow a later retry', async () => {
+  await cancelledExecution();
+  await db.$executeRawUnsafe("ALTER TABLE AgentSession ADD COLUMN status TEXT DEFAULT 'running'");
+  await db.$executeRawUnsafe('ALTER TABLE AgentSession ADD COLUMN updatedAt DATETIME');
+  const client = db as unknown as PostgresClient;
+  await recordThemeStopIntent(client, 1, [1]);
+  await db.$executeRawUnsafe(
+    "CREATE TRIGGER reject_session_update BEFORE UPDATE ON AgentSession BEGIN SELECT RAISE(ABORT, 'session write failure'); END",
+  );
+  await expect(settleStoppedSessions(client, [1])).rejects.toThrow();
+  expect(await db.agentSession.findUnique({ where: { id: 1 }, select: { status: true } })).toEqual({
+    status: 'running',
+  });
+  await db.$executeRawUnsafe('DROP TRIGGER reject_session_update');
+  const targets = await readPendingThemeStopTargets(client, 1);
+  expect(targets).toEqual([1]);
+  await settleStoppedSessions(client, targets);
+  expect(await db.agentSession.findUnique({ where: { id: 1 }, select: { status: true } })).toEqual({
+    status: 'cancelled',
+  });
+});
+
+test('session settlement preserves an active execution sharing the cancelled targets session', async () => {
+  await cancelledExecution();
+  await db.$executeRawUnsafe("ALTER TABLE AgentSession ADD COLUMN status TEXT DEFAULT 'running'");
+  await db.$executeRawUnsafe('ALTER TABLE AgentSession ADD COLUMN updatedAt DATETIME');
+  await db.$executeRawUnsafe("INSERT INTO AgentExecution VALUES (2,1,'running',?)", now);
+  await settleStoppedSessions(db as unknown as PostgresClient, [1]);
+  expect(await db.agentSession.findUnique({ where: { id: 1 }, select: { status: true } })).toEqual({
+    status: 'running',
+  });
+  await db.$executeRawUnsafe("UPDATE AgentExecution SET status = 'cancelled' WHERE id = 2");
+  await settleStoppedSessions(db as unknown as PostgresClient, [1]);
+  expect(await db.agentSession.findUnique({ where: { id: 1 }, select: { status: true } })).toEqual({
+    status: 'cancelled',
+  });
+});
 
 test('stop settlement records task state and stop history atomically', async () => {
   await cancelledExecution();
