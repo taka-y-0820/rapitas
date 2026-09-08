@@ -107,6 +107,7 @@ export async function executeAgentWithFallback(params: {
   // is unreliable.
   try {
     const first = await runAgent(resolvedAgentConfig);
+    if (first.superseded) return first;
     const firstHasImplicitError = await hasProviderErrorInOutput(
       `${first.error ?? ''}\n${typeof first.output === 'string' ? first.output : ''}`,
     );

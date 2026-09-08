@@ -167,3 +167,13 @@ export async function notifyParentOnSubtaskFailure(taskId: number): Promise<void
     log.warn({ err, taskId }, '[WorkflowRunner] notifyParentOnSubtaskFailure failed');
   }
 }
+
+/** Stop a failed phase before retrying, including a CLI abandoned by its timeout. */
+export async function stopFailedPhaseAgents(taskId: number, errorMessage: string): Promise<void> {
+  try {
+    const { stopTaskAgents } = await import('../agents/stop-task-agents');
+    await stopTaskAgents(taskId, { errorMessage: `Phase failed: ${errorMessage}` });
+  } catch (err) {
+    log.warn({ err, taskId }, '[WorkflowRunner] Failed to stop agents after phase error');
+  }
+}

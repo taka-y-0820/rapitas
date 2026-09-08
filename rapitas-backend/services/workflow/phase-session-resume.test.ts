@@ -8,10 +8,16 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
+import * as os from 'os';
 import { join } from 'path';
 
 const findMany = mock(() => Promise.resolve<Array<Record<string, unknown>>>([]));
 const findFirst = mock(() => Promise.resolve<Record<string, unknown> | null>(null));
+// Bun may cache the OS home directory. Environment edits alone must not allow
+// transcripts to leak into the real home or a later test's fixture.
+let sandbox: string;
+const originalOs = { ...os };
+mock.module('os', () => ({ ...originalOs, homedir: () => sandbox }));
 mock.module('../../config/database', () => ({
   prisma: { agentExecution: { findMany, findFirst } },
 }));
@@ -25,7 +31,6 @@ const base = { taskId: 641, role: 'implementer', agentType: 'claude-code' as str
 let realProfile: string | undefined;
 let realHome: string | undefined;
 let hadHome = false;
-let sandbox: string;
 
 /** Point HOME/USERPROFILE at a sandbox and plant a transcript for `cwd`. */
 function plantTranscript(cwd: string, sessionId: string): void {

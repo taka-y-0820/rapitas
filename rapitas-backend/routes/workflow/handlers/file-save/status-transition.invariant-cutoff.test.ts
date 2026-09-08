@@ -11,6 +11,17 @@
  * 別ファイルに分離。
  */
 import { describe, expect, test, mock, beforeEach } from 'bun:test';
+mock.module('../../../../services/workflow/requirement-replan-service', () => ({
+  attemptRequirementReplan: async () => ({
+    committed: false,
+    reason: 'no_mismatch',
+    completionReceipt: { taskId: 715 },
+  }),
+}));
+
+mock.module('../../../../services/workflow/requirement-replan-commit', () => ({
+  advanceReviewedVerify: async (_db: unknown, receipt: unknown) => receipt,
+}));
 
 mock.module('../../../../config/logger', () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),

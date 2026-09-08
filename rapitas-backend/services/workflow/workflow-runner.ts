@@ -23,6 +23,7 @@ import {
   shouldAutoApprovePlan,
   raceWorkflowAdvance,
   waitBeforeNextPhase,
+  stopFailedPhaseAgents,
 } from './workflow-runner-item-helpers';
 import { taskVanishedMessage } from './queue-vanished-task-policy';
 import type { RunnerStatus, ActiveExecution } from './workflow-runner.types';
@@ -360,6 +361,17 @@ export class WorkflowRunner {
         // unhandled rejection).
         const phaseTimeoutMs = await resolvePhaseTimeoutMs(task, currentStatus);
         const result = await raceWorkflowAdvance(this.orchestrator, item.taskId, phaseTimeoutMs);
+        // Stop owns the queue item even when the old phase returns a replan/skip result.
+        if (abortController.signal.aborted) {
+          continueLoop = false;
+          break;
+        }
+        if (result.superseded) {
+          await this.queue.updateStatus(item.id, 'queued', { currentPhase: result.status });
+          this.broadcastItemUpdate(item.id, item.taskId, 'execution_requeued', result.status);
+          continueLoop = false;
+          break;
+        }
 
         // Another trigger already holds the task's execution lock and is
         // running this phase (the per-task mutex collapsed a duplicate). Do NOT
@@ -447,21 +459,7 @@ export class WorkflowRunner {
 
       log.error(`[WorkflowRunner] Execution error for task ${item.taskId}: ${errorMsg}`);
 
-      // Kill any in-flight agent BEFORE retrying/failing. The phase timeout only
-      // rejects the race — the agent process it abandoned keeps running and
-      // holds the task's execution lock, so every retry would collapse to
-      // 'skipped' while the zombie agent burns tokens (indefinitely for items
-      // outside auto-run, which have no theme wall guard). No-op when the agent
-      // already exited (normal failures).
-      try {
-        const { stopTaskAgents } = await import('../agents/stop-task-agents');
-        await stopTaskAgents(item.taskId, { errorMessage: `Phase failed: ${errorMsg}` });
-      } catch (stopError) {
-        log.warn(
-          { err: stopError, taskId: item.taskId },
-          '[WorkflowRunner] Failed to stop agents after phase error',
-        );
-      }
+      await stopFailedPhaseAgents(item.taskId, errorMsg);
 
       try {
         const retried = await this.queue.retryIfPossible(item.id, errorMsg);

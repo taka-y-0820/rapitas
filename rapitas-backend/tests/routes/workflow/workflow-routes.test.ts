@@ -109,6 +109,7 @@ mock.module('fs/promises', () => ({
   mkdir: mock(() => Promise.resolve()),
   rename: mock(() => Promise.resolve()),
   readdir: mock(() => Promise.resolve([])),
+  lstat: mock(() => Promise.resolve({ isSymbolicLink: () => false, isDirectory: () => true })),
   unlink: mock(() => Promise.resolve()),
   stat: mock(() =>
     Promise.resolve({

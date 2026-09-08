@@ -15,6 +15,7 @@ const mockPrisma = {
     update: mock(() => Promise.resolve({})),
   },
   agentExecution: { findFirst: mock(() => Promise.resolve(null as unknown)) },
+  workflowQueueItem: { findFirst: mock(async (): Promise<{ id: number } | null> => null) },
   workflowTransition: { count: mock(() => Promise.resolve(0)) },
 };
 const recordTransition = mock(() => Promise.resolve());
@@ -40,12 +41,21 @@ const { requeueOrphanTasks } = await import('./workflow-reconciler-requeue');
 
 const NOW = 1_800_000_000_000;
 
+test('failed repair receipt cannot be bypassed by generic orphan recovery', async () => {
+  mockPrisma.task.findMany.mockResolvedValueOnce([
+    { id: 901, title: 'invalid repair receipt', workflowStatus: 'plan_approved' },
+  ]);
+  expect(await requeueOrphanTasks(NOW, new Set([901]))).toBe(0);
+  expect(mockPrisma.task.update).not.toHaveBeenCalled();
+});
+
 beforeEach(() => {
   mockPrisma.task.findMany.mockReset().mockResolvedValue([]);
   mockPrisma.task.update.mockReset().mockResolvedValue({});
   mockPrisma.agentExecution.findFirst.mockReset().mockResolvedValue(null);
   mockPrisma.workflowTransition.count.mockReset().mockResolvedValue(0);
   recordTransition.mockReset().mockResolvedValue(undefined);
+  mockPrisma.workflowQueueItem.findFirst.mockReset().mockResolvedValue(null);
   awaitingRequiredMerge = false;
 });
 
@@ -66,6 +76,7 @@ describe('requeueOrphanTasks — verify_done保留中タスクの保護', () => 
   });
 
   test('autoMergePR非要求の verify_done×in-progress は従来どおり回収する', async () => {
+    mockPrisma.workflowQueueItem.findFirst.mockReset().mockResolvedValue(null);
     awaitingRequiredMerge = false;
     mockPrisma.task.findMany.mockResolvedValueOnce([
       { id: 900, title: '本来のオーファン', workflowStatus: 'verify_done' },
@@ -105,4 +116,41 @@ describe('requeueOrphanTasks — verify_done保留中タスクの保護', () => 
 
     expect(requeued).toBe(1);
   });
+});
+
+test('a delivered repair queue item prevents orphan reset', async () => {
+  mockPrisma.task.findMany.mockResolvedValue([
+    { id: 1, title: 'repair', workflowStatus: 'plan_approved' },
+  ]);
+  mockPrisma.workflowQueueItem.findFirst.mockResolvedValue({ id: 10 });
+  expect(await requeueOrphanTasks(NOW)).toBe(0);
+  expect(mockPrisma.task.update).not.toHaveBeenCalled();
+});
+
+test('unreadable live execution never authorizes orphan reset', async () => {
+  mockPrisma.task.findMany.mockResolvedValue([
+    { id: 1, title: 'repair', workflowStatus: 'plan_approved' },
+  ]);
+  mockPrisma.agentExecution.findFirst.mockRejectedValueOnce(
+    new Error('execution lookup unavailable'),
+  );
+  await expect(requeueOrphanTasks(NOW)).rejects.toThrow('execution lookup unavailable');
+  expect(mockPrisma.task.update).not.toHaveBeenCalled();
+  expect(recordTransition).not.toHaveBeenCalled();
+});
+test('unreadable retry count never resets the orphan budget', async () => {
+  mockPrisma.task.findMany.mockResolvedValue([
+    { id: 1, title: 'repair', workflowStatus: 'plan_approved' },
+  ]);
+  mockPrisma.workflowTransition.count.mockRejectedValueOnce(new Error('budget lookup unavailable'));
+  await expect(requeueOrphanTasks(NOW)).rejects.toThrow('budget lookup unavailable');
+  expect(mockPrisma.task.update).not.toHaveBeenCalled();
+});
+test('failed orphan update is not counted or audited as a successful recovery', async () => {
+  mockPrisma.task.findMany.mockResolvedValue([
+    { id: 1, title: 'repair', workflowStatus: 'plan_approved' },
+  ]);
+  mockPrisma.task.update.mockRejectedValueOnce(new Error('state update unavailable'));
+  await expect(requeueOrphanTasks(NOW)).rejects.toThrow('state update unavailable');
+  expect(recordTransition).not.toHaveBeenCalled();
 });

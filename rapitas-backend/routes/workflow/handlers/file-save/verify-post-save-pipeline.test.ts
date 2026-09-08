@@ -14,6 +14,7 @@
  * 直接検証する。
  */
 import { describe, expect, test, mock, beforeEach } from 'bun:test';
+import type { CompletionReviewReceipt } from '../../../../services/workflow/requirement-replan-commit';
 
 mock.module('../../../../config/logger', () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
@@ -93,6 +94,35 @@ async function tick(): Promise<void> {
 }
 
 describe('runVerifyPostSaveAutomation — in-flight は完了ゲート〜commit/PR の全区間をカバーする', () => {
+  test('preserves the server receipt across asynchronous review until commit completion', async () => {
+    const receipt = {
+      taskId: 700,
+      executionId: 8,
+      evaluatedUpdatedAt: new Date(),
+      review: {
+        snapshotDigest: 'test',
+        durationMs: 1,
+        tokensUsed: 2,
+        modelName: null,
+        verdict: { kind: 'no_mismatch', reason: 'test' },
+      },
+    } satisfies CompletionReviewReceipt;
+    const running = runVerifyPostSaveAutomation({ ...params(700), completionReceipt: receipt });
+    expect(gateMock).toHaveBeenCalledWith(expect.objectContaining({ completionReceipt: receipt }));
+    gate.resolve(GATE_OPEN);
+    await tick();
+    review.resolve({
+      newStatus: 'verify_done',
+      verifyGateBlocked: false,
+      staleVerifyRequest: false,
+    });
+    await tick();
+    expect(commitPrMock).toHaveBeenCalledWith(
+      expect.objectContaining({ completionReceipt: receipt }),
+    );
+    commitPr.resolve({ newStatus: 'verify_done', taskMarkedDone: false, autoCommitPRResult: {} });
+    await running;
+  });
   beforeEach(() => {
     resetVerifyCompletionRegistry();
     gate = deferred<GateOutcome>();

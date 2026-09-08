@@ -63,7 +63,7 @@ const mockPrisma = {
   task: { findUnique: taskFindUniqueMock, update: taskUpdateMock },
   workflowRoleConfig: { findUnique: roleConfigFindUniqueMock },
   systemPrompt: { findUnique: mock(() => Promise.resolve(null)) },
-  workflowTransition: { count: mock(() => Promise.resolve(0)) },
+  workflowTransition: { findFirst: async () => null, count: mock(() => Promise.resolve(0)) },
   workflowFile: { findFirst: mock(() => Promise.resolve(null)) },
 };
 

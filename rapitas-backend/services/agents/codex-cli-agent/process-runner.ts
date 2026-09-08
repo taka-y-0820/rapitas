@@ -60,6 +60,7 @@ export type ProcessRunnerCallbacks = {
 
 /** Mutable state shared between the runner and the agent class. */
 export type ProcessRunnerState = {
+  cancelRequested?: boolean;
   process: ChildProcess | null;
   outputBuffer: string;
   errorBuffer: string;
@@ -243,6 +244,14 @@ export async function spawnCodexProcess(
     process.env.CODEX_CLI_PATH || (isWindows ? 'codex.cmd' : 'codex'),
   );
 
+  if (state.cancelRequested)
+    return {
+      success: false,
+      output: state.outputBuffer,
+      errorMessage: 'Execution cancelled',
+      executionTimeMs: Date.now() - startTime,
+      failureType: 'cancelled',
+    };
   return new Promise((resolve) => {
     // Build CLI arguments
     const { args, promptForStdin } = buildCodexArgs(config, workDir, prompt, logPrefix);
@@ -267,6 +276,17 @@ export async function spawnCodexProcess(
       const [finalCommand, finalArgs] = buildSpawnCommand(codexPath, args, isWindows);
       const env = buildProcessEnv(config, isWindows);
 
+      // Output callbacks can synchronously request stop while announcing startup.
+      if (state.cancelRequested) {
+        resolve({
+          success: false,
+          output: state.outputBuffer,
+          errorMessage: 'Execution cancelled',
+          executionTimeMs: Date.now() - startTime,
+          failureType: 'cancelled',
+        });
+        return;
+      }
       state.process = spawnLowPriority(finalCommand, finalArgs, {
         cwd: workDir,
         shell: true,
@@ -402,7 +422,7 @@ export async function spawnCodexProcess(
           );
         }
         // Handle cancelled state
-        if (state.status === 'cancelled') {
+        if (state.cancelRequested || state.status === 'cancelled') {
           resolve({
             success: false,
             output: state.outputBuffer,

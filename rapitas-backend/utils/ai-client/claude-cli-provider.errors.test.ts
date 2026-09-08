@@ -242,6 +242,14 @@ describe('callClaudeCliStream — process failures', () => {
     const raw = await readPromise;
     expect(raw).toContain('Claude CLI timed out after 150ms');
     expect(child.kill).toHaveBeenCalled();
+    expect(() => {
+      child.stdout.emit(
+        'data',
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"late"}]}}\n',
+      );
+      child.emit('close', 0);
+    }).not.toThrow();
+    expect(raw).not.toContain('[DONE]');
   });
 });
 

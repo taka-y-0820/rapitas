@@ -23,7 +23,7 @@ mock.module('../../../config/logger', () => ({
 // ---- prisma mock ----
 const mockFindUnique = mock(() => Promise.resolve(null));
 const mockFindMany = mock(() => Promise.resolve([]));
-const mockUpdate = mock(() => Promise.resolve({}));
+const mockUpdate = mock((_args?: unknown) => Promise.resolve({}));
 const mockUpdateMany = mock(() => Promise.resolve({ count: 1 }));
 const mockFindFirst = mock(() => Promise.resolve(null));
 const mockCreate = mock(() => Promise.resolve({}));
@@ -53,6 +53,35 @@ mock.module('../../../config', () => ({ prisma: mockPrisma }));
 mock.module('../../../config/database', () => ({
   ensureDatabaseConnection: () => Promise.resolve(),
   prisma: mockPrisma,
+}));
+
+// Handler tests exercise downstream gates after a successful review. Atomic
+// receipt/version/stop checks are exercised against SQLite in replan-commit tests.
+mock.module('../../../services/workflow/requirement-replan-service', () => ({
+  attemptRequirementReplan: async (_db: unknown, taskId: number) => ({
+    committed: false,
+    reason: 'no_mismatch',
+    completionReceipt: { taskId },
+  }),
+}));
+mock.module('../../../services/workflow/requirement-replan-commit', () => ({
+  assertReviewedTaskCurrent: async () => {},
+  advanceReviewedVerify: async (_db: unknown, receipt: { taskId: number }) => {
+    await mockUpdate({ where: { id: receipt.taskId }, data: { workflowStatus: 'verify_done' } });
+    return receipt;
+  },
+  completeReviewedTask: async (_db: unknown, receipt: { taskId: number }) => {
+    await mockUpdate({
+      where: { id: receipt.taskId },
+      data: {
+        workflowStatus: 'completed',
+        status: 'done',
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+    return { committed: true, reason: 'completed' };
+  },
 }));
 
 // ---- resolveWorkflowDir / workflow-helpers mock ----

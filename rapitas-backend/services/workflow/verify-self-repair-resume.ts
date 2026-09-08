@@ -6,6 +6,7 @@
  * repair-budget judgement or feedback generation.
  */
 import { prisma } from '../../config/database';
+import { enqueueCommittedRepair, type RepairQueueReceipt } from './verify-repair-queue';
 import { createLogger } from '../../config/logger';
 
 const log = createLogger('workflow:verify-self-repair');
@@ -36,45 +37,16 @@ export function resolveRepairCaller(): string {
   return 'unknown';
 }
 
-/**
- * Re-queue + ensure the WorkflowRunner is processing, so implement→verify
- * re-runs for a SINGLE/MANUAL execution with no poller.
- *
- * Skips when the theme has ACTIVE auto-run: that scheduler already
- * re-enqueues its task (with themeId, visible to the concurrency gate).
- * Enqueuing here too would add a themeId-LESS item the gate can't see,
- * letting the scheduler launch a second task concurrently. Idempotent
- * (duplicate enqueue throws, swallowed); the per-task mutex prevents a
- * duplicate agent.
- *
- * @param taskId - Task to resume / 再開対象タスク
- */
-export async function ensureRunnerResumes(taskId: number): Promise<void> {
-  // Defer to the theme auto-run scheduler when it owns this task.
-  try {
-    const task = await prisma.task
-      .findUnique({ where: { id: taskId }, select: { themeId: true } })
-      .catch(() => null);
-    const { isThemeAutoRunActive } = await import('./auto-run/theme-auto-run-service');
-    if (await isThemeAutoRunActive(task?.themeId ?? null)) {
-      log.info(
-        { taskId, themeId: task?.themeId },
-        '[verify-repair] Theme auto-run is active — letting the scheduler resume (no extra enqueue)',
-      );
-      return;
-    }
-  } catch (err) {
-    // If we cannot determine auto-run state, fall through and self-drive — a
-    // stuck single-exec task is worse than a redundant (deduped) enqueue.
-    log.warn({ err, taskId }, '[verify-repair] Could not check theme auto-run state');
+/** Resume only the committed repair version; queue admission rechecks durable stop intent. */
+export async function ensureRunnerResumes(
+  taskId: number,
+  receipt: RepairQueueReceipt,
+): Promise<void> {
+  const result = await enqueueCommittedRepair(prisma, taskId, receipt);
+  if (result === 'held' || result === 'scheduler_owned') {
+    log.info({ taskId, result }, '[verify-repair] No extra repair dispatch');
+    return;
   }
-
-  const { WorkflowQueueService } = await import('./workflow-queue');
   const { WorkflowRunner } = await import('./workflow-runner');
-  try {
-    await WorkflowQueueService.getInstance().enqueue({ taskId });
-  } catch {
-    // Already queued/running — a driver is active; nothing to enqueue.
-  }
-  WorkflowRunner.getInstance().startProcessing(); // idempotent (guarded by `running`)
+  WorkflowRunner.getInstance().startProcessing();
 }

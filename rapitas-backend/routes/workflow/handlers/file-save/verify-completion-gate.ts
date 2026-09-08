@@ -1,3 +1,4 @@
+import type { CompletionReviewReceipt } from '../../../../services/workflow/requirement-replan-commit';
 /**
  * FileSave Verify Completion Gate
  *
@@ -10,7 +11,7 @@ import { prisma } from '../../../../config';
 import { createLogger } from '../../../../config/logger';
 import type { WorkflowFileType } from '../../core/workflow-helpers';
 import { evaluateCompletionGate } from '../../../../services/workflow/completion-gate';
-import { recordTransition } from '../../../../services/workflow/transition-recorder';
+import { blockReviewedEmptyDiff } from '../../../../services/workflow/reviewed-empty-diff';
 import { resolvePreferredBaseBranch } from '../../../../services/task/task-resolver';
 
 const log = createLogger('routes:workflow:handlers:files');
@@ -48,6 +49,7 @@ export interface VerifyCompletionGateOutcome {
  * @returns Gate outcome + conflict-task classification + resolved base branch
  */
 export async function runVerifyCompletionGate(params: {
+  completionReceipt?: CompletionReviewReceipt;
   taskId: number;
   fileType: WorkflowFileType;
   newStatus: string | undefined;
@@ -93,57 +95,14 @@ export async function runVerifyCompletionGate(params: {
     );
     if (!completionGate.allow) {
       verifyGateBlocked = true;
-      // Empty diff + no explicit "no change needed" justification. The FIRST
-      // time, block so a re-run can implement (or add the justification). But if
-      // the task has ALREADY hit verify_no_changes before, the implementer was
-      // given a chance and STILL produced no diff — the code is genuinely
-      // already correct / no change is needed. Per product requirement, complete
-      // it as 修正不要 and move on instead of leaving it stuck blocked forever.
-      const priorNoChange = await prisma.workflowTransition
-        .count({ where: { taskId, cause: 'verify_no_changes' } })
-        .catch(() => 0);
-
-      if (priorNoChange >= 1) {
-        await prisma.task
-          .update({
-            where: { id: taskId },
-            data: { status: 'done', workflowStatus: 'completed', completedAt: new Date() },
-          })
-          .catch(() => {});
-        await recordTransition({
-          taskId,
-          fromStatus: 'verify_done',
-          toStatus: 'completed',
-          actor: 'system',
-          cause: 'verify_no_change_confirmed',
-          phase: 'verify',
-          metadata: { reason: completionGate.reason, priorNoChange },
-        });
-        log.info(
-          { taskId, priorNoChange },
-          '[Workflow] Empty diff confirmed across attempts — completing as no-change-needed (修正不要), moving on.',
-        );
-      } else {
-        await prisma.task
-          .update({ where: { id: taskId }, data: { status: 'blocked', updatedAt: new Date() } })
-          .catch(() => {});
-        await recordTransition({
-          taskId,
-          fromStatus: 'verify_done',
-          toStatus: 'verify_done',
-          actor: 'verifier',
-          cause: 'verify_no_changes',
-          phase: 'verify',
-          metadata: { reason: completionGate.reason },
-          invariantViolation: true,
-          invariantMessage:
-            '検証は通過しましたが、実装による変更がありません（verify.md に「変更不要の理由」の明記もなし）。暗黙的な完了を防ぐためタスクをブロックしました。',
-        });
-        log.warn(
-          { taskId, reason: completionGate.reason },
-          '[Workflow] verify passed but no code changes and no justification — blocking (1st time; re-run may implement or justify)',
-        );
-      }
+      // Repeated empty diffs are not evidence that the requirements are met.
+      const receipt = params.completionReceipt;
+      if (!receipt || receipt.taskId !== taskId) throw new Error('Missing reviewed verify receipt');
+      await blockReviewedEmptyDiff(prisma, receipt, completionGate.reason);
+      log.warn(
+        { taskId, reason: completionGate.reason },
+        '[Workflow] verify passed but no code changes and no justification — blocking until implementation or explicit justification is provided',
+      );
     }
   }
 
