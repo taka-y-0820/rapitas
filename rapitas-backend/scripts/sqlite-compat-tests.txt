@@ -100,3 +100,7 @@ utils/ai-client/claude-cli-provider.errors.test.ts
 utils/ai-client/claude-cli-provider.parsing.test.ts
 utils/ai-client/claude-cli-provider.tracking.test.ts
 routes/workflow/handlers/workflow-handlers-files.test.ts
+services/agents/orchestrator/git-operations/pr/branch-pr-ops.test.ts
+services/workflow/phase-session-resume.test.ts
+tests/routes/workflow/workflow-routes.test.ts
+services/agents/orchestrator/execution-resume.test.ts
