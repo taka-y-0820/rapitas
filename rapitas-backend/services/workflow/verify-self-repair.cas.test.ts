@@ -76,10 +76,14 @@ mock.module('./blocked-task-escalation', () => ({
   countEscalatedBlocked: () => Promise.resolve(0),
 }));
 
+const resumeAdmission = mock(async () => 'scheduler_owned');
+mock.module('./verify-repair-queue', () => ({ enqueueCommittedRepair: resumeAdmission }));
+
 const { attemptVerifyRepair } = await import('./verify-self-repair');
 
 describe('attemptVerifyRepair — stale-verdict CAS guard', () => {
   beforeEach(() => {
+    resumeAdmission.mockReset().mockResolvedValue('scheduler_owned');
     taskWorkflowStatus = 'verify_done';
     mockPrisma.task.findUnique
       .mockReset()
@@ -127,12 +131,7 @@ describe('attemptVerifyRepair — stale-verdict CAS guard', () => {
   });
 
   test('resume failure is surfaced instead of reporting a successful bounce', async () => {
-    mockPrisma.task.findUnique.mockImplementation((...args: unknown[]) => {
-      const query = args[0] as { select?: { status?: boolean; updatedAt?: boolean } };
-      if (query.select?.status && !query.select.updatedAt)
-        return Promise.reject(new Error('resume read unavailable'));
-      return Promise.resolve(taskRow() as unknown as null);
-    });
+    resumeAdmission.mockRejectedValueOnce(new Error('resume read unavailable'));
     await expect(attemptVerifyRepair(551, 'verify_done', 'reason', 'verify body')).rejects.toThrow(
       'resume read unavailable',
     );

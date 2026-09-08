@@ -252,7 +252,11 @@ export async function attemptVerifyRepair(
   // bounce would otherwise park the task at in-progress forever. Re-queue +
   // idempotently start the runner so implement→verify re-runs regardless of
   // launch mode.
-  await ensureRunnerResumes(taskId);
+  await ensureRunnerResumes(taskId, {
+    updatedAt: committed.updatedAt,
+    workflowStatus: newStatus,
+    executionId: evaluatedExecution?.id ?? null,
+  });
 
   log.info(
     { taskId, attempt, max, newStatus },

@@ -1,3 +1,4 @@
+import { enqueueCommittedRepair } from './verify-repair-queue';
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -32,6 +33,7 @@ beforeEach(async () => {
     'CREATE TABLE AgentSession (id INTEGER PRIMARY KEY, configId INTEGER)',
     'CREATE TABLE AgentExecution (id INTEGER PRIMARY KEY, sessionId INTEGER, status TEXT, startedAt DATETIME, createdAt DATETIME)',
     'CREATE TABLE ThemeAutoRun (id INTEGER PRIMARY KEY, themeId INTEGER UNIQUE, status TEXT)',
+    'CREATE TABLE WorkflowQueueItem (id INTEGER PRIMARY KEY AUTOINCREMENT, taskId INTEGER, orchestraSessionId INTEGER, themeId INTEGER, status TEXT, currentPhase TEXT, priority INTEGER, dependencies TEXT, retryCount INTEGER DEFAULT 0, maxRetries INTEGER DEFAULT 3, errorMessage TEXT, result TEXT, queuedAt DATETIME DEFAULT CURRENT_TIMESTAMP, startedAt DATETIME, completedAt DATETIME, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME)',
     'CREATE TABLE ActivityLog (id INTEGER PRIMARY KEY, taskId INTEGER, action TEXT, createdAt DATETIME)',
     'CREATE TABLE WorkflowTransition (id INTEGER PRIMARY KEY AUTOINCREMENT, taskId INTEGER, fromStatus TEXT, toStatus TEXT, actor TEXT, cause TEXT, phase TEXT, executionId INTEGER, sessionId INTEGER, metadata TEXT DEFAULT "{}", invariantViolation BOOLEAN DEFAULT 0, invariantMessage TEXT, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP)',
     "INSERT INTO WorkflowFile VALUES (1,1,'plan')",
@@ -106,4 +108,50 @@ test('budget is enforced in the transaction', async () => {
     await commit({ max: 1, workflowStatus: first.newStatus, updatedAt: first.updatedAt }),
   ).toEqual({ committed: false, reason: 'budget_exhausted' });
   expect(await db.workflowTransition.count()).toBe(1);
+});
+
+async function repairReceipt() {
+  const result = await commit();
+  if (!result.committed) throw new Error('Repair not committed');
+  return { updatedAt: result.updatedAt, workflowStatus: result.newStatus, executionId: 1 };
+}
+test('stop after repair commit prevents queue registration', async () => {
+  const receipt = await repairReceipt();
+  await db.$executeRawUnsafe(
+    "INSERT INTO WorkflowTransition (taskId,cause,createdAt) VALUES (1,'theme_stop_execution_requested',?)",
+    new Date(),
+  );
+  expect(await enqueueCommittedRepair(db as unknown as PostgresClient, 1, receipt)).toBe('held');
+  expect(await db.workflowQueueItem.count()).toBe(0);
+});
+test('concurrent repair delivery creates one durable queue item', async () => {
+  const receipt = await repairReceipt();
+  const results = await Promise.all(
+    [1, 2].map(() => enqueueCommittedRepair(db as unknown as PostgresClient, 1, receipt)),
+  );
+  expect(results.sort()).toEqual(['existing', 'queued']);
+  expect(await db.workflowQueueItem.count()).toBe(1);
+});
+test('failed queue write is observable and the same receipt can retry', async () => {
+  const receipt = await repairReceipt();
+  await db.$executeRawUnsafe(
+    "CREATE TRIGGER fail_queue BEFORE INSERT ON WorkflowQueueItem BEGIN SELECT RAISE(ABORT, 'queue unavailable'); END",
+  );
+  await expect(
+    enqueueCommittedRepair(db as unknown as PostgresClient, 1, receipt),
+  ).rejects.toThrow();
+  expect(await db.workflowQueueItem.count()).toBe(0);
+  await db.$executeRawUnsafe('DROP TRIGGER fail_queue');
+  expect(await enqueueCommittedRepair(db as unknown as PostgresClient, 1, receipt)).toBe('queued');
+  expect(await db.workflowTransition.count({ where: { cause: 'verify_repair' } })).toBe(1);
+});
+test('old delivery cannot enqueue a newer execution', async () => {
+  const receipt = await repairReceipt();
+  await db.$executeRawUnsafe(
+    "INSERT INTO AgentExecution VALUES (2,1,'running',?,?)",
+    new Date(),
+    new Date(),
+  );
+  expect(await enqueueCommittedRepair(db as unknown as PostgresClient, 1, receipt)).toBe('held');
+  expect(await db.workflowQueueItem.count()).toBe(0);
 });

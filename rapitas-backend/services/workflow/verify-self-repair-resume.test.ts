@@ -1,74 +1,41 @@
 import { beforeEach, expect, mock, test } from 'bun:test';
-const find = mock(
-  async (): Promise<{ themeId: number | null; status: string } | null> => ({
-    themeId: null,
-    status: 'in-progress',
-  }),
+const enqueue = mock(
+  async (..._args: unknown[]): Promise<'queued' | 'existing' | 'held' | 'scheduler_owned'> =>
+    'queued',
 );
-const queued = mock(async (): Promise<{ id: number } | null> => null);
-const active = mock(async () => false);
-const enqueue = mock(async (_args: unknown) => undefined);
 const start = mock(() => undefined);
-mock.module('../../config/database', () => ({
-  prisma: { task: { findUnique: find }, workflowQueueItem: { findFirst: queued } },
-}));
+const db = {};
+mock.module('../../config/database', () => ({ prisma: db }));
 mock.module('../../config/logger', () => ({ createLogger: () => ({ info() {}, warn() {} }) }));
-mock.module('./auto-run/theme-auto-run-service', () => ({ isThemeAutoRunActive: active }));
-mock.module('./workflow-queue', () => ({
-  WorkflowQueueService: { getInstance: () => ({ enqueue }) },
-}));
+mock.module('./verify-repair-queue', () => ({ enqueueCommittedRepair: enqueue }));
 mock.module('./workflow-runner', () => ({
   WorkflowRunner: { getInstance: () => ({ startProcessing: start }) },
 }));
 const { ensureRunnerResumes } = await import('./verify-self-repair-resume');
+const receipt = { updatedAt: new Date(), workflowStatus: 'plan_approved', executionId: 7 };
 beforeEach(() => {
-  find.mockReset().mockResolvedValue({ themeId: null, status: 'in-progress' });
-  active.mockReset().mockResolvedValue(false);
-  enqueue.mockReset().mockResolvedValue(undefined);
-  queued.mockReset().mockResolvedValue(null);
+  enqueue.mockReset().mockResolvedValue('queued');
   start.mockClear();
 });
-test('stopped and missing tasks never restart the runner', async () => {
-  for (const task of [null, { themeId: 1, status: 'todo' }, { themeId: 1, status: 'done' }]) {
-    find.mockResolvedValueOnce(task);
-    await ensureRunnerResumes(1);
+test('passes the exact committed repair identity to queue admission', async () => {
+  await ensureRunnerResumes(1, receipt);
+  expect(enqueue).toHaveBeenCalledWith(db, 1, receipt);
+  expect(start).toHaveBeenCalledTimes(1);
+});
+test('held and scheduler-owned repairs never start a competing runner', async () => {
+  for (const result of ['held', 'scheduler_owned'] as const) {
+    enqueue.mockResolvedValueOnce(result);
+    await ensureRunnerResumes(1, receipt);
   }
-  expect(enqueue).not.toHaveBeenCalled();
   expect(start).not.toHaveBeenCalled();
 });
-test('unavailable task or scheduler state never falls through to execution', async () => {
-  find.mockRejectedValueOnce(new Error('database unavailable'));
-  await expect(ensureRunnerResumes(1)).rejects.toThrow();
-  active.mockRejectedValueOnce(new Error('scheduler unavailable'));
-  await expect(ensureRunnerResumes(1)).rejects.toThrow();
-  expect(enqueue).not.toHaveBeenCalled();
-  expect(start).not.toHaveBeenCalled();
-});
-test('active manual task resumes while scheduler-owned task does not duplicate it', async () => {
-  active.mockResolvedValueOnce(true);
-  await ensureRunnerResumes(1);
-  expect(enqueue).not.toHaveBeenCalled();
-  await ensureRunnerResumes(1);
-  expect(enqueue).toHaveBeenCalledTimes(1);
+test('a durable existing queue item permits idempotent runner wake-up', async () => {
+  enqueue.mockResolvedValueOnce('existing');
+  await ensureRunnerResumes(1, receipt);
   expect(start).toHaveBeenCalledTimes(1);
 });
-
-test('failed enqueue without a durable queue item never starts processing', async () => {
-  enqueue.mockRejectedValueOnce(new Error('queue unavailable'));
-  await expect(ensureRunnerResumes(1)).rejects.toThrow('queue unavailable');
-  expect(start).not.toHaveBeenCalled();
-});
-
-test('confirmed duplicate queue item permits an idempotent resume', async () => {
-  enqueue.mockRejectedValueOnce(new Error('already queued'));
-  queued.mockResolvedValueOnce({ id: 10 });
-  await ensureRunnerResumes(1);
-  expect(start).toHaveBeenCalledTimes(1);
-});
-
-test('failed duplicate lookup does not assume successful queueing', async () => {
-  enqueue.mockRejectedValueOnce(new Error('enqueue failure'));
-  queued.mockRejectedValueOnce(new Error('lookup failure'));
-  await expect(ensureRunnerResumes(1)).rejects.toThrow('lookup failure');
+test('transaction failure propagates without waking the runner', async () => {
+  enqueue.mockRejectedValueOnce(new Error('queue transaction unavailable'));
+  await expect(ensureRunnerResumes(1, receipt)).rejects.toThrow('queue transaction unavailable');
   expect(start).not.toHaveBeenCalled();
 });

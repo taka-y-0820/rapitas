@@ -73,11 +73,15 @@ mock.module('./blocked-task-escalation', () => ({
   countEscalatedBlocked: () => Promise.resolve(0),
 }));
 
+const resumeAdmission = mock(async () => 'scheduler_owned');
+mock.module('./verify-repair-queue', () => ({ enqueueCommittedRepair: resumeAdmission }));
+
 const { attemptVerifyRepair, isTamperOnlyVerdict, VERIFY_NON_REPAIRABLE_CAUSE } =
   await import('./verify-self-repair');
 
 describe('attemptVerifyRepair — 修復予算のダブルチェック (task 749)', () => {
   beforeEach(() => {
+    resumeAdmission.mockReset().mockResolvedValue('scheduler_owned');
     taskWorkflowStatus = 'research_done';
     mockPrisma.task.findUnique
       .mockReset()

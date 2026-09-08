@@ -39,25 +39,38 @@ const readWorkflowFile = mock(() => Promise.resolve('' as string | null));
 const resolveWorkflowDir = mock(() => Promise.resolve({ dir: '/wf/1' }));
 
 const evaluatedAt = new Date('2026-09-08T00:00:00Z');
+let repairState = { status: 'in-progress', workflowStatus: 'in_progress', updatedAt: evaluatedAt };
 const queuedItem = mock(async (): Promise<{ id: number } | null> => null);
 const databaseMock = {
   ...mockPrisma,
   task: {
     ...mockPrisma.task,
+    updateMany: async (args: { data: Partial<typeof repairState> }) => {
+      const result = await (
+        mockPrisma.task.updateMany as (...args: unknown[]) => Promise<{ count: number }>
+      )(args);
+      if (result.count === 1) repairState = { ...repairState, ...args.data };
+      return result;
+    },
     findUnique: async (...args: unknown[]) => {
       const row = await (
         mockPrisma.task.findUnique as (
           ...args: unknown[]
         ) => Promise<Record<string, unknown> | null>
       )(...args);
-      return row
-        ? { status: 'in-progress', workflowStatus: 'in_progress', updatedAt: evaluatedAt, ...row }
-        : null;
+      return row ? { ...repairState, ...row } : null;
     },
   },
   agentExecution: { findFirst: async () => null },
-  themeAutoRun: { findUnique: async () => null },
-  workflowQueueItem: { findFirst: queuedItem },
+  themeAutoRun: {
+    findUnique: async () =>
+      (await isThemeAutoRunActive()) ? { enabled: true, status: 'running' } : null,
+  },
+  workflowQueueItem: {
+    findFirst: queuedItem,
+    create: (args: { data: unknown }) =>
+      (enqueue as (...args: unknown[]) => Promise<{ id: number }>)(args.data),
+  },
   workflowFile: {
     ...mockPrisma.workflowFile,
     findUnique: () => mockPrisma.workflowFile.findFirst(),
@@ -135,6 +148,7 @@ const { attemptVerifyRepair, hasFreshVerifyRejection } =
 
 describe('attemptVerifyRepair', () => {
   beforeEach(() => {
+    repairState = { status: 'in-progress', workflowStatus: 'in_progress', updatedAt: evaluatedAt };
     queuedItem.mockReset().mockResolvedValue(null);
     delete process.env.RAPITAS_MAX_VERIFY_REPAIRS;
     mockPrisma.workflowTransition.count.mockReset();
