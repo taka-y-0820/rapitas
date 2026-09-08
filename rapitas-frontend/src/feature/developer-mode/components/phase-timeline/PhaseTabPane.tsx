@@ -144,35 +144,26 @@ export function PhaseTabPane({
     setFetchError(false);
   }, [iterKey]);
 
-  // Fetch stored logs once per iteration: the display base for completed
-  // iterations, and the catch-up base for a live pane opened mid-run (page
-  // reload) whose SSE stream lacks the execution's earlier lines.
+  // Refresh persisted logs as the timeline advances, even when no SSE arrives.
+  // Keep the previous snapshot visible while fetching; ignore stale responses
+  // after switching execution or receiving a newer timeline snapshot.
   useEffect(() => {
-    if (fetchedLogs !== null || fetchError) return;
     let cancelled = false;
     Promise.all(iteration.executionIds.map(fetchExecutionLogLines))
       .then((groups) => {
-        if (!cancelled) setFetchedLogs(groups);
+        if (!cancelled) {
+          setFetchedLogs(groups);
+          setFetchError(false);
+        }
       })
       .catch(() => {
-        if (!cancelled && !isLive) setFetchError(true); // live: SSE lines still render
+        if (!cancelled) setFetchError(true);
       });
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- iterKey stands in for iteration.executionIds (the iteration object is re-created by the 5s timeline poll)
-  }, [fetchedLogs, fetchError, isLive, iterKey]);
-
-  // Execution just finished — drop the mid-run snapshot and refetch the full
-  // stored log so the completed view is authoritative.
-  const prevIsLiveRef = useRef(isLive);
-  useEffect(() => {
-    if (prevIsLiveRef.current && !isLive) {
-      setFetchedLogs(null);
-      setFetchError(false);
-    }
-    prevIsLiveRef.current = isLive;
-  }, [isLive]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- iterKey represents executionIds
+  }, [iterKey, iteration.logLineCount, iteration.status, isLive]);
 
   // The model belongs IN the log (operator feedback), not in a separate meta
   // row. Newer executions store a "[Claude Code] Model: …" banner line; for
