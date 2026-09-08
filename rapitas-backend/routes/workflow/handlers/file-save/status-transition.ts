@@ -131,10 +131,21 @@ export async function computeAndApplyStatusTransition(params: {
               .findUnique({ where: { id: taskId }, select: { githubPrId: true } })
               .catch(() => null)
           : null;
+        // NOTE: severity===80 is emitted EXCLUSIVELY by validateVerify's
+        // self-contradiction branch (claimsAllPass && failureHits.length>0,
+        // phase-output-validator.ts:344-357) — pollutedResult/empty uses 100,
+        // canonical-partial/explicit-❌-mark uses 90, and the missing-sections
+        // percentage (missingSections/3*100) can only land on 0/33/67/100 for
+        // VERIFY_REQUIRED_SECTIONS' 3 entries, never 80. This exact-match is
+        // guarded by phase-output-validator.test.ts's many severity===80
+        // assertions on self-contradiction cases — if that coupling ever
+        // breaks, those tests go RED first (task 906: a prior pass + PR must
+        // not launder a CURRENT self-contradicting report into `completed`).
         if (
           priorVerifyPass &&
           prRow?.githubPrId != null &&
-          !hasNonpassingVerifyVerdict(savedContent)
+          !hasNonpassingVerifyVerdict(savedContent) &&
+          verifyValidation.severity !== 80
         ) {
           log.warn(
             { taskId, prId: prRow.githubPrId, summary: verifyValidation.summary },

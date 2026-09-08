@@ -54,13 +54,15 @@ mock.module('./shared', () => ({
   wasNonConvergenceCutoffJustRecorded: mockWasNonConvergenceCutoffJustRecorded,
 }));
 
+const mockValidateVerify = mock(() => ({
+  ok: false,
+  missingSections: [],
+  severity: 80,
+  summary:
+    'verify.md self-contradicts: claims all tests pass while body contains failure signals (2 failed).',
+})) as any;
 mock.module('../../../../services/workflow/phase-output-validator', () => ({
-  validateVerify: () => ({
-    ok: false,
-    missingSections: [],
-    severity: 80,
-    summary: 'verify.md self-contradicts',
-  }),
+  validateVerify: mockValidateVerify,
 }));
 
 const mockAttemptVerifyRepair = mock(() => Promise.resolve({ bounced: false })) as any;
@@ -88,6 +90,13 @@ describe('computeAndApplyStatusTransition — 非収束カットオフの二重�
     mockMarkLatestExecutionFailed.mockClear();
     mockWorkflowTransitionFindFirst.mockReset().mockResolvedValue(null);
     mockAttemptVerifyRepair.mockReset().mockResolvedValue({ bounced: false });
+    mockValidateVerify.mockReset().mockReturnValue({
+      ok: false,
+      missingSections: [],
+      severity: 80,
+      summary:
+        'verify.md self-contradicts: claims all tests pass while body contains failure signals (2 failed).',
+    });
   });
 
   test('a prior pass and existing PR cannot override the current partial verdict', async () => {
@@ -100,6 +109,37 @@ describe('computeAndApplyStatusTransition — 非収束カットオフの二重�
     });
     expect(result.newStatus).toBe('plan_approved');
     expect(mockAttemptVerifyRepair).toHaveBeenCalledTimes(1);
+  });
+
+  test('a prior pass and existing PR cannot override a self-contradicting current verdict', async () => {
+    mockWorkflowTransitionFindFirst.mockResolvedValue({ id: 1 });
+    mockPrisma.task.findUnique.mockResolvedValue({ githubPrId: 100 });
+    mockAttemptVerifyRepair.mockResolvedValue({ bounced: true, newStatus: 'plan_approved' });
+    const result = await computeAndApplyStatusTransition({
+      ...buildParams(),
+      savedContent: '✅ 検証成功\n\n2 failed',
+    });
+    expect(result.newStatus).toBe('plan_approved');
+    expect(result.verifyRerunAlreadyDone).toBe(false);
+    expect(mockAttemptVerifyRepair).toHaveBeenCalledTimes(1);
+  });
+
+  test('a prior pass and existing PR still completes when validateVerify signals a non-self-contradiction severity>=80 failure (task 367 false-negative rescue preserved)', async () => {
+    mockWorkflowTransitionFindFirst.mockResolvedValue({ id: 1 });
+    mockPrisma.task.findUnique.mockResolvedValue({ githubPrId: 100 });
+    mockValidateVerify.mockReturnValueOnce({
+      ok: false,
+      missingSections: [],
+      severity: 90,
+      summary: 'verify.md explicitly marks the verification as failed.',
+    });
+    const result = await computeAndApplyStatusTransition({
+      ...buildParams(),
+      savedContent: '実装済みのはずだが空diffで❌ 実装漏れと誤検知された本文',
+    });
+    expect(result.newStatus).toBe('completed');
+    expect(result.verifyRerunAlreadyDone).toBe(true);
+    expect(mockAttemptVerifyRepair).not.toHaveBeenCalled();
   });
 
   test('cutoffRecorded:true なら DB 読み取りガードが false でも verify_validation_failed を記録しないこと', async () => {
