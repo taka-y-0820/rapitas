@@ -77,9 +77,10 @@ export interface VerifyRepairResult {
 export async function resolveImplementEntryStatus(
   taskId: number,
 ): Promise<'plan_approved' | 'research_done'> {
-  const plan = await prisma.workflowFile
-    .findFirst({ where: { taskId, fileType: 'plan' }, select: { id: true } })
-    .catch(() => null);
+  const plan = await prisma.workflowFile.findFirst({
+    where: { taskId, fileType: 'plan' },
+    select: { id: true },
+  });
   return plan ? 'plan_approved' : 'research_done';
 }
 
@@ -272,9 +273,7 @@ export async function attemptVerifyRepair(
   // bounce would otherwise park the task at in-progress forever. Re-queue +
   // idempotently start the runner so implement→verify re-runs regardless of
   // launch mode.
-  await ensureRunnerResumes(taskId).catch((err) =>
-    log.warn({ err, taskId }, '[verify-repair] Failed to re-queue for self-repair'),
-  );
+  await ensureRunnerResumes(taskId);
 
   log.info(
     { taskId, attempt, max, newStatus },

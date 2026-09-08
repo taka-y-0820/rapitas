@@ -61,6 +61,7 @@ describe('attemptVerifyRepair — stale-verdict CAS guard', () => {
     mockPrisma.activityLog.findFirst.mockReset().mockResolvedValue(null);
     mockPrisma.workflowTransition.count.mockReset().mockResolvedValue(0);
     mockPrisma.task.updateMany.mockReset().mockResolvedValue({ count: 1 });
+    mockPrisma.task.findUnique.mockReset().mockResolvedValue(null);
     // resolveImplementEntryStatus checks the WorkflowFile row for plan.md
     mockPrisma.workflowFile.findFirst.mockReset().mockResolvedValue({ id: 1 } as unknown as null);
     readWorkflowFile.mockReset().mockResolvedValue('# plan');
@@ -86,6 +87,28 @@ describe('attemptVerifyRepair — stale-verdict CAS guard', () => {
     });
     expect(writeWorkflowFile).not.toHaveBeenCalled();
     expect(recordTransition).not.toHaveBeenCalled();
+  });
+
+  test('unreadable plan cannot select a plan-less implementation entry', async () => {
+    mockPrisma.workflowFile.findFirst.mockRejectedValueOnce(new Error('plan read unavailable'));
+    await expect(attemptVerifyRepair(551, 'verify_done', 'reason', 'verify body')).rejects.toThrow(
+      'plan read unavailable',
+    );
+    expect(mockPrisma.task.updateMany).not.toHaveBeenCalled();
+    expect(writeWorkflowFile).not.toHaveBeenCalled();
+    expect(recordTransition).not.toHaveBeenCalled();
+  });
+
+  test('resume failure is surfaced instead of reporting a successful bounce', async () => {
+    mockPrisma.task.findUnique.mockImplementation((...args: unknown[]) => {
+      const query = args[0] as { select?: { status?: boolean } };
+      if (query.select?.status) return Promise.reject(new Error('resume read unavailable'));
+      return Promise.resolve(null);
+    });
+    await expect(attemptVerifyRepair(551, 'verify_done', 'reason', 'verify body')).rejects.toThrow(
+      'resume read unavailable',
+    );
+    expect(recordTransition).toHaveBeenCalledTimes(1);
   });
 
   test('database failure is not reported as a harmless stale verdict', async () => {
