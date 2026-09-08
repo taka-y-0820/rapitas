@@ -15,6 +15,7 @@ import { getAgentTimeoutMs } from '../agents/execution-timeouts';
 import type { RoleTransition, WorkflowAdvanceResult } from './workflow-types';
 import { resolveExecutionWorkdir } from './workflow-cli-executor-worktree';
 import { buildCliAgentPrompt } from './workflow-cli-executor-prompt';
+import { readAgentsMdConstraints } from './workflow-agents-md-context';
 import { harvestInvestigationOutput, runPhaseEpilogue } from './workflow-cli-executor-epilogue';
 import { runPostProcessing } from './workflow-cli-executor-postprocess';
 import { resumeSessionIdFor } from './phase-session-resume';
@@ -93,6 +94,10 @@ export async function executeCLIAgent(
   });
   if (workdir.abort) return workdir.abort;
   const { resolvedWorktreePath, resolvedBranchName, effectiveWorkDir } = workdir;
+  // Target repository's OWN AGENTS.md — never rapitas' own (task 892 premise
+  // #4: fixing rapitas-specific rules onto other themes previously caused a
+  // false-investigation incident, task580 in workflow-cli-executor-worktree.ts).
+  const agentsMd = readAgentsMdConstraints(effectiveWorkDir);
 
   const devConfig = await getOrCreateDevConfig(taskId);
   const session = await prisma.agentSession.create({
@@ -114,7 +119,14 @@ export async function executeCLIAgent(
   // safe pattern: codex CANNOT save the md itself, the OS guarantees it.
   const isInvestigationPhase = transition.role === 'researcher' || transition.role === 'planner';
 
-  const fullPrompt = buildCliAgentPrompt({ taskId, language, systemPrompt, context, transition });
+  const fullPrompt = buildCliAgentPrompt({
+    taskId,
+    language,
+    systemPrompt,
+    context,
+    transition,
+    agentsMd,
+  });
 
   // For the harvest guard below: a critic rejection recorded AFTER this point
   // means the artifact this phase produced was already judged and bounced.

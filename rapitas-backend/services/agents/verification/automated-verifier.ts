@@ -22,6 +22,7 @@ import { triageTestFailures } from './test-triage';
 import { buildTriagedTestCheck } from './test-triage-report';
 import { parsePlanFiles, evaluateScopeCheck } from './scope-check';
 import { evaluateAcceptanceSelfCheck } from './acceptance-self-check';
+import { schemaChangeGateCheck, collectHardGateChecks } from './schema-change-gate';
 import { runProjectChecks, spawnQuiet } from './quiet-verification';
 import { assertSafeGitRef } from '../../../utils/common/branch-name-generator';
 
@@ -47,7 +48,8 @@ export interface VerificationCheck {
     | 'coverage'
     | 'runtime'
     | 'tamper'
-    | 'acceptance';
+    | 'acceptance'
+    | 'schema-change';
   /** Whether the check was applicable and actually executed. */
   ran: boolean;
   /** True when the check passed (no new failures in the changed files). */
@@ -888,18 +890,18 @@ export async function runAutomatedVerification(
 
   const scopeCheck: VerificationCheck | null =
     options.planContent && planFiles ? evaluateScopeCheck(allChanged, planFiles) : null;
-
-  // Anti-tampering tripwire (HARD gate) — always evaluated, even when no code
-  // file changed (a CI/hook-only diff is exactly the case it must catch).
+  // Anti-tampering + schema-change (task 892) HARD gates — always evaluated,
+  // even with no code file changed (a CI/hook-only diff is exactly the case).
   const allow = options.tamperAllowlist ?? [];
   const tamperPlan = allow.length ? [...(planFiles ?? []), ...allow] : planFiles;
   const tamper = tamperCheck(allChanged, tamperPlan);
-
-  if (changedFiles.length === 0 && (!scopeCheck || scopeCheck.ok) && (!tamper || tamper.ok)) {
+  const schemaGate = schemaChangeGateCheck(allChanged, planFiles);
+  const hardGateChecks = collectHardGateChecks(scopeCheck, tamper, schemaGate);
+  if (changedFiles.length === 0 && hardGateChecks.every((c) => c.ok)) {
     return {
       ok: true,
       changedFiles: [],
-      checks: [...(scopeCheck ? [scopeCheck] : []), ...(tamper ? [tamper] : [])],
+      checks: hardGateChecks,
       summary: '自動検証: 対象のコード変更なし',
       unverifiable: false,
     };
@@ -944,8 +946,7 @@ export async function runAutomatedVerification(
     mergeChecks('test', testParts),
     ...(formatParts.length > 0 ? [mergeChecks('format', formatParts)] : []),
     ...(generatedSync ? [generatedSync] : []),
-    ...(scopeCheck ? [scopeCheck] : []),
-    ...(tamper ? [tamper] : []),
+    ...hardGateChecks,
     ...(coverage ? [coverage] : []),
     ...(acceptance ? [acceptance] : []),
   ];

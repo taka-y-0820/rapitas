@@ -45,7 +45,7 @@ export const VERIFY_NON_REPAIRABLE_CAUSE = 'verify_repair_non_repairable';
  */
 export function isTamperOnlyVerdict(reason: string): boolean {
   if (!/tamper=NG/.test(reason)) return false;
-  return !/\b(lint|typecheck|test|format|coverage|scope|runtime)=NG/.test(reason);
+  return !/\b(lint|typecheck|test|format|coverage|scope|runtime|schema-change)=NG/.test(reason);
 }
 
 export interface VerifyRepairResult {
