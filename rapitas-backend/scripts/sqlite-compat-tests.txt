@@ -99,3 +99,4 @@ utils/ai-client/claude-cli-provider.test.ts
 utils/ai-client/claude-cli-provider.errors.test.ts
 utils/ai-client/claude-cli-provider.parsing.test.ts
 utils/ai-client/claude-cli-provider.tracking.test.ts
+routes/workflow/handlers/workflow-handlers-files.test.ts
