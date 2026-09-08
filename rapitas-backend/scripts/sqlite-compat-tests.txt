@@ -104,3 +104,4 @@ services/agents/orchestrator/git-operations/pr/branch-pr-ops.test.ts
 services/workflow/phase-session-resume.test.ts
 tests/routes/workflow/workflow-routes.test.ts
 services/agents/orchestrator/execution-resume.test.ts
+services/workflow/verify-repair-recovery.test.ts

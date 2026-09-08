@@ -41,6 +41,14 @@ const { requeueOrphanTasks } = await import('./workflow-reconciler-requeue');
 
 const NOW = 1_800_000_000_000;
 
+test('failed repair receipt cannot be bypassed by generic orphan recovery', async () => {
+  mockPrisma.task.findMany.mockResolvedValueOnce([
+    { id: 901, title: 'invalid repair receipt', workflowStatus: 'plan_approved' },
+  ]);
+  expect(await requeueOrphanTasks(NOW, new Set([901]))).toBe(0);
+  expect(mockPrisma.task.update).not.toHaveBeenCalled();
+});
+
 beforeEach(() => {
   mockPrisma.task.findMany.mockReset().mockResolvedValue([]);
   mockPrisma.task.update.mockReset().mockResolvedValue({});

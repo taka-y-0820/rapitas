@@ -325,17 +325,14 @@ export async function reconcileOnce(): Promise<{
     );
     // Try to recover orphans (re-queue) BEFORE flagging — a successful re-queue
     // means we don't also notify the user about the same task.
+    const failedRepairTasks = new Set<number>();
     const recoveredRepairs = await runHealPass('recoverPendingRepairs', async () => {
-      const { recoverPendingRepairs } = await import('./verify-repair-recovery');
-      const { WorkflowRunner } = await import('./workflow-runner');
-      return recoverPendingRepairs(
-        prisma,
-        () => WorkflowRunner.getInstance().startProcessing(),
-        nowMs,
-      );
+      const { recoverRepairsForRunner } = await import('./verify-repair-recovery');
+      return recoverRepairsForRunner(prisma, nowMs, failedRepairTasks);
     });
     const requeuedOrphans =
-      recoveredRepairs + (await runHealPass('requeueOrphanTasks', () => requeueOrphanTasks(nowMs)));
+      recoveredRepairs +
+      (await runHealPass('requeueOrphanTasks', () => requeueOrphanTasks(nowMs, failedRepairTasks)));
     // Blocked-task order contract (task 615): correct → retry → escalate.
     // Evidence correction removes PROVEN-successful blocked tasks FIRST so the
     // blind retry below never re-runs them (a re-run opens a duplicate PR).

@@ -57,7 +57,10 @@ async function hasLiveExecution(taskId: number): Promise<boolean> {
  * @param nowMs - Current time (ms). / 現在時刻
  * @returns Number of tasks re-queued. / 再キュー数
  */
-export async function requeueOrphanTasks(nowMs: number): Promise<number> {
+export async function requeueOrphanTasks(
+  nowMs: number,
+  excludedTaskIds: ReadonlySet<number> = new Set(),
+): Promise<number> {
   const staleBefore = new Date(nowMs - STALE_TASK_MS);
   const notOlderThan = new Date(nowMs - MAX_ORPHAN_REQUEUE_AGE_MS);
   const tasks = await prisma.task
@@ -73,6 +76,8 @@ export async function requeueOrphanTasks(nowMs: number): Promise<number> {
 
   let requeued = 0;
   for (const t of tasks) {
+    // Do not bypass a failed repair receipt check through generic recovery.
+    if (excludedTaskIds.has(t.id)) continue;
     if (t.workflowStatus === 'completed' || t.workflowStatus === 'awaiting_question') continue;
     // A task parked at verify_done/in-progress can be legitimately AWAITING the
     // AutoMergeWatcher's confirmation (task 895), not orphaned — its PENDING_TIMEOUT_MS

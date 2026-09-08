@@ -2,6 +2,33 @@
 import type { PrismaClient } from '../../generated/prisma-postgres';
 import { enqueueCommittedRepair } from './verify-repair-queue';
 
+export class RepairRecoveryError extends Error {
+  constructor(
+    readonly errors: Error[],
+    recovered: number,
+  ) {
+    super(`Repair recovery incomplete (${recovered} queued)`);
+    this.name = 'RepairRecoveryError';
+  }
+}
+
+/** Reconciler adapter: wake the runner and preserve failed IDs for later passes. */
+export async function recoverRepairsForRunner(
+  db: PrismaClient,
+  nowMs: number,
+  failed: Set<number>,
+) {
+  const { WorkflowRunner } = await import('./workflow-runner');
+  return recoverPendingRepairs(
+    db,
+    () => WorkflowRunner.getInstance().startProcessing(),
+    nowMs,
+    (taskId) => {
+      failed.add(taskId);
+    },
+  );
+}
+
 export async function recoverCommittedRepair(db: PrismaClient, taskId: number) {
   const audit = await db.workflowTransition.findFirst({
     where: { taskId, cause: 'verify_repair' },
@@ -43,6 +70,7 @@ export async function recoverPendingRepairs(
   db: PrismaClient,
   wake: () => void,
   nowMs = Date.now(),
+  onFailure: (taskId: number) => void = () => {},
 ): Promise<number> {
   const tasks = await db.task.findMany({
     where: {
@@ -53,20 +81,28 @@ export async function recoverPendingRepairs(
     select: { id: true },
   });
   let recovered = 0;
+  const failures: Error[] = [];
   for (const task of tasks) {
-    const active = await db.agentExecution.findFirst({
-      where: {
-        session: { config: { taskId: task.id } },
-        status: { in: ['running', 'pending', 'waiting_for_input', 'canceling', 'cancelling'] },
-      },
-      select: { id: true },
-    });
-    if (active) continue;
-    const result = await recoverCommittedRepair(db, task.id);
-    if (result === 'queued' || result === 'existing') {
-      wake();
-      if (result === 'queued') recovered++;
+    try {
+      const active = await db.agentExecution.findFirst({
+        where: {
+          session: { config: { taskId: task.id } },
+          status: { in: ['running', 'pending', 'waiting_for_input', 'canceling', 'cancelling'] },
+        },
+        select: { id: true },
+      });
+      if (active) continue;
+      const result = await recoverCommittedRepair(db, task.id);
+      if (result === 'queued' || result === 'existing') {
+        wake();
+        if (result === 'queued') recovered++;
+      }
+    } catch (cause) {
+      onFailure(task.id);
+      failures.push(new Error(`Repair recovery failed for task ${task.id}`, { cause }));
     }
   }
+  // Deliver healthy repairs first, but never report a partial pass as success.
+  if (failures.length) throw new RepairRecoveryError(failures, recovered);
   return recovered;
 }
