@@ -105,15 +105,15 @@ export async function waitForVerifyCompletion(
       }
     }
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, VERIFY_SETTLE_POLL_MS);
-      signal.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        { once: true },
-      );
+      const finish = () => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, VERIFY_SETTLE_POLL_MS);
+      signal.addEventListener('abort', finish, { once: true });
+      // A stop may arrive during the asynchronous state/merge checks above.
+      if (signal.aborted) finish();
     });
   }
 }
