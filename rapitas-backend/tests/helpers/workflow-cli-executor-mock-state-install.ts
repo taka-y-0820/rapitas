@@ -214,6 +214,10 @@ const prismaMock = {
   },
   agentSession: { create: spies.agentSessionCreate, update: spies.agentSessionUpdate },
   gitHubPullRequest: { findFirst: spies.gitHubPrFindFirst },
+  // resolveAutomationPolicy reads the global "タスク設定" defaults; the verify
+  // gate now consults it to decide whether a required merge is outstanding
+  // (task 895). Absent here, the policy read threw and killed the epilogue.
+  userSettings: { findFirst: () => Promise.resolve(null) },
   agentExecution: {
     updateMany: spies.agentExecutionUpdateMany,
     findFirst: spies.agentExecutionFindFirst,

@@ -12,6 +12,9 @@ import { realtimeService } from '../communication/realtime-service';
 import { writeWorkflowFile } from './workflow-file-utils';
 import { recordTransition } from './transition-recorder';
 import { resolveTaskSubtaskInfo, resolveTaskWithThemeAndCategory } from '../task/task-resolver';
+import { resolveAutomationPolicy, resolveLandingMode } from './automation-policy';
+import { isAwaitingRequiredMerge } from './verify-settle-artifact-recovery';
+import { holdForRequiredMerge } from './required-merge-hold';
 
 const log = createLogger('subtask-completion');
 
@@ -153,9 +156,47 @@ export async function onSubtaskCompleted(completedSubtaskId: number): Promise<vo
       );
     }
 
+    const fromWorkflowStatus = parentTask.workflowStatus ?? null;
+
+    // When the parent must land via a MERGE, the commit/PR pipeline has to run
+    // BEFORE the finalize decision: completion then depends on that PR being
+    // merged, which the AutoMergeWatcher confirms. The pre-existing order
+    // (finalize, then commit/PR) marked the parent done before its PR even
+    // existed (task 895). Other landing modes keep the original order — their
+    // completion point is verify itself, not the PR's fate.
+    // Fail CLOSED to 'merge' when the policy cannot be read: the merge branch
+    // holds instead of completing, which self-heals; guessing 'pr' would
+    // irreversibly complete a parent whose merge may still be required.
+    const landingMode = allPassed
+      ? await resolveAutomationPolicy(prisma, parentTask.id)
+          .then(resolveLandingMode)
+          .catch(() => 'merge' as const)
+      : 'none';
+    if (allPassed && landingMode === 'merge') {
+      await runParentAutoCommitAndPR(parentTask.id, verifyContent);
+      if (await isAwaitingRequiredMerge(parentTask.id).catch(() => true)) {
+        await holdForRequiredMerge({
+          taskId: parentTask.id,
+          fromStatus: fromWorkflowStatus,
+          source: 'subtask-completion-handler',
+          metadata: { subtaskCount: siblings.length, doneCount, failedCount },
+        });
+        // NOT task_completed: the parent is held, not complete.
+        realtimeService.broadcast('tasks', 'task_updated', {
+          taskId: parentTask.id,
+          status: 'in-progress',
+          workflowStatus: 'verify_done',
+          timestamp: new Date().toISOString(),
+        });
+        log.info(
+          `[SubtaskCompletion] Parent #${parentTask.id}: all subtasks passed and a PR is on record — awaiting the required merge before completion`,
+        );
+        return;
+      }
+    }
+
     // Finalize parent status. allPassed → done/completed; otherwise leave the
     // task blocked for the user to inspect the failed subtask(s).
-    const fromWorkflowStatus = parentTask.workflowStatus ?? null;
     await prisma.task.update({
       where: { id: parentTask.id },
       data: allPassed
@@ -188,29 +229,36 @@ export async function onSubtaskCompleted(completedSubtaskId: number): Promise<vo
       `[SubtaskCompletion] Parent task #${subtask.parentId} finalized: ${allPassed ? 'completed' : 'blocked'}`,
     );
 
-    // Commit/PR the parent's worktree. A split parent's implementation usually
-    // lands in ITS worktree (the agent does the work there rather than per
-    // subtask), but no other path commits a split parent — so its changes were
-    // stranded uncommitted and never reached the repo. Run the same auto-
-    // commit/PR pipeline the HTTP verify handler uses (it no-ops when the user
-    // hasn't enabled auto-commit, and is gated by the verification check).
-    if (allPassed) {
-      try {
-        const { performAutoCommitAndPR } =
-          await import('../../routes/workflow/workflow-auto-commit');
-        await performAutoCommitAndPR(parentTask.id, verifyContent);
-      } catch (err) {
-        log.warn(
-          { err, parentId: parentTask.id },
-          '[SubtaskCompletion] Parent auto-commit/PR failed (non-fatal)',
-        );
-      }
+    // Commit/PR the parent's worktree for the non-merge landing modes (merge
+    // mode already ran it above). See runParentAutoCommitAndPR.
+    if (allPassed && landingMode !== 'merge') {
+      await runParentAutoCommitAndPR(parentTask.id, verifyContent);
     }
   } catch (error) {
     log.error(
       { err: error },
       `[SubtaskCompletion] Handler failed for subtask #${completedSubtaskId}`,
     );
+  }
+}
+
+/**
+ * Commit/PR the parent's worktree. A split parent's implementation usually lands
+ * in ITS worktree (the agent does the work there rather than per subtask), but
+ * no other path commits a split parent — so its changes were stranded
+ * uncommitted and never reached the repo. Runs the same auto-commit/PR pipeline
+ * the HTTP verify handler uses (it no-ops when the user hasn't enabled
+ * auto-commit, and is gated by the verification check). Non-fatal by design.
+ *
+ * @param parentId - Parent task whose worktree is published. / 公開対象の親タスクID
+ * @param verifyContent - Integration verify.md body used for the PR. / PR本文に使う統合verify.md
+ */
+async function runParentAutoCommitAndPR(parentId: number, verifyContent: string): Promise<void> {
+  try {
+    const { performAutoCommitAndPR } = await import('../../routes/workflow/workflow-auto-commit');
+    await performAutoCommitAndPR(parentId, verifyContent);
+  } catch (err) {
+    log.warn({ err, parentId }, '[SubtaskCompletion] Parent auto-commit/PR failed (non-fatal)');
   }
 }
 

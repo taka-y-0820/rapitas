@@ -8,13 +8,8 @@
  *
  * If review finds issues, the worktree is preserved for manual inspection.
  */
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
 import { prisma } from '../../../../config/database';
 import { createLogger } from '../../../../config/logger';
-import { sendAIMessage } from '../../../../utils/ai-client';
-import { getLocalLLMStatus } from '../../../../services/local-llm';
-import { AgentWorkerManager } from '../../../../services/agents/agent-worker-manager';
 import { createCommit } from '../../../../services/agents/orchestrator/git-operations/core/core-ops';
 import {
   createPullRequest,
@@ -31,37 +26,19 @@ import {
   releasePrCreationLock,
 } from '../../../../services/github/pr-duplicate-guard';
 import { resolvePreferredBaseBranch } from '../../../../services/task/task-resolver';
+import { isAwaitingRequiredMerge } from '../../../../services/workflow/verify-settle-artifact-recovery';
+import { publicationAborted } from '../../../../services/workflow/publication-cancellation-guard';
+import { holdForRequiredMerge } from '../../../../services/workflow/required-merge-hold';
+import {
+  cleanupWorktree,
+  execAsync,
+  getDiff,
+  markTaskDone,
+  resolveBaseBranch,
+  runAIReview,
+} from './post-execution-review-helpers';
 
 const log = createLogger('routes:post-execution-review');
-const agentWorkerManager = AgentWorkerManager.getInstance();
-// Async git so worktree revert/diff here never blocks the single-threaded
-// event loop. Synchronous execSync('git ...') would freeze ALL HTTP requests
-// (e.g. the UI's GET /tasks/:id) for up to the given timeout when a git op is
-// slow/locked — the "Request timeout after 30001ms" this bug class produces
-// (already fixed for execute-post-handler.ts's own copy of this logic; this
-// file's copy was missed at the time).
-const execAsync = promisify(exec);
-
-const REVIEW_PROMPT = `あなたはシニアコードレビュアーです。以下のgit diffをレビューしてください。
-
-## タスク: {title}
-
-## 変更差分
-{diff}
-
-以下のJSON形式で返してください（他のテキスト不要）:
-{
-  "approved": true/false,
-  "summary": "変更内容の要約（1-2文）",
-  "issues": ["問題点があれば記載"],
-  "commitMessage": "適切なコミットメッセージ（conventional commits形式: feat/fix/refactor等）"
-}
-
-承認基準:
-- コードが動作しそうか（明らかな構文エラーがないか）
-- 意図しないファイルの削除や破壊的変更がないか
-- 明確なバグの混入がないか
-軽微なスタイル問題は承認してください。`;
 
 interface ReviewParams {
   taskId: number;
@@ -83,6 +60,11 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
   const { taskId, taskTitle, sessionId, workDir, executionDir } = params;
 
   log.info({ taskId, executionDir }, 'Starting post-execution review pipeline');
+
+  // Boundary 1/5 — a stop recorded before this pipeline started must not
+  // produce a commit, a PR, or a worktree removal (task 895). This path has its
+  // OWN commit/PR code, so it does not inherit performAutoCommitAndPR's guards.
+  if (await publicationAborted(taskId, 'post_execution_review_entry')) return;
 
   // 1. Get the diff from the worktree
   const diff = await getDiff(executionDir);
@@ -273,6 +255,10 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
     return;
   }
 
+  // Boundary 2/5 — the verification gate above runs lint/type/tests and can
+  // take minutes; a stop during it must not fall through into git.
+  if (await publicationAborted(taskId, 'after_verification_gate')) return;
+
   // 2. AI Review
   const review = await runAIReview(taskTitle, diff);
   if (!review) {
@@ -286,6 +272,10 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
   }
 
   log.info({ taskId, summary: review.summary }, 'AI review approved');
+
+  // Boundary 3/5 — the last point before this run writes to git (the AI review
+  // call above is another multi-minute await).
+  if (await publicationAborted(taskId, 'before_commit')) return;
 
   // 3. Commit
   const commitMsg = review.commitMessage || `feat(task-${taskId}): ${taskTitle}`;
@@ -326,6 +316,9 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
   // diverged push renamed to <branch>-<sha>). Claim the lock first so two
   // concurrent auto-PR attempts for this task can't both pass the check and
   // each create one.
+  // Boundary 4/5 — nothing is published to GitHub after a stop.
+  if (await publicationAborted(taskId, 'before_pr')) return;
+
   const lockClaimed = await claimPrCreationLock(prisma, taskId);
   if (!lockClaimed) {
     log.info(
@@ -336,6 +329,9 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
   }
 
   let prResult: CreatePullRequestResult;
+  // Captured OUTSIDE the try so the completion gate below can read it: TS treats
+  // an assignment inside try/finally as possibly-unexecuted.
+  let publishedPrNumber: number | undefined;
   try {
     const existingOpenPr = await findOpenPrForTask(prisma, taskId);
     if (existingOpenPr) {
@@ -344,6 +340,7 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
         'Task already has an open PR — reusing instead of creating a new one',
       );
       prResult = { success: true, prUrl: existingOpenPr.url, prNumber: existingOpenPr.prNumber };
+      publishedPrNumber = existingOpenPr.prNumber;
     } else {
       prResult = await createPullRequest(executionDir, prTitle, prBody, baseBranch);
       if (!prResult.success) {
@@ -363,6 +360,7 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
       }
 
       log.info({ taskId, prUrl: prResult.prUrl, prNumber: prResult.prNumber }, 'PR created');
+      publishedPrNumber = prResult.prNumber ?? undefined;
 
       // Persist + link the PR locally so the task's "PRを開く" button can resolve
       // task → local PR id (otherwise the by-task lookup 404s and nothing happens).
@@ -394,128 +392,37 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
     await releasePrCreationLock(prisma, taskId);
   }
 
+  // Boundary 5/5 — worktree removal is irreversible and destroys the evidence a
+  // stopped run must keep for inspection, so it is withheld too.
+  if (await publicationAborted(taskId, 'before_worktree_cleanup')) return;
+
   // 5. Cleanup worktree only after PR is confirmed
   await cleanupWorktree(workDir, executionDir, sessionId);
 
-  // 6. Mark task as done — all steps completed successfully
+  // 6. Completion point. When autoMergePR was requested, creating the PR is NOT
+  // completion — hold the task at verify_done so the AutoMergeWatcher completes
+  // it only after GitHub confirms the merge (task 895). This path is otherwise
+  // the one completion route that never consulted the automation policy at all.
+  if (await isAwaitingRequiredMerge(taskId).catch(() => true)) {
+    // holdForRequiredMerge compare-and-swaps on the workflowStatus we OBSERVED,
+    // so read it here rather than assuming: a non-workflow single run carries
+    // whatever status its own path last wrote (often null).
+    const observed = await prisma.task
+      .findUnique({ where: { id: taskId }, select: { workflowStatus: true } })
+      .catch(() => null);
+    await holdForRequiredMerge({
+      taskId,
+      fromStatus: observed?.workflowStatus ?? null,
+      source: 'post-execution-review',
+      metadata: { prNumber: publishedPrNumber ?? null },
+    });
+    log.info(
+      { taskId, prNumber: publishedPrNumber },
+      'Post-execution review pipeline finished — completion deferred to the auto-merge watcher',
+    );
+    return;
+  }
   await markTaskDone(taskId);
 
   log.info({ taskId }, 'Post-execution review pipeline completed');
-}
-
-/**
- * Resolve the PR base branch for a task: the task's theme defaultBranch, else
- * 'develop'. Mirrors the workflow-auto-commit / approval paths so auto-PRs target
- * the theme's intended branch instead of an auto-detected main.
- *
- * @param taskId - Task id / タスクID
- * @returns Base branch name / ベースブランチ名
- */
-async function resolveBaseBranch(taskId: number): Promise<string> {
-  const task = await prisma.task
-    .findUnique({ where: { id: taskId }, select: { theme: { select: { defaultBranch: true } } } })
-    .catch(() => null);
-  return task?.theme?.defaultBranch || 'develop';
-}
-
-/** Get git diff from worktree. */
-async function getDiff(dir: string): Promise<string> {
-  try {
-    // Staged + unstaged changes
-    const { stdout: staged } = await execAsync('git diff --cached --stat', {
-      cwd: dir,
-      encoding: 'utf-8',
-      timeout: 10000,
-    });
-    const { stdout: unstaged } = await execAsync('git diff --stat', {
-      cwd: dir,
-      encoding: 'utf-8',
-      timeout: 10000,
-    });
-    const { stdout: untracked } = await execAsync('git ls-files --others --exclude-standard', {
-      cwd: dir,
-      encoding: 'utf-8',
-      timeout: 10000,
-    });
-
-    // Get actual diff content (limited to prevent token overflow)
-    const { stdout: diffContent } = await execAsync('git diff HEAD --no-color -U3', {
-      cwd: dir,
-      encoding: 'utf-8',
-      timeout: 15000,
-      maxBuffer: 1024 * 1024,
-    });
-
-    const parts = [staged, unstaged, untracked].filter(Boolean).join('\n');
-    if (!parts.trim() && !diffContent.trim()) return '';
-
-    // Truncate large diffs for AI review
-    return diffContent.slice(0, 8000);
-  } catch {
-    return '';
-  }
-}
-
-interface ReviewResult {
-  approved: boolean;
-  summary: string;
-  issues: string[];
-  commitMessage: string;
-}
-
-/** Run AI review on the diff. */
-async function runAIReview(title: string, diff: string): Promise<ReviewResult | null> {
-  try {
-    const localStatus = await getLocalLLMStatus().catch(() => ({ available: false }));
-    const useLocal = (localStatus as { available: boolean }).available;
-
-    const prompt = REVIEW_PROMPT.replace('{title}', title).replace('{diff}', diff);
-
-    const response = await sendAIMessage({
-      provider: useLocal ? 'ollama' : 'claude',
-      model: useLocal ? 'llama3.2' : 'claude-haiku-4-5-20251001',
-      messages: [{ role: 'user', content: prompt }],
-      maxTokens: 500,
-    });
-
-    const jsonMatch = response.content.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
-
-    return JSON.parse(jsonMatch[0]) as ReviewResult;
-  } catch (err) {
-    log.warn({ err }, 'AI review call failed');
-    return null;
-  }
-}
-
-/** Clean up worktree and update DB. */
-async function cleanupWorktree(
-  workDir: string,
-  executionDir: string,
-  sessionId: number,
-): Promise<void> {
-  try {
-    const removed = await agentWorkerManager.removeWorktree(workDir, executionDir);
-    if (removed) {
-      await prisma.agentSession.update({ where: { id: sessionId }, data: { worktreePath: null } });
-      log.info({ sessionId }, 'Worktree cleaned up');
-    } else {
-      log.warn({ sessionId }, 'removeWorktree refused or failed');
-    }
-  } catch (err) {
-    log.warn({ err, sessionId }, 'Worktree cleanup failed');
-  }
-}
-
-/** Mark task as done with completedAt timestamp. */
-async function markTaskDone(taskId: number): Promise<void> {
-  try {
-    await prisma.task.update({
-      where: { id: taskId },
-      data: { status: 'done', completedAt: new Date() },
-    });
-    log.info({ taskId }, 'Task marked as done');
-  } catch (err) {
-    log.warn({ err, taskId }, 'Failed to mark task as done');
-  }
 }

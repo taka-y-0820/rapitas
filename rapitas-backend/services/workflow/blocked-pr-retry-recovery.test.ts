@@ -57,6 +57,20 @@ mock.module('../../routes/workflow/workflow-auto-commit', () => ({
   performAutoCommitAndPR: mockPerformAutoCommitAndPR,
 }));
 
+// Required-merge gate (task 895). Default false so the pre-existing cases keep
+// exercising the completion path unchanged.
+let awaitingRequiredMerge = false;
+const mockIsAwaitingRequiredMerge = mock(() => Promise.resolve(awaitingRequiredMerge));
+mock.module('./verify-settle-artifact-recovery', () => ({
+  isAwaitingRequiredMerge: mockIsAwaitingRequiredMerge,
+}));
+
+const mockHoldForRequiredMerge = mock(() => Promise.resolve(true));
+mock.module('./required-merge-hold', () => ({
+  holdForRequiredMerge: mockHoldForRequiredMerge,
+  AWAITING_REQUIRED_MERGE_CAUSE: 'verify_awaiting_required_merge',
+}));
+
 const { attemptPrOnlyRecovery } = await import('./blocked-pr-retry-recovery');
 
 describe('attemptPrOnlyRecovery', () => {
@@ -72,6 +86,9 @@ describe('attemptPrOnlyRecovery', () => {
       autoPRResult: { success: true, prUrl: 'https://example.com/pr/1', prNumber: 1 },
     };
     mockTaskUpdateMany.mockResolvedValue({ count: 1 });
+    mockIsAwaitingRequiredMerge.mockClear();
+    mockHoldForRequiredMerge.mockClear();
+    awaitingRequiredMerge = false;
   });
 
   test('PR作成成功: performAutoCommitAndPRが呼ばれ、taskが完了しverify_passedが記録され、trueを返す', async () => {
@@ -116,5 +133,62 @@ describe('attemptPrOnlyRecovery', () => {
       data: expect.objectContaining({ status: 'done', workflowStatus: 'completed' }),
     });
     expect(result).toBe(true);
+  });
+});
+
+describe('attemptPrOnlyRecovery — autoMergePR要求時はマージ確認まで完了させない (task 895)', () => {
+  beforeEach(() => {
+    mockTaskUpdateMany.mockClear();
+    mockRecordTransition.mockClear();
+    mockPerformAutoCommitAndPR.mockClear();
+    mockHoldForRequiredMerge.mockClear();
+    mockTaskUpdateMany.mockResolvedValue({ count: 1 });
+    awaitingRequiredMerge = true;
+  });
+
+  test('既にPRリンク済み: 完了させず holdForRequiredMerge で verify_done に保留する', async () => {
+    linkedPr = true;
+
+    const result = await attemptPrOnlyRecovery(895);
+
+    expect(mockHoldForRequiredMerge).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: 895, source: 'blocked-pr-retry-recovery' }),
+    );
+    expect(mockTaskUpdateMany).not.toHaveBeenCalled();
+    expect(mockRecordTransition).not.toHaveBeenCalled();
+    expect(result).toBe(true);
+  });
+
+  test('PR作成成功: PRを作っても完了させず verify_done に保留する', async () => {
+    linkedPr = false;
+    acprResult = {
+      autoCommitResult: { success: true },
+      autoPRResult: { success: true, prUrl: 'https://example.com/pr/2', prNumber: 2 },
+    };
+
+    const result = await attemptPrOnlyRecovery(895);
+
+    expect(mockPerformAutoCommitAndPR).toHaveBeenCalledTimes(1);
+    expect(mockHoldForRequiredMerge).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: 895, source: 'blocked-pr-retry-recovery' }),
+    );
+    expect(mockTaskUpdateMany).not.toHaveBeenCalled();
+    expect(result).toBe(true);
+  });
+
+  test('PR作成失敗時は保留にも入らず、従来どおり軽量リトライ失敗として false を返す', async () => {
+    linkedPr = false;
+    acprResult = {
+      autoCommitResult: { success: true, filesChanged: 3 },
+      autoPRResult: { success: false, error: 'gh pr create failed' },
+    };
+
+    const result = await attemptPrOnlyRecovery(895);
+
+    expect(mockHoldForRequiredMerge).not.toHaveBeenCalled();
+    expect(mockRecordTransition).toHaveBeenCalledWith(
+      expect.objectContaining({ cause: 'verify_pr_retry_lightweight' }),
+    );
+    expect(result).toBe(false);
   });
 });

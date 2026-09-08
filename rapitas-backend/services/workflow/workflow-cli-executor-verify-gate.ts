@@ -15,6 +15,8 @@ import type { ValidationResult } from './phase-output-validator';
 import type { RoleTransition, WorkflowAdvanceResult } from './workflow-types';
 import { recordTransition, type TransitionActor } from './transition-recorder';
 import { evaluateCompletionGate } from './completion-gate';
+import { isAwaitingRequiredMerge } from './verify-settle-artifact-recovery';
+import { holdForRequiredMerge } from './required-merge-hold';
 import { writeBlockedStatusDurable } from './durable-blocked-write';
 import {
   taskHasLinkedPr,
@@ -246,6 +248,24 @@ export async function resolveVerifyPhaseStatus(params: {
           { taskId, prError },
           '[WorkflowCLIExecutor] Verify passed but no PR — blocking (completion requires a PR).',
         );
+        // Fail CLOSED on an unreadable automation policy: it cannot prove the
+        // merge is NOT required, and a wrong completion is irreversible whereas
+        // holding self-heals on the next tick.
+      } else if (await isAwaitingRequiredMerge(taskId).catch(() => true)) {
+        // A PR exists and autoMergePR was REQUESTED — PR creation is not the
+        // completion point. Mirror the HTTP pipeline's `merge` landing mode
+        // (verify-commit-pr-pipeline.ts): hold at verify_done and let the
+        // AutoMergeWatcher complete the task once GitHub reports the PR merged.
+        // Without this, orchestrator/queue-driven runs (auto-run, subtasks)
+        // completed on PR creation alone (task 895).
+        await holdForRequiredMerge({
+          taskId,
+          fromStatus: currentWfStatus,
+          actor: transition.role as TransitionActor,
+          sessionId: session.id,
+          source: 'WorkflowCLIExecutor',
+        });
+        phaseStatus = currentWfStatus as WorkflowAdvanceResult['status'];
       } else {
         await prisma.task.update({
           where: { id: taskId },

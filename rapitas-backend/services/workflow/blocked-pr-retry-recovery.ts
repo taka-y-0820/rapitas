@@ -15,6 +15,8 @@ import { readWorkflowFile } from './workflow-file-utils';
 import { recordTransition } from './transition-recorder';
 import { taskHasLinkedPr } from './workflow-cli-executor-helpers';
 import { PR_RETRY_LIGHTWEIGHT_CAUSE } from './blocked-task-policy';
+import { isAwaitingRequiredMerge } from './verify-settle-artifact-recovery';
+import { holdForRequiredMerge } from './required-merge-hold';
 
 const log = createLogger('workflow:blocked-pr-retry-recovery');
 
@@ -40,6 +42,20 @@ export async function attemptPrOnlyRecovery(taskId: number): Promise<boolean> {
   // Another process may have already landed the PR (e.g. a concurrent manual
   // retry) — avoid a redundant second PR-creation attempt.
   if (await taskHasLinkedPr(taskId)) {
+    // A requested auto-merge is not satisfied by the PR merely existing — the
+    // watcher must confirm GitHub merged it, so this path must NOT complete the
+    // task (task 895). holdForRequiredMerge refuses to lift a `blocked` task on
+    // its own (it never resurrects a terminal/blocked row); returning true still
+    // spares the implementation from the caller's blind full reset.
+    if (await isAwaitingRequiredMerge(taskId).catch(() => true)) {
+      await holdForRequiredMerge({
+        taskId,
+        fromStatus: 'verify_done',
+        source: 'blocked-pr-retry-recovery',
+        metadata: { lightweightRetry: true, reason: 'PR already linked' },
+      });
+      return true;
+    }
     const completed = await prisma.task
       .updateMany({
         where: { id: taskId, workflowStatus: 'verify_done' },
@@ -90,6 +106,22 @@ export async function attemptPrOnlyRecovery(taskId: number): Promise<boolean> {
       '[blocked-pr-retry-recovery] Lightweight PR retry failed — falling through to existing fallback',
     );
     return false;
+  }
+
+  // Same required-merge gate as the already-linked branch above: a freshly
+  // created PR is a publication step, not the completion point.
+  if (await isAwaitingRequiredMerge(taskId).catch(() => true)) {
+    await holdForRequiredMerge({
+      taskId,
+      fromStatus: 'verify_done',
+      source: 'blocked-pr-retry-recovery',
+      metadata: {
+        lightweightRetry: true,
+        commit: acpr.autoCommitResult?.success,
+        pr: acpr.autoPRResult?.success,
+      },
+    });
+    return true;
   }
 
   // Compare-and-swap on verify_done (verify-commit-pr-pipeline.ts's
