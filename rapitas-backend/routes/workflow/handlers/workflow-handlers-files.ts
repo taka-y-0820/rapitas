@@ -13,6 +13,7 @@ import { prisma } from '../../../config';
 import { NotFoundError, ValidationError, parseId } from '../../../middleware/error-handler';
 import { createLogger } from '../../../config/logger';
 import { VALID_FILE_TYPES, resolveWorkflowDir, getFileInfo } from '../core/workflow-helpers';
+import { withTaskLifecycleLock } from '../../../services/workflow/task-lifecycle-lock';
 import {
   validateFileType,
   resolveTargetTask,
@@ -127,12 +128,20 @@ export async function handleSaveFile({
 
     const currentStatus = resolved.task.workflowStatus;
 
-    const transition = await computeAndApplyStatusTransition({
-      taskId,
-      fileType,
-      currentStatus,
-      savedContent,
-    });
+    // Question saves (awaiting_question writes) are serialized on the same
+    // taskId lock the scheduler's advanceActiveTask uses for its
+    // resolveTaskWorkflowState read, so a scheduler tick can never observe a
+    // stale workflowStatus mid-write and fall into the queue-loss re-enqueue
+    // branch (task #901). research/plan/verify never write awaiting_question
+    // and are excluded — verify in particular can run
+    // runVerifyPostSaveAutomation for minutes, which must not block the
+    // scheduler's same-task lock.
+    const transition =
+      fileType === 'question'
+        ? await withTaskLifecycleLock(taskId, () =>
+            computeAndApplyStatusTransition({ taskId, fileType, currentStatus, savedContent }),
+          )
+        : await computeAndApplyStatusTransition({ taskId, fileType, currentStatus, savedContent });
     let newStatus = transition.newStatus;
 
     const critic = await runPhaseCriticGate({
