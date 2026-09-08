@@ -202,12 +202,13 @@ export async function stopThemeAgents(
 
   // All subtasks of those tasks (and of the current task). Subtasks run under
   // their own taskId, so the per-task query above would miss them.
-  const parentIds = [...taskIds];
-  if (parentIds.length > 0) {
+  let parentIds = [...taskIds];
+  while (parentIds.length > 0) {
     const subtasks = await prisma.task
       .findMany({ where: { parentId: { in: parentIds } }, select: { id: true } })
       .catch(() => [] as { id: number }[]);
-    for (const s of subtasks) taskIds.add(s.id);
+    parentIds = subtasks.map((s) => s.id).filter((id) => !taskIds.has(id));
+    for (const id of parentIds) taskIds.add(id);
   }
 
   // Abort the runner loops FIRST so none of these tasks advances to a new phase
