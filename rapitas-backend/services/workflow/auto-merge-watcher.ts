@@ -31,6 +31,7 @@ import { notify } from './auto-merge-notify';
 import { findCandidates, type Candidate } from './auto-merge-candidates';
 import { countWithFailClosed } from '../../utils/database/fail-closed-count';
 import { canContinueAutoMerge } from './auto-merge-task-guard';
+import { recoverMergedTasks } from './auto-merge-recovery';
 
 const log = createLogger('workflow:auto-merge-watcher');
 
@@ -119,7 +120,15 @@ export class AutoMergeWatcher {
     if (this.ticking) return; // never overlap ticks
     this.ticking = true;
     try {
-      const candidates = await findCandidates();
+      // Runs BEFORE candidate discovery: findCandidates only walks OPEN PRs, so
+      // a task whose PR merged while its completion write was lost is invisible
+      // there forever. Recovering first also stops the same task from being
+      // processed twice in one tick (task 895).
+      const recovered = await recoverMergedTasks().catch((err) => {
+        log.warn({ err }, '[auto-merge] Merged-task recovery failed');
+        return [] as number[];
+      });
+      const candidates = (await findCandidates()).filter((c) => !recovered.includes(c.taskId));
       const blocking = blockingChecks();
       for (const c of candidates) {
         try {

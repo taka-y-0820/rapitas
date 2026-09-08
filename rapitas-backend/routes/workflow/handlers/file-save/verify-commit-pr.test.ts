@@ -99,6 +99,18 @@ mock.module('../../../../services/workflow/verify-self-repair', () => ({
     return Promise.resolve(repairFixture);
   },
 }));
+// Required-merge gate (task 895). Default false so the CAS suites above keep
+// exercising the completion path unchanged.
+let awaitingRequiredMerge = false;
+mock.module('../../../../services/workflow/verify-settle-artifact-recovery', () => ({
+  isAwaitingRequiredMerge: () => Promise.resolve(awaitingRequiredMerge),
+}));
+const mockHoldForRequiredMerge = mock(() => Promise.resolve(true));
+mock.module('../../../../services/workflow/required-merge-hold', () => ({
+  holdForRequiredMerge: mockHoldForRequiredMerge,
+  AWAITING_REQUIRED_MERGE_CAUSE: 'verify_awaiting_required_merge',
+}));
+
 const { runVerifyCommitPrCompletion } = await import('./verify-commit-pr');
 
 /** Builds the params for one completion invocation. / 1回分の完了処理パラメータを組み立てる。 */
@@ -118,6 +130,8 @@ function buildParams(overrides: Partial<Parameters<typeof runVerifyCommitPrCompl
 }
 
 beforeEach(() => {
+  awaitingRequiredMerge = false;
+  mockHoldForRequiredMerge.mockClear();
   dbWorkflowStatus = 'verify_done';
   updateManyCalls.length = 0;
   transitionCalls.length = 0;
@@ -252,5 +266,42 @@ describe('runVerifyCommitPrCompletion — 競合解消タスクは PR の mergea
     );
     expect(prVerdictCalls.length).toBe(0);
     expect(res.taskMarkedDone).toBe(true);
+  });
+});
+
+describe('runVerifyCommitPrCompletion — 競合解消タスクの必須マージゲート (task 895)', () => {
+  /** Non-DIRTY conflict-resolution completion input. / 非DIRTYの競合解消完了入力 */
+  const conflictParams = () =>
+    buildParams({
+      isConflictResolutionTask: true,
+      conflictTask: { title: '競合解消', githubPrId: 42 },
+    });
+
+  test('autoMergePR要求時はPRが非DIRTYでも完了させず verify_done で保留する', async () => {
+    awaitingRequiredMerge = true;
+
+    const res = await runVerifyCommitPrCompletion(conflictParams());
+
+    expect(res.taskMarkedDone).toBe(false);
+    expect(res.newStatus).toBe('verify_done');
+    expect(mockHoldForRequiredMerge).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: 594, source: 'verify-commit-pr:conflict-resolution' }),
+    );
+    expect(transitionCalls.filter((t) => t.cause === 'conflict_resolution_completed').length).toBe(
+      0,
+    );
+    expect(updateManyCalls.length).toBe(0);
+  });
+
+  test('autoMergePR未要求なら従来どおり非DIRTYで完了する', async () => {
+    awaitingRequiredMerge = false;
+
+    const res = await runVerifyCommitPrCompletion(conflictParams());
+
+    expect(res.taskMarkedDone).toBe(true);
+    expect(mockHoldForRequiredMerge).not.toHaveBeenCalled();
+    expect(transitionCalls.filter((t) => t.cause === 'conflict_resolution_completed').length).toBe(
+      1,
+    );
   });
 });

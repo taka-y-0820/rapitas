@@ -1,0 +1,108 @@
+/**
+ * workflow-reconciler-requeue — requeueOrphanTasks の必須マージ待ち保護 (task 895)
+ *
+ * PENDING_TIMEOUT_MS（AutoMergeWatcherの90分猶予）は STALE_TASK_MS（このオーファン
+ * 回収の45分閾値）より長い。autoMergePR要求で verify_done/in-progress に保留中の
+ * タスクをこの回収が todo へ戻すと、PRがまだCI/マージ待ちのまま新規実行が二重
+ * dispatchされる（task 895 point 2）。この保護が効くこと、無関係な orphan は
+ * 従来どおり回収されることの両方を検証する。
+ */
+import { describe, test, expect, mock, beforeEach } from 'bun:test';
+
+const mockPrisma = {
+  task: {
+    findMany: mock(() => Promise.resolve([] as unknown[])),
+    update: mock(() => Promise.resolve({})),
+  },
+  agentExecution: { findFirst: mock(() => Promise.resolve(null as unknown)) },
+  workflowTransition: { count: mock(() => Promise.resolve(0)) },
+};
+const recordTransition = mock(() => Promise.resolve());
+
+const noopLogger = { info: () => {}, error: () => {}, warn: () => {}, debug: () => {} };
+mock.module('../../config/database', () => ({
+  prisma: mockPrisma,
+  ensureDatabaseConnection: () => Promise.resolve(),
+}));
+mock.module('../../config/logger', () => ({
+  createLogger: () => noopLogger,
+  logger: noopLogger,
+  getBackendLogFilePath: () => '/tmp/backend.log',
+}));
+mock.module('./transition-recorder', () => ({ recordTransition }));
+
+let awaitingRequiredMerge = false;
+mock.module('./verify-settle-artifact-recovery', () => ({
+  isAwaitingRequiredMerge: () => Promise.resolve(awaitingRequiredMerge),
+}));
+
+const { requeueOrphanTasks } = await import('./workflow-reconciler-requeue');
+
+const NOW = 1_800_000_000_000;
+
+beforeEach(() => {
+  mockPrisma.task.findMany.mockReset().mockResolvedValue([]);
+  mockPrisma.task.update.mockReset().mockResolvedValue({});
+  mockPrisma.agentExecution.findFirst.mockReset().mockResolvedValue(null);
+  mockPrisma.workflowTransition.count.mockReset().mockResolvedValue(0);
+  recordTransition.mockReset().mockResolvedValue(undefined);
+  awaitingRequiredMerge = false;
+});
+
+describe('requeueOrphanTasks — verify_done保留中タスクの保護', () => {
+  test('autoMergePR要求で保留中(verify_done)のタスクは todo へ戻さない', async () => {
+    awaitingRequiredMerge = true;
+    mockPrisma.task.findMany.mockResolvedValueOnce([
+      { id: 895, title: 'マージ待ち', workflowStatus: 'verify_done' },
+    ]);
+
+    const requeued = await requeueOrphanTasks(NOW);
+
+    expect(requeued).toBe(0);
+    expect(mockPrisma.task.update).not.toHaveBeenCalled();
+    expect(recordTransition).not.toHaveBeenCalled();
+    // isAwaitingRequiredMerge だけで判定でき、live実行の有無は問わない。
+    expect(mockPrisma.agentExecution.findFirst).not.toHaveBeenCalled();
+  });
+
+  test('autoMergePR非要求の verify_done×in-progress は従来どおり回収する', async () => {
+    awaitingRequiredMerge = false;
+    mockPrisma.task.findMany.mockResolvedValueOnce([
+      { id: 900, title: '本来のオーファン', workflowStatus: 'verify_done' },
+    ]);
+
+    const requeued = await requeueOrphanTasks(NOW);
+
+    expect(requeued).toBe(1);
+    expect(mockPrisma.task.update).toHaveBeenCalledWith({
+      where: { id: 900 },
+      data: expect.objectContaining({ status: 'todo' }),
+    });
+  });
+
+  test('自動化ポリシーの読み取りエラーは fail-closed で保護側に倒す', async () => {
+    mock.module('./verify-settle-artifact-recovery', () => ({
+      isAwaitingRequiredMerge: () => Promise.reject(new Error('db unavailable')),
+    }));
+    const { requeueOrphanTasks: requeueWithFailingPolicy } =
+      await import('./workflow-reconciler-requeue');
+    mockPrisma.task.findMany.mockResolvedValueOnce([
+      { id: 901, title: '読み取り失敗', workflowStatus: 'verify_done' },
+    ]);
+
+    const requeued = await requeueWithFailingPolicy(NOW);
+
+    expect(requeued).toBe(0);
+    expect(mockPrisma.task.update).not.toHaveBeenCalled();
+  });
+
+  test('workflowStatus が verify_done 以外なら isAwaitingRequiredMerge を呼ばず従来どおり判定する', async () => {
+    mockPrisma.task.findMany.mockResolvedValueOnce([
+      { id: 902, title: '計画中に停止', workflowStatus: 'plan_created' },
+    ]);
+
+    const requeued = await requeueOrphanTasks(NOW);
+
+    expect(requeued).toBe(1);
+  });
+});
