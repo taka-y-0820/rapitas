@@ -32,3 +32,28 @@ services/workflow/auto-run/theme-auto-run-scheduler.test.ts
 # tests/routes/system/setup.test.ts
 #   失敗内容: setupComplete が false (SQLite 環境で DB 接続確認が false を返す)
 #   起票先: 懸念バックログ originTaskId:215
+
+# Reviewed replan, completion receipts, and stop/publication boundaries.
+routes/workflow/handlers/file-save/verify-post-save-pipeline.test.ts
+routes/workflow/handlers/file-save/verify-completion-gate.test.ts
+routes/workflow/handlers/file-save/verify-commit-pr.test.ts
+routes/workflow/handlers/file-save/verify-commit-pr-pipeline.test.ts
+routes/workflow/handlers/file-save/status-transition.test.ts
+routes/workflow/handlers/file-save/status-transition.invariant-cutoff.test.ts
+services/workflow/publication-cancellation-guard.test.ts
+services/workflow/requirement-replan-verdict.test.ts
+services/workflow/requirement-replan-review.test.ts
+services/workflow/requirement-replan-prompt.test.ts
+services/workflow/requirement-replan-policy.test.ts
+services/workflow/requirement-replan-inflight.test.ts
+services/workflow/requirement-replan-evidence.test.ts
+services/workflow/requirement-replan-commit.test.ts
+services/workflow/verify-self-repair.test.ts
+services/workflow/verify-self-repair.cas.test.ts
+services/workflow/verify-self-repair-resume.test.ts
+services/workflow/workflow-cli-executor-verify-gate.test.ts
+services/workflow/workflow-cli-executor.verify.test.ts
+services/workflow/workflow-cli-executor.replan.test.ts
+services/workflow/workflow-runner.errors.test.ts
+services/workflow/workflow-runner.advancing.test.ts
+routes/workflow/workflow-auto-commit.test.ts
