@@ -6,6 +6,24 @@
  * autoMergePR 無効 / 未設定のケースでは従来どおり完了することも確認する。
  */
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
+const receipt = { taskId: 895 };
+const reviewReplan = mock(
+  async (): Promise<{
+    committed: boolean;
+    reason: string;
+    completionReceipt?: typeof receipt;
+  }> => ({ committed: false, reason: 'no_mismatch', completionReceipt: receipt }),
+);
+const completeReview = mock(async (_db: unknown, _receipt: unknown, _completion: unknown) => ({
+  committed: true,
+  reason: 'verify_passed',
+}));
+const preflight = mock(async () => undefined);
+mock.module('./requirement-replan-commit', () => ({
+  completeReviewedTask: completeReview,
+  assertReviewedTaskCurrent: preflight,
+}));
+mock.module('./requirement-replan-service', () => ({ attemptRequirementReplan: reviewReplan }));
 
 const noopLogger = {
   info: () => {},
@@ -40,13 +58,20 @@ mock.module('./durable-blocked-write', () => ({
   writeBlockedStatusDurable: mock(() => Promise.resolve()),
 }));
 
+const freshRejection = mock(async () => false);
 mock.module('./verify-self-repair', () => ({
-  hasFreshVerifyRejection: () => Promise.resolve(false),
+  hasFreshVerifyRejection: freshRejection,
   attemptVerifyRepair: () => Promise.resolve({ bounced: false, stale: false }),
 }));
 
+const linkedPr = mock(async () => true);
+const autoCommit = mock(async () => ({}));
+mock.module('../../routes/workflow/workflow-auto-commit', () => ({
+  performAutoCommitAndPR: autoCommit,
+  isNoChangeCompletion: () => false,
+}));
 mock.module('./workflow-cli-executor-helpers', () => ({
-  taskHasLinkedPr: () => Promise.resolve(true),
+  taskHasLinkedPr: linkedPr,
   wasVerifyValidationFailureJustRecorded: () => Promise.resolve(false),
 }));
 
@@ -77,6 +102,14 @@ function params() {
 }
 
 beforeEach(() => {
+  linkedPr.mockReset().mockResolvedValue(true);
+  preflight.mockReset().mockResolvedValue(undefined);
+  autoCommit.mockClear();
+  freshRejection.mockReset().mockResolvedValue(false);
+  reviewReplan
+    .mockReset()
+    .mockResolvedValue({ committed: false, reason: 'no_mismatch', completionReceipt: receipt });
+  completeReview.mockReset().mockResolvedValue({ committed: true, reason: 'verify_passed' });
   taskUpdate.mockClear();
   recordTransition.mockClear();
   holdForRequiredMerge.mockClear();
@@ -84,6 +117,49 @@ beforeEach(() => {
 });
 
 describe('resolveVerifyPhaseStatus — 完了と必須マージ待ちの分岐', () => {
+  test('stale completion receipt cannot be reported as completed', async () => {
+    completeReview.mockResolvedValueOnce({ committed: false, reason: 'execution_superseded' });
+    await expect(resolveVerifyPhaseStatus(params())).rejects.toThrow('Reviewed completion held');
+    expect(taskUpdate).not.toHaveBeenCalled();
+    expect(recordTransition).not.toHaveBeenCalled();
+  });
+
+  test('missing server receipt cannot fall back to id-only completion', async () => {
+    reviewReplan.mockResolvedValueOnce({ committed: false, reason: 'no_mismatch' });
+    await expect(resolveVerifyPhaseStatus(params())).rejects.toThrow('Missing server completion');
+    expect(completeReview).not.toHaveBeenCalled();
+    expect(taskUpdate).not.toHaveBeenCalled();
+  });
+  test('an HTTP repair rejection owns the next action without another AI review', async () => {
+    freshRejection.mockResolvedValueOnce(true);
+    reviewReplan.mockRejectedValueOnce(new Error('must not review a rejected artifact'));
+    expect(await resolveVerifyPhaseStatus({ ...params(), currentWfStatus: 'plan_approved' })).toBe(
+      'plan_approved',
+    );
+    expect(reviewReplan).not.toHaveBeenCalled();
+    expect(taskUpdate).not.toHaveBeenCalled();
+  });
+
+  test('unreadable rejection history cannot proceed to review or completion', async () => {
+    freshRejection.mockRejectedValueOnce(new Error('history unavailable'));
+    await expect(resolveVerifyPhaseStatus(params())).rejects.toThrow('history unavailable');
+    expect(reviewReplan).not.toHaveBeenCalled();
+    expect(taskUpdate).not.toHaveBeenCalled();
+  });
+
+  test('committed replan returns to planning without completion writes', async () => {
+    reviewReplan.mockResolvedValueOnce({ committed: true, reason: 'requirement_evidence_replan' });
+    expect(await resolveVerifyPhaseStatus(params())).toBe('research_done');
+    expect(taskUpdate).not.toHaveBeenCalled();
+    expect(recordTransition).not.toHaveBeenCalled();
+    expect(holdForRequiredMerge).not.toHaveBeenCalled();
+  });
+
+  test('unknown review cannot fall through to completion', async () => {
+    reviewReplan.mockResolvedValueOnce({ committed: false, reason: 'unknown' });
+    await expect(resolveVerifyPhaseStatus(params())).rejects.toThrow('review held');
+    expect(taskUpdate).not.toHaveBeenCalled();
+  });
   test('autoMergePR=true かつ PR あり: completed にせず verify_done で保留する', async () => {
     awaitingRequiredMerge = true;
 
@@ -106,13 +182,11 @@ describe('resolveVerifyPhaseStatus — 完了と必須マージ待ちの分岐',
 
     expect(status).toBe('completed');
     expect(holdForRequiredMerge).not.toHaveBeenCalled();
-    expect(taskUpdate).toHaveBeenCalledWith({
-      where: { id: 895 },
-      data: expect.objectContaining({ status: 'done', workflowStatus: 'completed' }),
+    expect(taskUpdate).not.toHaveBeenCalled();
+    expect(completeReview).toHaveBeenCalledWith(expect.anything(), receipt, {
+      cause: 'verify_passed',
+      sessionId: 7,
     });
-    expect(recordTransition).toHaveBeenCalledWith(
-      expect.objectContaining({ cause: 'verify_passed', toStatus: 'completed' }),
-    );
   });
 
   test('autoMergePR 未設定（isAwaitingRequiredMerge が false）でも完了できる', async () => {
@@ -125,4 +199,12 @@ describe('resolveVerifyPhaseStatus — 完了と必須マージ待ちの分岐',
     expect(status).toBe('completed');
     expect(holdForRequiredMerge).not.toHaveBeenCalled();
   });
+});
+
+test('CLI preflight prevents committing after a stop request', async () => {
+  linkedPr.mockResolvedValue(false);
+  preflight.mockRejectedValueOnce(new Error('stop_not_resumed'));
+  await expect(resolveVerifyPhaseStatus(params())).rejects.toThrow('stop_not_resumed');
+  expect(autoCommit).not.toHaveBeenCalled();
+  expect(completeReview).not.toHaveBeenCalled();
 });

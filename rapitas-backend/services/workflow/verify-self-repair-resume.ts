@@ -50,31 +50,35 @@ export function resolveRepairCaller(): string {
  * @param taskId - Task to resume / 再開対象タスク
  */
 export async function ensureRunnerResumes(taskId: number): Promise<void> {
-  // Defer to the theme auto-run scheduler when it owns this task.
-  try {
-    const task = await prisma.task
-      .findUnique({ where: { id: taskId }, select: { themeId: true } })
-      .catch(() => null);
-    const { isThemeAutoRunActive } = await import('./auto-run/theme-auto-run-service');
-    if (await isThemeAutoRunActive(task?.themeId ?? null)) {
-      log.info(
-        { taskId, themeId: task?.themeId },
-        '[verify-repair] Theme auto-run is active — letting the scheduler resume (no extra enqueue)',
-      );
-      return;
-    }
-  } catch (err) {
-    // If we cannot determine auto-run state, fall through and self-drive — a
-    // stuck single-exec task is worse than a redundant (deduped) enqueue.
-    log.warn({ err, taskId }, '[verify-repair] Could not check theme auto-run state');
+  const task = await prisma.task.findUnique({
+    where: { id: taskId },
+    select: { themeId: true, status: true },
+  });
+  if (!task || task.status !== 'in-progress') return;
+  const { isThemeAutoRunActive } = await import('./auto-run/theme-auto-run-service');
+  if (await isThemeAutoRunActive(task.themeId)) {
+    log.info(
+      { taskId, themeId: task.themeId },
+      '[verify-repair] Theme scheduler owns resume; no extra enqueue',
+    );
+    return;
   }
 
   const { WorkflowQueueService } = await import('./workflow-queue');
   const { WorkflowRunner } = await import('./workflow-runner');
   try {
     await WorkflowQueueService.getInstance().enqueue({ taskId });
-  } catch {
-    // Already queued/running — a driver is active; nothing to enqueue.
+  } catch (error) {
+    // Confirm a durable queue item; a DB outage is not a duplicate.
+    const existing = await prisma.workflowQueueItem.findFirst({
+      where: {
+        taskId,
+        orchestraSessionId: null,
+        status: { in: ['queued', 'running', 'waiting_approval'] },
+      },
+      select: { id: true },
+    });
+    if (!existing) throw error;
   }
   WorkflowRunner.getInstance().startProcessing(); // idempotent (guarded by `running`)
 }

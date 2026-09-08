@@ -24,6 +24,7 @@ import { checkWorkflowInvariants } from './workflow-invariants';
 import { maybeAutoApprovePlan } from './plan-auto-approve';
 import { validateOutput, WF_STATUS_RANK } from './workflow-cli-executor-helpers';
 import { resolveVerifyPhaseStatus } from './workflow-cli-executor-verify-gate';
+import { requirementReplannedSince } from './requirement-replan-guard';
 
 // NOTE: Same logger name as the executor body — keeps the observed log `name`
 // field identical after the file split.
@@ -46,6 +47,13 @@ export async function harvestInvestigationOutput(params: {
   phaseStartedAt: Date;
 }): Promise<void> {
   const { taskId, transition, result, isInvestigationPhase, phaseStartedAt } = params;
+  if (await requirementReplannedSince(prisma, taskId, phaseStartedAt)) {
+    log.info(
+      { taskId },
+      '[WorkflowCLIExecutor] Replan superseded this phase; skipping artifact harvest',
+    );
+    return;
+  }
 
   // Investigation-mode result harvesting: if codex wrote to the temp file,
   // upload its contents to the workflow API server-side (codex itself
@@ -134,12 +142,25 @@ export async function runPhaseEpilogue(params: {
   effectiveSuccess: boolean;
   phaseStatus: WorkflowAdvanceResult['status'];
   phaseError: string | undefined;
+  superseded?: boolean;
 }> {
   const { taskId, transition, session, result, resolvedWorktreePath, phaseStartedAt, language } =
     params;
 
   const updatedTask = await resolveTaskWorkflowState(taskId);
   const currentWfStatus = updatedTask?.workflowStatus || 'draft';
+  if (await requirementReplannedSince(prisma, taskId, phaseStartedAt)) {
+    log.info(
+      { taskId, currentWfStatus },
+      '[WorkflowCLIExecutor] Replan superseded this phase; skipping completion',
+    );
+    return {
+      effectiveSuccess: false,
+      phaseStatus: currentWfStatus as WorkflowAdvanceResult['status'],
+      phaseError: 'Phase superseded by requirement replan',
+      superseded: true,
+    };
+  }
   let effectiveSuccess = result.success;
   let phaseStatus = transition.nextStatus;
   let phaseError = effectiveSuccess ? undefined : result.errorMessage;
@@ -231,6 +252,14 @@ export async function runPhaseEpilogue(params: {
           validation,
           resolvedWorktreePath,
         });
+        if (phaseStatus === 'research_done') {
+          return {
+            effectiveSuccess: false,
+            phaseStatus,
+            phaseError: 'Phase superseded by requirement replan',
+            superseded: true,
+          };
+        }
       } else if (
         currentWfStatus !== transition.nextStatus &&
         nextRank > curRank &&

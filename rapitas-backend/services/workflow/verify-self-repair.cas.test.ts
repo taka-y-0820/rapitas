@@ -68,6 +68,35 @@ describe('attemptVerifyRepair — stale-verdict CAS guard', () => {
     recordTransition.mockReset().mockResolvedValue(undefined);
   });
 
+  test('stopped task with unchanged workflow status cannot be repaired', async () => {
+    const stopped = { status: 'todo', workflowStatus: 'verify_done' };
+    mockPrisma.task.updateMany.mockImplementation((...args: unknown[]) => {
+      const query = args[0] as { where: { status?: string; workflowStatus: string } };
+      return Promise.resolve({
+        count:
+          (query.where.status === undefined || query.where.status === stopped.status) &&
+          query.where.workflowStatus === stopped.workflowStatus
+            ? 1
+            : 0,
+      });
+    });
+    expect(await attemptVerifyRepair(551, 'verify_done', 'reason', 'verify body')).toEqual({
+      bounced: false,
+      stale: true,
+    });
+    expect(writeWorkflowFile).not.toHaveBeenCalled();
+    expect(recordTransition).not.toHaveBeenCalled();
+  });
+
+  test('database failure is not reported as a harmless stale verdict', async () => {
+    mockPrisma.task.updateMany.mockRejectedValue(new Error('database unavailable'));
+    await expect(attemptVerifyRepair(551, 'verify_done', 'reason', 'verify body')).rejects.toThrow(
+      'database unavailable',
+    );
+    expect(writeWorkflowFile).not.toHaveBeenCalled();
+    expect(recordTransition).not.toHaveBeenCalled();
+  });
+
   test('CASが一致すれば通常どおり bounce する（plan有→plan_approved）', async () => {
     const result = await attemptVerifyRepair(551, 'verify_done', 'reason', 'verify body');
     expect(result.bounced).toBe(true);
@@ -77,7 +106,7 @@ describe('attemptVerifyRepair — stale-verdict CAS guard', () => {
       where: { id: number; workflowStatus: unknown };
     };
     // ガード条件が評価時点のステータスを固定していること（task 551 の再発防止）。
-    expect(call.where).toEqual({ id: 551, workflowStatus: 'verify_done' });
+    expect(call.where).toEqual({ id: 551, status: 'in-progress', workflowStatus: 'verify_done' });
     expect(writeWorkflowFile).toHaveBeenCalled();
     expect(recordTransition).toHaveBeenCalled();
   });

@@ -3,23 +3,20 @@
  *
  * Answers one question for every publication step (commit / PR / merge /
  * worktree cleanup): has this task's run been stopped? A stop request is
- * persisted by stop-task-agents.ts as `AgentExecution.status = 'cancelled'`, so
- * the task's LATEST execution row is the durable record of that intent.
+ * persisted before process termination; check that intent as well as the
+ * latest execution status before allowing the next publication step.
  * Not responsible for stopping anything, nor for deciding whether a required
  * merge has landed — that is verify-settle-artifact-recovery's
  * `isAwaitingRequiredMerge`.
  */
+import { THEME_STOP_INTENT } from '../agents/theme-stop-intent';
 import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
 
 const log = createLogger('workflow:publication-cancellation-guard');
 
-/**
- * The one status `stop-task-agents.ts` writes when a stop is honored. There is
- * no intermediate 'canceling' value in this schema — the row goes straight to
- * 'cancelled' (double l), so matching anything else would silently never fire.
- */
-const CANCELLED_EXECUTION_STATUS = 'cancelled';
+/** Stop-in-progress and terminal cancellation variants used by supported runners. */
+const CANCELLED_EXECUTION_STATUSES = new Set(['cancelled', 'canceled', 'canceling', 'cancelling']);
 
 /**
  * Whether the task's most recent agent execution was cancelled — i.e. a stop
@@ -40,13 +37,28 @@ export async function isLatestExecutionCancelled(taskId: number): Promise<boolea
   try {
     const latest = await prisma.agentExecution.findFirst({
       where: { session: { config: { taskId } } },
-      orderBy: { createdAt: 'desc' },
-      select: { id: true, status: true },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { id: true, status: true, startedAt: true },
     });
-    if (!latest) return false;
-    if (latest.status !== CANCELLED_EXECUTION_STATUS) return false;
+    const stop = await prisma.workflowTransition.findFirst({
+      where: {
+        taskId,
+        cause: {
+          in: [
+            THEME_STOP_INTENT,
+            'manual_execution_stop_revert',
+            'manual_execution_stop_withdraw',
+            'auto_run_stop_revert',
+          ],
+        },
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { createdAt: true },
+    });
+    const unresumedStop = stop && (!latest?.startedAt || latest.startedAt <= stop.createdAt);
+    if (!unresumedStop && !CANCELLED_EXECUTION_STATUSES.has(latest?.status ?? '')) return false;
     log.warn(
-      { taskId, executionId: latest.id },
+      { taskId, executionId: latest?.id },
       '[publication-guard] Latest execution is cancelled — withholding the next publication step',
     );
     return true;

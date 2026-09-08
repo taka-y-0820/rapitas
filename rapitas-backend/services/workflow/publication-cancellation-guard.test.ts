@@ -22,8 +22,9 @@ mock.module('../../config/logger', () => ({
 }));
 
 const findFirst = mock(() => Promise.resolve(null) as ReturnType<typeof mock>);
+const stopIntent = mock(async (): Promise<{ createdAt: Date } | null> => null);
 mock.module('../../config/database', () => ({
-  prisma: { agentExecution: { findFirst } },
+  prisma: { agentExecution: { findFirst }, workflowTransition: { findFirst: stopIntent } },
 }));
 
 const { isLatestExecutionCancelled, publicationAborted } =
@@ -31,6 +32,7 @@ const { isLatestExecutionCancelled, publicationAborted } =
 
 beforeEach(() => {
   findFirst.mockClear();
+  stopIntent.mockReset().mockResolvedValue(null);
 });
 
 describe('isLatestExecutionCancelled', () => {
@@ -44,8 +46,8 @@ describe('isLatestExecutionCancelled', () => {
     await isLatestExecutionCancelled(895);
     expect(findFirst).toHaveBeenCalledWith({
       where: { session: { config: { taskId: 895 } } },
-      orderBy: { createdAt: 'desc' },
-      select: { id: true, status: true },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { id: true, status: true, startedAt: true },
     });
   });
 
@@ -83,4 +85,29 @@ describe('publicationAborted', () => {
     findFirst.mockResolvedValueOnce({ id: 10, status: 'running' });
     expect(await publicationAborted(895, 'before_commit')).toBe(false);
   });
+});
+
+test('stop intent holds publication before execution status changes', async () => {
+  findFirst.mockResolvedValueOnce({ id: 10, status: 'running', startedAt: new Date(1000) });
+  stopIntent.mockResolvedValueOnce({ createdAt: new Date(2000) });
+  expect(await publicationAborted(895, 'before_pr')).toBe(true);
+});
+
+test('a later run may proceed after an older stop intent', async () => {
+  findFirst.mockResolvedValueOnce({ id: 11, status: 'running', startedAt: new Date(3000) });
+  stopIntent.mockResolvedValueOnce({ createdAt: new Date(2000) });
+  expect(await publicationAborted(895, 'before_pr')).toBe(false);
+});
+
+test('unreadable stop intent withholds publication', async () => {
+  findFirst.mockResolvedValueOnce({ id: 10, status: 'running' });
+  stopIntent.mockRejectedValueOnce(new Error('stop history unavailable'));
+  expect(await publicationAborted(895, 'before_merge')).toBe(true);
+});
+
+test('all cancellation states withhold publication', async () => {
+  for (const status of ['canceled', 'canceling', 'cancelling']) {
+    findFirst.mockResolvedValueOnce({ id: 10, status });
+    expect(await publicationAborted(895, 'before_commit')).toBe(true);
+  }
 });

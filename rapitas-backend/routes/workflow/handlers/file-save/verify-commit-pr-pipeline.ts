@@ -1,3 +1,4 @@
+import type { CompletionReviewReceipt } from '../../../../services/workflow/requirement-replan-commit';
 /**
  * FileSave Verify Commit/PR Pipeline
  *
@@ -47,6 +48,7 @@ export interface CommitPrCompletionOutcome {
  * @returns The completion outcome
  */
 export async function runVerifyCommitPrPipeline(params: {
+  completionReceipt?: CompletionReviewReceipt;
   taskId: number;
   savedContent: string;
   preferredBaseBranchForVerify: string | null;
@@ -54,7 +56,25 @@ export async function runVerifyCommitPrPipeline(params: {
   const { taskId, savedContent, preferredBaseBranchForVerify } = params;
   let newStatus: string | undefined = 'verify_done';
   let taskMarkedDone = false;
+  const finalize = async (cause: 'verify_passed' | 'verify_no_change_confirmed') => {
+    if (!params.completionReceipt) throw new Error('Missing server completion review receipt');
+    const { completeReviewedTask } =
+      await import('../../../../services/workflow/requirement-replan-commit');
+    const completed = await completeReviewedTask(prisma, params.completionReceipt, { cause });
+    if (!completed.committed && completed.reason === 'already_completed') return;
+    if (!completed.committed) throw new Error(`Reviewed completion held: ${completed.reason}`);
+    taskMarkedDone = true;
+    newStatus = 'completed';
+  };
 
+  const assertCurrent = async () => {
+    if (!params.completionReceipt || params.completionReceipt.taskId !== taskId)
+      throw new Error('Missing server completion review receipt');
+    const { assertReviewedTaskCurrent } =
+      await import('../../../../services/workflow/requirement-replan-commit');
+    await assertReviewedTaskCurrent(prisma, params.completionReceipt);
+  };
+  await assertCurrent();
   const commitPrWork = performAutoCommitAndPR(taskId, savedContent).catch((err) => {
     log.warn({ err, taskId }, '[Workflow] Auto-commit/PR threw');
     return {} as Awaited<ReturnType<typeof performAutoCommitAndPR>>;
@@ -76,6 +96,7 @@ export async function runVerifyCommitPrPipeline(params: {
         select: { worktreePath: true },
       })
       .catch(() => null);
+    await assertCurrent();
     const recovery = await tryRecoverFromHistoryContamination(
       taskId,
       gateWorktreeSession?.worktreePath,
@@ -85,6 +106,7 @@ export async function runVerifyCommitPrPipeline(params: {
         ({ recovered: false }) as Awaited<ReturnType<typeof tryRecoverFromHistoryContamination>>,
     );
     if (recovery.recovered) {
+      await assertCurrent();
       autoCommitPRResult = await performAutoCommitAndPR(taskId, savedContent).catch((err) => {
         log.warn({ err, taskId }, '[Workflow] Auto-commit/PR retry after worktree rebuild threw');
         return {} as Awaited<ReturnType<typeof performAutoCommitAndPR>>;
@@ -155,47 +177,7 @@ export async function runVerifyCommitPrPipeline(params: {
       });
 
     if (noChangeCompletion) {
-      // Compare-and-swap on verify_done: task 594 recorded THIS transition
-      // twice, 242ms apart, from two concurrent completion runs. Only the
-      // request that flips the row records it; the loser leaves
-      // taskMarkedDone false (harmless — the winner already completed it).
-      const completedNoChange = await prisma.task
-        .updateMany({
-          where: { id: taskId, workflowStatus: 'verify_done' },
-          data: {
-            status: 'done',
-            workflowStatus: 'completed',
-            completedAt: new Date(),
-            updatedAt: new Date(),
-          },
-        })
-        .catch(() => ({ count: 0 }));
-      if (completedNoChange.count === 0) {
-        log.warn(
-          { taskId, prError: pr?.error },
-          '[Workflow] no-change completion already applied by a concurrent request — skipping duplicate transition',
-        );
-      } else {
-        taskMarkedDone = true;
-        newStatus = 'completed';
-        await recordTransition({
-          taskId,
-          fromStatus: 'verify_done',
-          toStatus: 'completed',
-          actor: 'system',
-          cause: 'verify_no_change_confirmed',
-          phase: 'verify',
-          metadata: {
-            reason: 'no diff — already implemented; PR not required',
-            prError: pr?.error,
-            commitError: commit?.error,
-          },
-        });
-        log.info(
-          { taskId, prError: pr?.error },
-          '[Workflow] verify passed with NO diff (already implemented) — completing WITHOUT a PR.',
-        );
-      }
+      await finalize('verify_no_change_confirmed');
     } else if (prRequested && !prSatisfied) {
       // Verify passed but no PR was produced — do NOT complete. Keep the task
       // actionable (blocked) and surface why, so "完了" always implies a PR.
@@ -262,20 +244,7 @@ export async function runVerifyCommitPrPipeline(params: {
           '[Workflow] verify passed + PR created — completion deferred to CI/merge (staged completion).',
         );
       } else {
-        await prisma.task.update({
-          where: { id: taskId },
-          data: { status: 'done', workflowStatus: 'completed', completedAt: new Date() },
-        });
-        taskMarkedDone = true;
-        await recordTransition({
-          taskId,
-          fromStatus: 'verify_done',
-          toStatus: 'completed',
-          actor: 'system',
-          cause: 'verify_passed',
-          phase: 'verify',
-          metadata: { commit: commit?.success, pr: pr?.success, merge: merge?.success },
-        });
+        await finalize('verify_passed');
         log.info(
           { taskId, commitOk: commit?.success, prOk: pr?.success, mergeOk: merge?.success },
           '[Workflow] verify.md passed AND PR satisfied — task marked done/completed.',

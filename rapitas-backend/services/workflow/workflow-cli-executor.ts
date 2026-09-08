@@ -192,7 +192,7 @@ export async function executeCLIAgent(
       phaseStartedAt,
     });
 
-    const { effectiveSuccess, phaseStatus, phaseError } = await runPhaseEpilogue({
+    const { effectiveSuccess, phaseStatus, phaseError, superseded } = await runPhaseEpilogue({
       taskId,
       transition,
       session,
@@ -205,6 +205,7 @@ export async function executeCLIAgent(
     sessionSucceeded = effectiveSuccess;
     const finalResult: WorkflowAdvanceResult = {
       success: effectiveSuccess,
+      ...(superseded ? { superseded: true } : {}),
       role: transition.role,
       status: phaseStatus,
       output: result.output,

@@ -81,6 +81,8 @@ export interface RoleTransition {
 
 /** Return value of WorkflowOrchestrator.advanceWorkflow and the executor functions. */
 export interface WorkflowAdvanceResult {
+  /** A committed replan invalidated this phase; re-read state without consuming a failure retry. */
+  superseded?: boolean;
   success: boolean;
   role: WorkflowRole;
   status: WorkflowStatus;

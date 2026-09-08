@@ -292,6 +292,40 @@ describe('WorkflowRunner — advancing phase skipped/failed', () => {
     });
   });
 
+  test('superseded phase requeues the new state without consuming failure retries', async () => {
+    resolveWorkflowStateSequence = [state({ workflowStatus: 'in_progress' })];
+    advanceWorkflowImpl = () =>
+      Promise.resolve({
+        success: false,
+        role: 'verifier',
+        status: 'research_done',
+        skipped: false,
+        superseded: true,
+      });
+    await runAndSettle(WorkflowRunner.getInstance());
+    expect(retryIfPossibleMock).not.toHaveBeenCalled();
+    expect(updateStatusMock).toHaveBeenCalledWith(QUEUE_ITEM.id, 'queued', {
+      currentPhase: 'research_done',
+    });
+  });
+
+  test('stop wins over requeue when a superseded phase returns', async () => {
+    resolveWorkflowStateSequence = [state({ workflowStatus: 'in_progress' })];
+    const runner = WorkflowRunner.getInstance();
+    advanceWorkflowImpl = (taskId) => {
+      runner.abortTask(taskId);
+      return Promise.resolve({
+        success: false,
+        role: 'verifier',
+        status: 'research_done',
+        superseded: true,
+      });
+    };
+    await runAndSettle(runner);
+    expect(retryIfPossibleMock).not.toHaveBeenCalled();
+    expect(updateStatusMock).not.toHaveBeenCalledWith(QUEUE_ITEM.id, 'queued', expect.anything());
+  });
+
   test('failed result with retry budget left broadcasts execution_retrying', async () => {
     resolveWorkflowStateSequence = [state({ workflowStatus: 'research_done' })];
     advanceWorkflowImpl = () =>

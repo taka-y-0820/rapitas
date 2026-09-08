@@ -233,18 +233,14 @@ export async function attemptVerifyRepair(
   // evaluated — a stale verdict landing after a legitimate completion would
   // otherwise un-complete it (task 551, same guard family as task-494's CAS).
   // With no snapshot (currentStatus null), refuse to stomp terminal states.
-  const rolled = await prisma.task
-    .updateMany({
-      where: {
-        id: taskId,
-        workflowStatus: currentStatus ?? { notIn: ['completed', 'verify_done'] },
-      },
-      data: { status: 'in-progress', workflowStatus: newStatus, updatedAt: new Date() },
-    })
-    .catch((err) => {
-      log.warn({ err, taskId }, '[verify-repair] Failed to reset task to in-progress');
-      return null;
-    });
+  const rolled = await prisma.task.updateMany({
+    where: {
+      id: taskId,
+      status: 'in-progress',
+      workflowStatus: currentStatus ?? { notIn: ['completed', 'verify_done'] },
+    },
+    data: { status: 'in-progress', workflowStatus: newStatus, updatedAt: new Date() },
+  });
   if (!rolled || rolled.count === 0) {
     log.warn(
       { taskId, evaluatedStatus: currentStatus },
