@@ -5,7 +5,9 @@
  * stopThemeExecution(), and broadcastAutoRunUpdate() — the per-bucket private
  * handlers invoked by tick().
  */
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
+const settleStopped = mock(async (_db: unknown, _ids: number[]) => [] as number[]);
+mock.module('../../agents/settle-stopped-tasks', () => ({ settleStoppedTasks: settleStopped }));
 import {
   ThemeAutoRunScheduler,
   internal,
@@ -376,13 +378,15 @@ describe('stopThemeExecution', () => {
     });
   });
 
-  it('does nothing further when there is no current task', async () => {
+  it('sweeps theme agents even when there is no current task', async () => {
     await internal(scheduler).stopThemeExecution(10, null);
     expect(mockResolveTaskWorkingDirectory).not.toHaveBeenCalled();
-    expect(mockStopThemeAgents).not.toHaveBeenCalled();
+    expect(mockStopThemeAgents).toHaveBeenCalledWith(10, null, {
+      errorMessage: 'Auto-run stopped',
+    });
   });
 
-  it('kills theme agents, reverts a resolved working directory, and resets the task to todo', async () => {
+  it('kills theme agents and reverts only when requested without blindly resetting the task', async () => {
     mockResolveTaskWorkingDirectory.mockResolvedValue({
       themeId: 10,
       workingDirectory: '/repo/work',
@@ -393,43 +397,32 @@ describe('stopThemeExecution', () => {
 
     expect(mockStopThemeAgents).toHaveBeenCalledWith(10, 100, { errorMessage: 'Auto-run stopped' });
     expect(mockRevertChanges).toHaveBeenCalledWith('/repo/work');
-    expect(mockTaskUpdate).toHaveBeenCalledWith({
-      where: { id: 100 },
-      data: { status: 'todo' },
-      select: { workflowStatus: true },
-    });
+    expect(mockTaskUpdate).not.toHaveBeenCalled();
   });
 
-  it('records an auto_run_stop_revert transition so Pattern B grants it recovery grace (task 830)', async () => {
+  it('passes actual stopped execution IDs to the atomic state/audit settlement', async () => {
     mockResolveTaskWorkingDirectory.mockResolvedValue({
       themeId: 10,
       workingDirectory: '/repo/work',
       theme: null,
     });
-    mockTaskUpdate.mockResolvedValue({ workflowStatus: 'plan_approved' });
+    mockStopThemeAgents.mockResolvedValueOnce({ stoppedCount: 2, executionIds: [91, 92] });
 
     await internal(scheduler).stopThemeExecution(10, 100);
 
-    expect(mockRecordTransition).toHaveBeenCalledWith(
-      expect.objectContaining({
-        taskId: 100,
-        fromStatus: 'plan_approved',
-        toStatus: 'plan_approved',
-        actor: 'system',
-        cause: 'auto_run_stop_revert',
-      }),
-    );
+    expect(settleStopped).toHaveBeenCalledWith(expect.anything(), [91, 92]);
+    expect(mockRecordTransition).not.toHaveBeenCalled();
   });
 
-  it('does not record a transition when the task update itself fails', async () => {
+  it('propagates settlement failure so the scheduler cannot finalize an incomplete stop', async () => {
     mockResolveTaskWorkingDirectory.mockResolvedValue({
       themeId: 10,
       workingDirectory: '/repo/work',
       theme: null,
     });
-    mockTaskUpdate.mockImplementation(() => Promise.reject(new Error('db down')));
+    settleStopped.mockRejectedValueOnce(new Error('db down'));
 
-    await internal(scheduler).stopThemeExecution(10, 100);
+    await expect(internal(scheduler).stopThemeExecution(10, 100)).rejects.toThrow('db down');
 
     expect(mockRecordTransition).not.toHaveBeenCalled();
   });
@@ -456,12 +449,7 @@ describe('stopThemeExecution', () => {
     await internal(scheduler).stopThemeExecution(10, 100);
 
     expect(mockRevertChanges).not.toHaveBeenCalled();
-    // The task must still be reset even without a working directory to revert.
-    expect(mockTaskUpdate).toHaveBeenCalledWith({
-      where: { id: 100 },
-      data: { status: 'todo' },
-      select: { workflowStatus: true },
-    });
+    expect(mockTaskUpdate).not.toHaveBeenCalled();
   });
 
   it('swallows an unexpected resolveTaskWorkingDirectory throw without propagating', async () => {

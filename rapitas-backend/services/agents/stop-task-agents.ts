@@ -12,6 +12,7 @@ import { createLogger } from '../../config/logger';
 import { AgentWorkerManager } from './agent-worker-manager';
 import { AgentOrchestrator } from './agent-orchestrator';
 import { releaseTaskExecutionLock } from './task-execution-lock';
+import { recordThemeStopIntent, readPendingThemeStopTargets } from './theme-stop-intent';
 
 const log = createLogger('stop-task-agents');
 
@@ -47,20 +48,20 @@ async function stopExecutions(executionIds: number[], reason: string): Promise<n
   const agentWorkerManager = AgentWorkerManager.getInstance();
   const mainOrchestrator = AgentOrchestrator.getInstance(prisma);
   const done: number[] = [];
+  const failures: unknown[] = [];
   for (const executionId of executionIds) {
     try {
       // Ask BOTH orchestrators — only the owner can taskkill the CLI handle.
       await agentWorkerManager.stopExecution(executionId).catch(() => false);
       await mainOrchestrator.stopExecution(executionId).catch(() => false);
       // Retain diagnostic output: cancellation must not erase evidence needed for recovery.
-      await prisma.agentExecution
-        .update({
-          where: { id: executionId },
-          data: { status: 'cancelled', completedAt: new Date(), errorMessage: reason },
-        })
-        .catch(() => {});
+      await prisma.agentExecution.update({
+        where: { id: executionId },
+        data: { status: 'cancelled', completedAt: new Date(), errorMessage: reason },
+      });
       done.push(executionId);
     } catch (err) {
+      failures.push(err);
       log.error({ err, executionId }, '[stopTaskAgents] Failed to stop execution');
     }
   }
@@ -88,6 +89,8 @@ async function stopExecutions(executionIds: number[], reason: string): Promise<n
         .catch(() => {});
     }
   }
+  if (failures.length)
+    throw new Error(`One or more execution stops could not be persisted (${failures.length})`);
   return done;
 }
 
@@ -153,7 +156,9 @@ export async function stopTaskAgents(
   // Abort the runner loop FIRST so it stops advancing phases, then kill agents.
   await abortRunnerLoops([taskId]);
   const ids = await findActiveExecutionIds([taskId]);
-  const executionIds = await stopExecutions(ids, reason);
+  const executionIds = await stopExecutions(ids, reason).finally(() =>
+    releaseTaskExecutionLock(taskId),
+  );
 
   // Release the mutex unconditionally — even when no execution row was found,
   // a leaked lock must not strand the task.
@@ -209,22 +214,52 @@ export async function stopThemeAgents(
   // after we kill the agents, then kill.
   await abortRunnerLoops([...taskIds]);
 
+  // Persist known targets before cancellation removes them from active queries.
+  // Prior targets survive a failed settlement and a backend restart.
+  let intentFailure: unknown;
+  const priorTargets = await readPendingThemeStopTargets(prisma, themeId).catch((err) => {
+    intentFailure = err;
+    return [] as number[];
+  });
+  const beforeStopIds = await findActiveExecutionIds([...taskIds]);
+  if (beforeStopIds.length)
+    await recordThemeStopIntent(prisma, themeId, beforeStopIds).catch((err) => {
+      intentFailure = err;
+    });
+
   // In-memory sweep: stops agents that are alive but have a stale/missing DB
   // status row (race during spawn, partial prior stop, orphaned execution).
   // Must run before the DB-based sweep so stopExecution can write the final
   // 'cancelled' status; the DB sweep then no-ops on already-cancelled rows.
   const mainOrchestrator = AgentOrchestrator.getInstance(prisma);
-  await mainOrchestrator.stopAllForTasks(taskIds).catch((err) => {
+  const memoryIds = await mainOrchestrator.stopAllForTasks(taskIds).catch((err) => {
     log.warn({ err }, '[stopThemeAgents] In-memory sweep failed — falling back to DB sweep');
+    return [] as number[];
   });
 
   // DB-based sweep: catches worker-path executions (AgentWorkerManager) and
   // any executions not held by the main-process orchestrator.
   const ids = await findActiveExecutionIds([...taskIds]);
-  const executionIds = await stopExecutions(ids, reason);
+  // Memory-only discoveries are recorded too before returning to the settlement caller.
+  const discovered = memoryIds.filter((id) => !beforeStopIds.includes(id));
+  if (discovered.length)
+    await recordThemeStopIntent(prisma, themeId, discovered).catch((err) => {
+      intentFailure = err;
+    });
+  const executionIds = [
+    ...new Set([
+      ...priorTargets,
+      ...memoryIds,
+      ...(await stopExecutions(ids, reason).finally(() => {
+        for (const id of taskIds) releaseTaskExecutionLock(id);
+      })),
+    ]),
+  ];
 
   // Release locks for every task we may have been running.
   for (const taskId of taskIds) releaseTaskExecutionLock(taskId);
+  // Audit failure must not prevent the process stop, but cannot be reported as success.
+  if (intentFailure) throw intentFailure;
 
   if (executionIds.length > 0) {
     log.info(
@@ -254,7 +289,12 @@ export async function stopTaskTreeAgents(taskId: number): Promise<StopTaskAgents
   });
   await abortRunnerLoops(ids);
   const memoryIds = await AgentOrchestrator.getInstance(prisma).stopAllForTasks(taskIds);
-  const executionIds = await stopExecutions(await findActiveExecutionIds(ids), 'Task timed out');
+  const executionIds = await stopExecutions(
+    await findActiveExecutionIds(ids),
+    'Task timed out',
+  ).finally(() => {
+    for (const id of ids) releaseTaskExecutionLock(id);
+  });
   for (const id of ids) releaseTaskExecutionLock(id);
   const stopped = [...new Set([...memoryIds, ...executionIds])];
   return { stoppedCount: stopped.length, executionIds: stopped };
