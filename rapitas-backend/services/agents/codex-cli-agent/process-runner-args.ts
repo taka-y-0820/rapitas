@@ -96,7 +96,13 @@ export function buildCodexArgs(
   prompt: string,
   logPrefix: string,
 ): ArgsResult {
-  const args: string[] = ['exec'];
+  const args: string[] = [];
+  // Approval is a top-level CLI option, so place it before the subcommand.
+  const approvalPolicy = config.investigationMode ? 'never' : config.approvalPolicy;
+  if (approvalPolicy && (!config.yolo || config.investigationMode)) {
+    args.push('--ask-for-approval', approvalPolicy);
+  }
+  args.push('exec');
 
   // NOTE(security): Unlike Claude Code (`--strict-mcp-config`, see
   // claude-execution-runner.ts), Codex CLI has no single flag that restricts
@@ -129,11 +135,15 @@ export function buildCodexArgs(
     args.push('--dangerously-bypass-approvals-and-sandbox');
   } else if (config.sandboxMode) {
     args.push('--sandbox', config.sandboxMode);
-    if (config.outputLastMessageFile) {
-      args.push('--output-last-message', config.outputLastMessageFile);
-    }
+  } else if (approvalPolicy) {
+    args.push('--sandbox', 'workspace-write');
   } else {
     args.push('--full-auto');
+  }
+
+  // Output capture is independent of the sandbox selection (including research).
+  if (config.outputLastMessageFile) {
+    args.push('--output-last-message', config.outputLastMessageFile);
   }
 
   // Model setting (skip in investigation mode)
