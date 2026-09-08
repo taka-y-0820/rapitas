@@ -9,10 +9,13 @@
  * `.github/workflows/prompt-evolution-weekly.yml` から bun で起動される想定。
  * 失敗してもエージェント実行に影響しないよう、すべての例外は内部で握りつぶす。
  *
- * NOTE: 成功判定は AgentSession.status='completed' 単独では不十分 — verify /
- * adversarial ゲートに差し戻されたセッションも 'completed' のまま残るため、
- * gate 差し戻しが成功例として学習されていた。role-evidence と同じ
- * ROLE_TROUBLE_CAUSES（WorkflowTransition.cause）で差し戻しを失敗側に補正する。
+ * NOTE: 母集団は AgentExecution（session.mode=workflow-{role}）。AgentSession を
+ * 分母にしていた頃は、CLI 実行系がセッションを 'active' のまま終えるため大半の
+ * 完了実行が欠測し、confirmedPromptImprovements が恒常的に 0 だった（task 893）。
+ * NOTE: 成功判定は status='completed' 単独では不十分 — verify / adversarial
+ * ゲートに差し戻された実行も 'completed' のまま残るため、gate 差し戻しが成功例
+ * として学習されていた。role-evidence と同じ ROLE_TROUBLE_CAUSES
+ * （WorkflowTransition.cause）で差し戻しを失敗側に補正する。
  */
 
 import { createLogger } from '../../config/logger';
@@ -30,6 +33,35 @@ const SUCCESS_RATE_THRESHOLD = 0.7;
 /** ロール毎に必要な最小サンプル数。これ未満だと統計的に判断不可能。 */
 const MIN_SAMPLE_SIZE = 5;
 
+/**
+ * Execution statuses that have not reached a terminal outcome yet. They are
+ * neither a success nor a failure, so they are excluded from the denominator
+ * instead of being scored (they would otherwise read as failures).
+ */
+const IN_PROGRESS_STATUSES: ReadonlySet<string> = new Set([
+  'running',
+  'pending',
+  'waiting_for_input',
+  'post_processing',
+]);
+
+/** Terminal statuses that carry a quality signal and therefore form the denominator. */
+const SCORED_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed']);
+
+/**
+ * Why rows inside the window were kept out of the denominator. Reported so a
+ * low `totalRuns` can be audited ("why is N so small?") instead of silently
+ * looking like a missing population.
+ */
+export interface RoleEvaluationExclusions {
+  /** Not terminal yet (see IN_PROGRESS_STATUSES). / 未終端 */
+  inProgress: number;
+  /** Cancelled by an operator or the auto-run stop path — not a quality signal. / 取消 */
+  cancelled: number;
+  /** Any other status value; excluded rather than guessed at. / 未知の状態値 */
+  unknownStatus: number;
+}
+
 export interface RoleEvaluation {
   role: string;
   totalRuns: number;
@@ -37,6 +69,7 @@ export interface RoleEvaluation {
   successRate: number;
   shouldEvolve: boolean;
   reason: string;
+  excluded: RoleEvaluationExclusions;
 }
 
 /**
@@ -77,8 +110,11 @@ export async function runPromptEvolution(prisma: PrismaClient): Promise<RoleEval
       threshold: SUCCESS_RATE_THRESHOLD,
       evaluations: evaluations.map((e) => ({
         role: e.role,
+        totalRuns: e.totalRuns,
         successRate: Number(e.successRate.toFixed(3)),
         evolved: e.shouldEvolve,
+        // Denominator audit trail: a small totalRuns must be explainable.
+        excluded: e.excluded,
       })),
     },
     '[runner] prompt evolution cycle completed',
@@ -87,11 +123,19 @@ export async function runPromptEvolution(prisma: PrismaClient): Promise<RoleEval
 }
 
 /**
- * 直近 since 以降の AgentSession で mode=workflow-{role} のものを集計し、成功率を出す。
+ * 直近 since 以降の AgentExecution（session.mode=workflow-{role}）を集計し、成功率を出す。
+ *
+ * NOTE: 母集団は AgentSession ではなく AgentExecution。CLI 実行系は
+ * AgentSession をほぼ更新しないまま終えるため（workflow-cli-executor）、
+ * セッション状態を分母にすると大半の完了実行が欠測し、SETTLE_MIN_RUNS に
+ * 永久に届かなかった。role-evidence.getRoleModelOutcomes と同じ関係
+ * （AgentExecution.session.config.taskId）で集計を揃える。
  *
  * ゲート対象ロール（ROLE_TROUBLE_CAUSES 参照）は status='completed' に加えて、
  * そのタスクにロールの成果物を差し戻す WorkflowTransition（verify_repair 等）が
  * 記録されていないことを成功の条件とする — role-evidence と同じ定義。
+ * 「実行が完了した」は「成果物が受け入れられた」ではないため、単純な
+ * status='completed' への置換はしない。
  */
 export async function evaluateRole(
   prisma: PrismaClient,
@@ -99,17 +143,20 @@ export async function evaluateRole(
   since: Date,
   scopeTaskIds?: number[],
 ): Promise<RoleEvaluation> {
-  const sessions = await prisma.agentSession.findMany({
+  // NOTE: status で DB 側を絞らない — 除外理由（未終端/取消/未知）ごとの件数を
+  // 出すには、除外された行そのものを数える必要があるため。
+  const executions = await prisma.agentExecution.findMany({
     where: {
-      mode: `workflow-${role}`,
       createdAt: { gte: since },
-      status: { in: ['completed', 'failed'] },
-      // Limits the post-approval measurement to a candidate's staged tasks
-      // (prompt-comparison / stagedTaskIds) instead of the whole role. When
-      // scopeTaskIds is undefined, the where clause is unchanged from before.
-      ...(scopeTaskIds ? { config: { taskId: { in: scopeTaskIds } } } : {}),
+      session: {
+        mode: `workflow-${role}`,
+        // Limits the post-approval measurement to a candidate's staged tasks
+        // (prompt-comparison / stagedTaskIds) instead of the whole role. When
+        // scopeTaskIds is undefined, the where clause is unchanged from before.
+        ...(scopeTaskIds ? { config: { taskId: { in: scopeTaskIds } } } : {}),
+      },
     },
-    select: { status: true, config: { select: { taskId: true } } },
+    select: { status: true, session: { select: { config: { select: { taskId: true } } } } },
   });
 
   // Gate-rejection lookup: tasks whose transitions indict this role's output.
@@ -117,7 +164,9 @@ export async function evaluateRole(
   const troubleCauses = ROLE_TROUBLE_CAUSES[role] ?? [];
   const taskIds = [
     ...new Set(
-      sessions.map((s) => s.config?.taskId).filter((id): id is number => typeof id === 'number'),
+      executions
+        .map((e) => e.session?.config?.taskId)
+        .filter((id): id is number => typeof id === 'number'),
     ),
   ];
   let troubledTasks = new Set<number>();
@@ -134,12 +183,29 @@ export async function evaluateRole(
     troubledTasks = new Set(troubleRows.map((t) => t.taskId));
   }
 
-  const total = sessions.length;
-  const success = sessions.filter((s) => {
-    if (s.status !== 'completed') return false;
-    const taskId = s.config?.taskId;
-    return !(typeof taskId === 'number' && troubledTasks.has(taskId));
-  }).length;
+  const excluded: RoleEvaluationExclusions = { inProgress: 0, cancelled: 0, unknownStatus: 0 };
+  let total = 0;
+  let success = 0;
+  for (const execution of executions) {
+    const status = execution.status;
+    if (IN_PROGRESS_STATUSES.has(status)) {
+      excluded.inProgress += 1;
+      continue;
+    }
+    if (status === 'cancelled') {
+      excluded.cancelled += 1;
+      continue;
+    }
+    if (!SCORED_STATUSES.has(status)) {
+      excluded.unknownStatus += 1;
+      continue;
+    }
+    total += 1;
+    const taskId = execution.session?.config?.taskId;
+    const gateRejected = typeof taskId === 'number' && troubledTasks.has(taskId);
+    if (status === 'completed' && !gateRejected) success += 1;
+  }
+
   const rate = total === 0 ? 1 : success / total;
   const enoughSamples = total >= MIN_SAMPLE_SIZE;
   const shouldEvolve = enoughSamples && rate < SUCCESS_RATE_THRESHOLD;
@@ -149,6 +215,7 @@ export async function evaluateRole(
     successRuns: success,
     successRate: rate,
     shouldEvolve,
+    excluded,
     reason: !enoughSamples
       ? `insufficient samples (${total} < ${MIN_SAMPLE_SIZE})`
       : shouldEvolve
@@ -187,6 +254,7 @@ async function emitEvolutionCandidate(prisma: PrismaClient, ev: RoleEvaluation):
         totalRuns: ev.totalRuns,
         successRuns: ev.successRuns,
         successRate: ev.successRate,
+        excluded: ev.excluded,
       }),
     },
   });

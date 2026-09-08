@@ -66,6 +66,7 @@ describe('evaluateRules', () => {
     expect(findings).toHaveLength(1);
     expect(findings[0]!.key).toBe('research-critic');
     expect(findings[0]!.detail).toContain('= 4 件');
+    expect(findings[0]!.detail).toContain('悪化要因: 絶対件数');
   });
 
   it('stays silent below the minimum signal even with no improvement', () => {
@@ -90,6 +91,66 @@ describe('evaluateRules', () => {
       windowWith({ ci_repair: 4, verify_repair_self_contradiction: 2 }),
     );
     expect(findings.map((f) => f.key).sort()).toEqual(['ci-repair', 'verify-self-contradiction']);
+  });
+
+  it('fires on rate worsening even though the absolute count shrank (task #880 real case)', () => {
+    const findings = evaluateRules(
+      windowWith({ ci_repair: 9, completed: 131 }),
+      windowWith({ ci_repair: 17, completed: 337 }),
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.key).toBe('ci-repair');
+    expect(findings[0]!.detail).toContain('6.87%');
+    expect(findings[0]!.detail).toContain('5.04%');
+    expect(findings[0]!.detail).toContain('悪化要因: 率');
+  });
+
+  it('stays silent when both the absolute count and the rate improve', () => {
+    const findings = evaluateRules(
+      windowWith({ ci_repair: 5, completed: 500 }),
+      windowWith({ ci_repair: 10, completed: 200 }),
+    );
+    expect(findings).toHaveLength(0);
+  });
+
+  it('does not crash and skips rate judgement when the denominator is zero', () => {
+    const findings = evaluateRules(
+      windowWith({ ci_repair: 5, completed: 0 }),
+      windowWith({ ci_repair: 3, completed: 100 }),
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.key).toBe('ci-repair');
+    expect(findings[0]!.detail).toContain('N/A');
+    expect(findings[0]!.detail).toContain('悪化要因: 絶対件数');
+  });
+
+  it('stays silent below MIN_SIGNAL even when the rate looks severe', () => {
+    const findings = evaluateRules(
+      windowWith({ ci_repair: 1, completed: 1 }),
+      windowWith({ ci_repair: 1, completed: 100 }),
+    );
+    expect(findings).toHaveLength(0);
+  });
+
+  it('fires on equal absolute counts (regression: >= is preserved)', () => {
+    const findings = evaluateRules(
+      windowWith({ ci_repair: 5, completed: 100 }),
+      windowWith({ ci_repair: 5, completed: 100 }),
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.detail).toContain('悪化要因: 絶対件数');
+    expect(findings[0]!.detail).not.toContain('悪化要因: 絶対件数・率');
+  });
+
+  it('includes the absolute counts, denominators, rates, and cause in detail', () => {
+    const findings = evaluateRules(
+      windowWith({ ci_repair: 9, completed: 131 }),
+      windowWith({ ci_repair: 17, completed: 337 }),
+    );
+    const detail = findings[0]!.detail;
+    for (const token of ['9 件', '131 件', '6.87%', '17 件', '337 件', '5.04%', '悪化要因']) {
+      expect(detail).toContain(token);
+    }
   });
 });
 

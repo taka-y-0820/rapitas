@@ -5,6 +5,8 @@
  * enqueue 等の他メソッドは workflow-queue.test.ts に分割する（ファイルサイズ制限のため）。
  */
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
+const themeRunning = mock(async () => true);
+mock.module('./queue-theme-guard', () => ({ isQueueThemeRunning: themeRunning }));
 
 // HACK(agent): bun:test の mock.module はプロセスグローバルなため、
 // 全エクスポートをミラーしないとバレルが "export not found" をスローする。
@@ -165,6 +167,7 @@ function row(overrides: Partial<WorkflowQueueItemRow> = {}): WorkflowQueueItemRo
 }
 
 beforeEach(() => {
+  themeRunning.mockReset().mockResolvedValue(true);
   resetPrisma();
   resolveTaskWorkflowStateMock.mockReset().mockResolvedValue(null);
   taskRowConfirmedAbsentMock.mockReset().mockResolvedValue(false);
@@ -173,6 +176,19 @@ beforeEach(() => {
 });
 
 describe('WorkflowQueueService.dequeue — concurrency gate', () => {
+  test('does not acquire a repair queue item while its task theme is stopped', async () => {
+    themeRunning.mockResolvedValue(false);
+    prismaMock.workflowQueueItem.findMany.mockResolvedValue([row()]);
+    expect(await new WorkflowQueueService().dequeue()).toBeNull();
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+  test('rechecks a stop that arrives during queue acquisition', async () => {
+    themeRunning.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    prismaMock.workflowQueueItem.findMany.mockResolvedValue([row()]);
+    prismaMock.workflowQueueItem.findUnique.mockResolvedValue(row());
+    expect(await new WorkflowQueueService().dequeue()).toBeNull();
+    expect(prismaMock.workflowQueueItem.update).not.toHaveBeenCalled();
+  });
   test('実行中の件数が maxConcurrency 以上の場合 → null を返し candidates を取得しないこと', async () => {
     const svc = new WorkflowQueueService();
     svc.setMaxConcurrency(2);

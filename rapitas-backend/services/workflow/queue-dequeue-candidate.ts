@@ -15,6 +15,7 @@ import { isTaskTerminalForQueue } from './queue-terminal-task-guard';
 import { mapToQueueItem } from './queue-item-mapper';
 import { taskVanishedMessage } from './queue-vanished-task-policy';
 import type { QueueItem, WorkflowQueueItemRow } from './workflow-queue.types';
+import { isQueueThemeRunning } from './queue-theme-guard';
 
 const log = createLogger('workflow-queue');
 
@@ -132,6 +133,7 @@ export async function tryDequeueCandidate(
   }
 
   // Start execution (transaction prevents race conditions)
+  if (!(await isQueueThemeRunning(candidate.taskId))) return null;
   const updated = await prisma.$transaction(async (tx) => {
     // Re-check status (another worker may have acquired it)
     const current = await tx.workflowQueueItem.findUnique({
@@ -140,6 +142,7 @@ export async function tryDequeueCandidate(
     if (!current || current.status !== 'queued') {
       return null; // Already acquired by another worker
     }
+    if (!(await isQueueThemeRunning(candidate.taskId, tx))) return null;
 
     // Re-check concurrency limit
     const currentRunning = await tx.workflowQueueItem.count({

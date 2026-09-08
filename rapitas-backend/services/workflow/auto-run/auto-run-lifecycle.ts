@@ -308,6 +308,7 @@ export async function processPausedThemesImpl(
  * @param prisma - Prisma client / Prismaクライアント
  * @param themeId - Theme to stop / 停止するテーマID
  * @param currentTaskId - Currently tracked task ID / 現在のタスクID
+ * @param options.preserveChanges - Keep filesystem changes on automatic timeout for diagnosis/retry.
  * @param options.recordRevertTransition - Record an `auto_run_stop_revert`
  *   WorkflowTransition for the todo revert (default true). The hang-backstop
  *   caller (`auto-run-advance-active.ts`) passes false — it immediately
@@ -319,9 +320,9 @@ export async function stopThemeExecutionImpl(
   prisma: PrismaClient,
   themeId: number,
   currentTaskId: number | null,
-  options: { recordRevertTransition?: boolean } = {},
+  options: { recordRevertTransition?: boolean; preserveChanges?: boolean } = {},
 ): Promise<void> {
-  const { recordRevertTransition = true } = options;
+  const { recordRevertTransition = true, preserveChanges = false } = options;
   // Cancel all auto-run queue items for this theme
   await prisma.workflowQueueItem.updateMany({
     where: {
@@ -350,7 +351,7 @@ export async function stopThemeExecutionImpl(
     );
 
     // Revert any uncommitted changes
-    if (workDir) {
+    if (workDir && !preserveChanges) {
       // NOTE: getInstance() replaces the former scheduler field — same singleton (task 628).
       await AgentWorkerManager.getInstance()
         .revertChanges(workDir)
