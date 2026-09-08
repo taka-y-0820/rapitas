@@ -64,7 +64,7 @@ async function findBlockedCandidates(nowMs: number): Promise<
 > {
   // Respect user stops: only heal blocked tasks in themes that are still armed.
   const armed = await prisma.themeAutoRun
-    .findMany({ where: { enabled: true }, select: { themeId: true } })
+    .findMany({ where: { enabled: true, status: 'running' }, select: { themeId: true } })
     .catch(() => [] as { themeId: number }[]);
   const armedThemeIds = armed.map((a) => a.themeId);
   if (armedThemeIds.length === 0) return [];

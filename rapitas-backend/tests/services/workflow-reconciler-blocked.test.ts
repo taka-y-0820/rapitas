@@ -103,6 +103,16 @@ beforeEach(() => {
 });
 
 describe('correctBlockedByEvidence（受入基準1・3）', () => {
+  test('an enabled but paused theme cannot trigger blocked-task recovery or retry', async () => {
+    mockPrisma.themeAutoRun.findMany.mockImplementation((args: unknown) => {
+      const { where } = args as { where: { status?: string } };
+      return Promise.resolve(!where.status || where.status === 'paused' ? [{ themeId: 1 }] : []);
+    });
+    expect(await correctBlockedByEvidence(NOW)).toBe(0);
+    expect(await healBlockedStatusDesync(NOW)).toBe(0);
+    expect(await requeueBlockedTasks(NOW)).toBe(0);
+    expect(mockPrisma.task.findMany).not.toHaveBeenCalled();
+  });
   test.each(['open', 'merged'])(
     'required merge cannot complete from a local %s PR row',
     async (prState) => {
