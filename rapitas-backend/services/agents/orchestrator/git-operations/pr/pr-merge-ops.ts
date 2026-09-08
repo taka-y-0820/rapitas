@@ -31,6 +31,66 @@ const GIT_OP_TIMEOUT_MS = 60_000;
 // headroom while still bounding a hang so the phase can't stall on it.
 const GIT_SLOW_OP_TIMEOUT_MS = 120_000;
 
+/** GitHub's authoritative view of one PR, as read (never mutated) by the recovery path. */
+export interface AuthoritativeMergeState {
+  /** PR number GitHub echoed back — compare against the requested number. / GitHubが返したPR番号 */
+  number: number;
+  /** `MERGED` / `OPEN` / `CLOSED`. / PRの状態 */
+  state: string;
+  /** ISO timestamp of the merge, or null when not merged. / マージ時刻（未マージなら null） */
+  mergedAt: string | null;
+  /** Base branch the PR targets. / PRのベースブランチ */
+  baseRefName: string | null;
+}
+
+/**
+ * Read GitHub's authoritative state for a PR WITHOUT merging anything.
+ *
+ * The merge path confirms its own merge inline (see {@link mergePullRequest});
+ * this is the separate read-only use case — "is this PR already merged?" — that
+ * the auto-merge recovery path needs before it may complete a task whose local
+ * completion write was lost. Local DB rows and logs are not evidence of a merge;
+ * this call is.
+ *
+ * @param workingDirectory - A checkout of the PR's repository (scopes the gh call). / 対象リポジトリのチェックアウト
+ * @param prNumber - PR number to read. / 読み取るPR番号
+ * @returns GitHub's state, or null when gh failed or the payload was unusable. / 取得結果（失敗時 null）
+ */
+export async function readAuthoritativeMergeState(
+  workingDirectory: string,
+  prNumber: number,
+  repository?: string,
+): Promise<AuthoritativeMergeState | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      ghPath(),
+      [
+        'pr',
+        'view',
+        String(prNumber),
+        '--json',
+        'number,state,mergedAt,baseRefName',
+        ...(repository ? ['--repo', repository] : []),
+      ],
+      { cwd: workingDirectory, encoding: 'utf8', timeout: GIT_SLOW_OP_TIMEOUT_MS },
+    );
+    const parsed = JSON.parse(stdout) as Partial<AuthoritativeMergeState>;
+    if (typeof parsed.number !== 'number' || typeof parsed.state !== 'string') return null;
+    return {
+      number: parsed.number,
+      state: parsed.state,
+      mergedAt: typeof parsed.mergedAt === 'string' ? parsed.mergedAt : null,
+      baseRefName: typeof parsed.baseRefName === 'string' ? parsed.baseRefName : null,
+    };
+  } catch (err) {
+    logger.warn(
+      { err, workingDirectory, prNumber },
+      '[readAuthoritativeMergeState] Could not read the PR state from GitHub',
+    );
+    return null;
+  }
+}
+
 /**
  * Auto-merge a pull request.
  * Uses squash merge when commit count >= threshold, otherwise merge commit.

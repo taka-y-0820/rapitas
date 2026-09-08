@@ -58,6 +58,23 @@ mock.module('../task/task-resolver', () => ({
   resolveTaskWithThemeAndCategory,
 }));
 
+// Required-merge gate dependencies (task 895). This suite exercises the
+// already-completed reconcile path, which returns before they are consulted;
+// they are mocked only so the module graph does not reach the real DB config.
+mock.module('./automation-policy', () => ({
+  resolveAutomationPolicy: mock(() =>
+    Promise.resolve({ autoCommit: true, autoCreatePR: true, autoMergePR: false }),
+  ),
+  resolveLandingMode: () => 'pr',
+}));
+mock.module('./verify-settle-artifact-recovery', () => ({
+  isAwaitingRequiredMerge: mock(() => Promise.resolve(false)),
+}));
+mock.module('./required-merge-hold', () => ({
+  holdForRequiredMerge: mock(() => Promise.resolve(true)),
+  AWAITING_REQUIRED_MERGE_CAUSE: 'verify_awaiting_required_merge',
+}));
+
 const { onSubtaskCompleted } = await import('./subtask-completion-handler');
 
 beforeEach(() => {

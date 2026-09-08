@@ -56,6 +56,19 @@ mock.module('../../config', () => ({
   getProjectRoot: () => 'C:\\Projects\\other',
 }));
 
+// Publication cancellation guard (task 895). Default: no stop on record, so the
+// pre-existing cases below are unaffected; the cancellation suite flips
+// `cancelAtStep` to assert each boundary withholds the steps after it.
+let cancelAtStep: string | null = null;
+const publicationAbortedCalls: string[] = [];
+mock.module('../../services/workflow/publication-cancellation-guard', () => ({
+  PUBLICATION_CANCELLED_ERROR: 'タスクが停止されたため、公開処理を中断しました。',
+  publicationAborted: (_taskId: number, step: string) => {
+    publicationAbortedCalls.push(step);
+    return Promise.resolve(cancelAtStep === step);
+  },
+}));
+
 mock.module('../../services/workflow/automation-policy', () => ({
   resolveAutomationPolicy: () =>
     Promise.resolve({ autoCommit: true, autoCreatePR: true, autoMergePR: false }),
@@ -77,20 +90,25 @@ mock.module('../../services/agents/agent-orchestrator', () => ({
   AgentOrchestrator: {
     getInstance: () => ({
       createBranch: () => Promise.resolve(),
-      createCommit: () =>
-        Promise.resolve({
+      createCommit: () => {
+        createCommitCalls++;
+        return Promise.resolve({
           hash: 'abc123',
           branch: 'feature/t687',
           filesChanged: filesChangedFixture,
           additions: 0,
           deletions: 0,
           alreadyCommitted: false,
-        }),
+        });
+      },
       createPullRequest: () => {
         createPullRequestCalls++;
         return Promise.resolve(prResultFixture);
       },
-      removeWorktree: () => Promise.resolve(removeWorktreeFixture),
+      removeWorktree: () => {
+        removeWorktreeCalls++;
+        return Promise.resolve(removeWorktreeFixture);
+      },
     }),
   },
 }));
@@ -123,6 +141,8 @@ mock.module('../../services/github/pr-duplicate-guard', () => ({
 // gh path; the no-change test sets it to '0'.
 let revListFixture = '1';
 let createPullRequestCalls = 0;
+let createCommitCalls = 0;
+let removeWorktreeCalls = 0;
 mock.module('../../services/github/git-exec', () => ({
   runGitCommand: () => Promise.resolve(revListFixture),
 }));
@@ -275,5 +295,95 @@ describe('performAutoCommitAndPR — removeWorktree の戻り値を worktreeClea
       where: { id: 1 },
       data: { worktreePath: null },
     });
+  });
+});
+
+describe('performAutoCommitAndPR — 停止後は後続の公開処理を一切行わない (task 895)', () => {
+  const worktreePath = 'C:\\work\\project\\.worktrees\\task-895';
+  const CANCELLED = 'タスクが停止されたため、公開処理を中断しました。';
+
+  /** Re-arm the shared fixtures for one boundary case. */
+  function arm(step: string | null): void {
+    cancelAtStep = step;
+    publicationAbortedCalls.length = 0;
+    createCommitCalls = 0;
+    createPullRequestCalls = 0;
+    removeWorktreeCalls = 0;
+    filesChangedFixture = 1;
+    revListFixture = '1';
+    removeWorktreeFixture = true;
+    prResultFixture = { success: false, error: 'gh: authentication failed' };
+    mockPrisma.agentSession.update.mockClear();
+    mockPrisma.task.findUnique.mockResolvedValueOnce({
+      id: 895,
+      title: 'テストタスク',
+      theme: { workingDirectory: 'C:\\work\\project', defaultBranch: 'develop' },
+      developerModeConfig: {
+        agentSessions: [{ id: 1, branchName: 'feature/t895', worktreePath }],
+      },
+    });
+  }
+
+  test('entry で停止済みなら commit も PR も worktree削除も行わない', async () => {
+    arm('entry');
+    const result = await performAutoCommitAndPR(895, '# 検証結果');
+    expect(result.error).toBe(CANCELLED);
+    expect(createCommitCalls).toBe(0);
+    expect(createPullRequestCalls).toBe(0);
+    expect(removeWorktreeCalls).toBe(0);
+  });
+
+  test('検証ゲート通過後に停止されたら commit 以降を行わない', async () => {
+    arm('after_verification_gate');
+    const result = await performAutoCommitAndPR(895, '# 検証結果');
+    expect(result.error).toBe(CANCELLED);
+    expect(createCommitCalls).toBe(0);
+    expect(createPullRequestCalls).toBe(0);
+    expect(removeWorktreeCalls).toBe(0);
+  });
+
+  test('commit 直前に停止されたら git へ書き込まない', async () => {
+    arm('before_commit');
+    const result = await performAutoCommitAndPR(895, '# 検証結果');
+    expect(result.error).toBe(CANCELLED);
+    expect(createCommitCalls).toBe(0);
+    expect(createPullRequestCalls).toBe(0);
+    expect(removeWorktreeCalls).toBe(0);
+  });
+
+  test('PR作成直前に停止されたら commit 済みでも PR を作らず worktree も残す', async () => {
+    arm('before_pr');
+    const result = await performAutoCommitAndPR(895, '# 検証結果');
+    expect(result.error).toBe(CANCELLED);
+    expect(createCommitCalls).toBe(1);
+    expect(createPullRequestCalls).toBe(0);
+    expect(removeWorktreeCalls).toBe(0);
+    expect(mockPrisma.agentSession.update).not.toHaveBeenCalled();
+  });
+
+  test('worktree削除直前に停止されたら worktree を保全する', async () => {
+    arm('before_worktree_cleanup');
+    const result = await performAutoCommitAndPR(895, '# 検証結果');
+    expect(result.error).toBe(CANCELLED);
+    expect(removeWorktreeCalls).toBe(0);
+    expect(mockPrisma.agentSession.update).not.toHaveBeenCalled();
+  });
+
+  test('停止が無ければ全境界を通過し、従来どおり commit/PR/削除まで進む', async () => {
+    arm(null);
+    prResultFixture = { success: false, error: 'gh: authentication failed' };
+    const result = await performAutoCommitAndPR(895, '# 検証結果');
+    expect(result.error).toBeUndefined();
+    expect(createCommitCalls).toBe(1);
+    expect(createPullRequestCalls).toBe(1);
+    expect(removeWorktreeCalls).toBe(1);
+    expect(publicationAbortedCalls).toEqual([
+      'entry',
+      'after_verification_gate',
+      'before_commit',
+      'before_pr',
+      'before_worktree_cleanup',
+    ]);
+    cancelAtStep = null;
   });
 });

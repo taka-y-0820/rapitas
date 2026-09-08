@@ -23,7 +23,11 @@ import {
   releasePrCreationLock,
 } from '../../services/github/pr-duplicate-guard';
 import { syncBaseIntoBranch, type BaseSyncResult } from '../../services/workflow/pre-pr-base-sync';
-import { runGitCommand } from '../../services/github/git-exec';
+import { countCommitsAhead, isNoChangeCompletion } from './workflow-auto-commit-classify';
+import {
+  PUBLICATION_CANCELLED_ERROR,
+  publicationAborted,
+} from '../../services/workflow/publication-cancellation-guard';
 
 const log = createLogger('routes:workflow:auto-commit');
 
@@ -64,58 +68,9 @@ export type AutoCommitPRResult = {
   error?: string;
 };
 
-/**
- * Commits on HEAD that the remote base does not have.
- *
- * Fails OPEN: when git cannot answer (no remote-tracking ref, not a repo) the
- * caller proceeds to the PR attempt, which decides for itself.
- *
- * @param cwd - Worktree or checkout to inspect. / 対象の作業ツリー
- * @param baseBranch - PR base branch name (remote-tracking `origin/<base>` is compared). / ベースブランチ
- * @returns Number of commits ahead, or null when unknown. / 先行コミット数（不明なら null）
- */
-export async function countCommitsAhead(cwd: string, baseBranch: string): Promise<number | null> {
-  try {
-    const out = await runGitCommand(['rev-list', '--count', `origin/${baseBranch}..HEAD`], cwd);
-    const n = parseInt(out, 10);
-    return Number.isFinite(n) ? n : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Classify whether a failed commit/PR outcome means "no change was needed"
- * (already implemented — safe to complete WITHOUT a PR) as opposed to a real
- * PR failure that must block. Shared by both verify-completion paths (HTTP
- * file-save handler and the CLI executor epilogue). Pure and unit-testable.
- *
- * Task 485 incident: `gh pr create` against a base branch that does not exist
- * in the repo also says "No commits between <base> and <head>" — a naive regex
- * match then completed a 261-line change with NO PR. Two guards close that:
- * a base-branch error is never no-change, and a commit that actually changed
- * files proves there WAS work to land.
- *
- * @param p.errorBlob - Concatenated commit/PR/step error messages. / エラー文字列連結
- * @param p.filesChanged - Files changed by the auto-commit (undefined = no commit made). / コミットの変更ファイル数
- * @returns True when completion-without-PR is justified. / PRなし完了が正当か
- */
-export function isNoChangeCompletion(p: {
-  errorBlob: string;
-  filesChanged: number | undefined;
-}): boolean {
-  // A missing/invalid base produces "No commits between ..." too — that is a
-  // PR-creation failure, not an already-implemented no-op.
-  if (/base (?:sha|ref)|sha can't be blank|must be a branch/i.test(p.errorBlob)) return false;
-  // The commit itself changed files: there IS work that failed to reach a PR.
-  if (typeof p.filesChanged === 'number' && p.filesChanged > 0) return false;
-  return (
-    p.filesChanged === 0 ||
-    /no commits between|nothing to commit|no changes added|変更がありません|差分がありません/i.test(
-      p.errorBlob,
-    )
-  );
-}
+// Shared classification helpers live in workflow-auto-commit-classify.ts (kept
+// re-exported here so existing importers of this module are unaffected).
+export { countCommitsAhead, isNoChangeCompletion } from './workflow-auto-commit-classify';
 
 /**
  * Perform auto-commit, PR creation, optional merge, and worktree cleanup after verify.md is saved.
@@ -146,6 +101,11 @@ export async function performAutoCommitAndPR(
     result.requested = { autoCommit, autoCreatePR, autoMergePR };
 
     if (!autoCommit && !autoCreatePR && !autoMergePR) return result;
+
+    // Boundary 1/5 — entry. A stop recorded before this call must not produce a
+    // commit or PR at all.
+    if (await publicationAborted(taskId, 'entry'))
+      return { ...result, error: PUBLICATION_CANCELLED_ERROR };
 
     const task = await prisma.task.findUnique({
       where: { id: taskId },
@@ -225,10 +185,18 @@ export async function performAutoCommitAndPR(
       };
     }
 
+    // Boundary 2/5 — the verification gate above runs lint/type/tests and can
+    // take minutes; a stop during it must not fall through into git.
+    if (await publicationAborted(taskId, 'after_verification_gate'))
+      return { ...result, error: PUBLICATION_CANCELLED_ERROR };
+
     const orchestrator = AgentOrchestrator.getInstance(prisma);
 
     // Process autoCommit
     if (autoCommit) {
+      // Boundary 3/5 — the last point before this run writes to git.
+      if (await publicationAborted(taskId, 'before_commit'))
+        return { ...result, error: PUBLICATION_CANCELLED_ERROR };
       try {
         if (branchName) {
           await orchestrator.createBranch(gitCwd, branchName);
@@ -329,6 +297,11 @@ export async function performAutoCommitAndPR(
       };
     }
     if (autoCreatePR && result.autoCommitResult?.success) {
+      // Boundary 4/5 — the pre-PR base sync above can run an aux conflict
+      // resolution and a full re-verification, so re-read the stop intent
+      // before publishing anything to GitHub.
+      if (await publicationAborted(taskId, 'before_pr'))
+        return { ...result, error: PUBLICATION_CANCELLED_ERROR };
       // One-open-PR-per-task guard: createPullRequest's own reuse check is
       // branch-scoped (gh pr list --head <branch>) and misses a task's real
       // open PR whenever this run lands on a DIFFERENT branch than the PR was
@@ -469,6 +442,10 @@ export async function performAutoCommitAndPR(
     // (<root>/.worktrees/<name>). workingDirectory can BE the worktree since
     // resolveCommitCwd (task 774) — passing it tripped the removal guard.
     const worktreePath = latestSession?.worktreePath;
+    // Boundary 5/5 — worktree removal is irreversible and destroys the evidence
+    // a stopped run must keep for inspection, so it is withheld too.
+    if (worktreePath && (await publicationAborted(taskId, 'before_worktree_cleanup')))
+      return { ...result, error: PUBLICATION_CANCELLED_ERROR };
     if (worktreePath) {
       // NOTE: removeError stays undefined only on a confirmed removal — a refusal
       // (safety guard) and a thrown error both fall through to the same failure
