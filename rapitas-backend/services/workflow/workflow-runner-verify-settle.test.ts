@@ -37,8 +37,10 @@ mock.module('./verify-self-repair', () => ({
 const recoverFromLandedArtifactMock = mock(
   (_taskId: number): Promise<boolean> => Promise.resolve(true),
 );
+const pendingMergeMock = mock(async () => false);
 mock.module('./verify-settle-artifact-recovery', () => ({
   recoverFromLandedArtifact: recoverFromLandedArtifactMock,
+  isAwaitingRequiredMerge: pendingMergeMock,
 }));
 
 const { waitForVerifyCompletion } = await import('./workflow-runner-verify-settle');
@@ -55,7 +57,19 @@ function state(overrides: Partial<TaskWorkflowState>): TaskWorkflowState {
 }
 
 describe('waitForVerifyCompletion — fresh-rejection guard on landed-artifact completion', () => {
+  test('keeps a required merge pending beyond the verification grace period', async () => {
+    resolveWorkflowStateSequence = [
+      state({}),
+      state({}),
+      state({ status: 'done', workflowStatus: 'completed' }),
+    ];
+    pendingMergeMock.mockResolvedValue(true);
+    expect(await waitForVerifyCompletion(1, new AbortController().signal)).toBe('completed');
+    expect(pendingMergeMock).toHaveBeenCalled();
+    expect(recoverFromLandedArtifactMock).not.toHaveBeenCalled();
+  }, 10000);
   beforeEach(() => {
+    pendingMergeMock.mockReset().mockResolvedValue(false);
     resolveTaskWorkflowStateMock.mockClear();
     hasFreshVerifyRejectionMock.mockClear();
     recoverFromLandedArtifactMock.mockClear();

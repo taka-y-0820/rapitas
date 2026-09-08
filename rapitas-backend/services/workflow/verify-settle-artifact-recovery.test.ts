@@ -7,6 +7,8 @@
  * caller keeps its normal `stuck` verdict).
  */
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
+const policy = mock(async () => ({ autoMergePR: false }));
+mock.module('./automation-policy', () => ({ resolveAutomationPolicy: policy }));
 
 mock.module('../../config/logger', () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
@@ -36,7 +38,14 @@ mock.module('./transition-recorder', () => ({ recordTransition: recordTransition
 const { recoverFromLandedArtifact } = await import('./verify-settle-artifact-recovery');
 
 describe('recoverFromLandedArtifact', () => {
+  test('PR existence does not complete a task requiring merge', async () => {
+    policy.mockResolvedValue({ autoMergePR: true });
+    findFirstPrMock.mockResolvedValue({ id: 458 });
+    expect(await recoverFromLandedArtifact(658)).toBe(false);
+    expect(updateManyMock).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
+    policy.mockReset().mockResolvedValue({ autoMergePR: false });
     findFirstPrMock.mockReset();
     findUniqueTaskMock.mockReset();
     updateManyMock.mockReset();
@@ -54,7 +63,11 @@ describe('recoverFromLandedArtifact', () => {
 
     expect(updateManyMock).toHaveBeenCalledTimes(1);
     const args = updateManyMock.mock.calls[0][0];
-    expect(args.where).toEqual({ id: 658, workflowStatus: 'verify_done' });
+    expect(args.where).toEqual({
+      id: 658,
+      workflowStatus: 'verify_done',
+      status: { in: ['todo', 'in-progress', 'in_progress'] },
+    });
     expect(args.data).toMatchObject({ status: 'done', workflowStatus: 'completed' });
     expect(args.data.completedAt).toBeInstanceOf(Date);
     // linkedTaskId hit means the githubPrId fallback is never consulted.
