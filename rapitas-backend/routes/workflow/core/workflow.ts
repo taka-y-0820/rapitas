@@ -21,6 +21,8 @@ import {
   handleResumeFromQuestion,
   handleAnswerWorkflowQuestion,
   handleRunVerification,
+  handleRunVerificationStatus,
+  handleRunVerificationLatest,
 } from '../handlers/workflow-handlers';
 import { handleRevisePlan } from '../handlers/workflow-handlers-plan-revision';
 import {
@@ -111,6 +113,19 @@ export const workflowRoutes = new Elysia({ prefix: '/workflow' })
    */
   .post('/tasks/:taskId/run-verification', (ctx) =>
     handleRunVerification(ctx as Parameters<typeof handleRunVerification>[0]),
+  )
+
+  /**
+   * Self-verification job status: `latest` MUST be registered before
+   * `:runId` so the literal path segment `latest` is never captured as a
+   * `runId` parameter, regardless of Elysia's internal route-matching order.
+   */
+  .get('/tasks/:taskId/run-verification/latest', (ctx) =>
+    handleRunVerificationLatest(ctx as Parameters<typeof handleRunVerificationLatest>[0]),
+  )
+
+  .get('/tasks/:taskId/run-verification/:runId', (ctx) =>
+    handleRunVerificationStatus(ctx as Parameters<typeof handleRunVerificationStatus>[0]),
   )
 
   /**
