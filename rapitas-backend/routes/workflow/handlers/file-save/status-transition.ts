@@ -65,13 +65,14 @@ export async function computeAndApplyStatusTransition(params: {
       // stop-execution preserves workflowStatus and resets task.status to todo.
       // System bookkeeping must not hide the latest deliberate user stop.
       const lastUserTransition = await prisma.workflowTransition.findFirst({
-        where: { taskId, actor: 'user' },
+        where: { taskId, OR: [{ actor: 'user' }, { cause: 'auto_run_stop_revert' }] },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         select: { cause: true },
       });
       if (
         lastUserTransition?.cause === 'manual_execution_stop_revert' ||
-        lastUserTransition?.cause === 'manual_execution_stop_withdraw'
+        lastUserTransition?.cause === 'manual_execution_stop_withdraw' ||
+        lastUserTransition?.cause === 'auto_run_stop_revert'
       ) {
         return {
           researchCompleted: false,
