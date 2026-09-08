@@ -118,6 +118,10 @@ jobs:
           bunx prisma db push --skip-generate
           bunx prisma generate
 
+      - name: Prepare SQLite client for isolated database tests
+        working-directory: rapitas-backend
+        run: bun run db:generate:sqlite
+
       - name: Run full test suite (parallel, advisory)
         working-directory: rapitas-backend
         env:
