@@ -13,6 +13,16 @@
 
 import { describe, expect, test, mock, beforeEach } from 'bun:test';
 
+const evaluatedAt = new Date('2026-09-08T00:00:00Z');
+let taskWorkflowStatus = 'research_done';
+const taskRow = () => ({
+  status: 'in-progress',
+  workflowStatus: taskWorkflowStatus,
+  updatedAt: evaluatedAt,
+  themeId: null,
+  acceptanceCriteria: null,
+});
+
 const noopLogger = { info: () => {}, warn: mock(() => {}), error: () => {}, debug: () => {} };
 
 const mockPrisma = {
@@ -33,6 +43,19 @@ const mockPrisma = {
 const readWorkflowFile = mock(() => Promise.resolve(''));
 const writeWorkflowFile = mock(() => Promise.resolve());
 const recordTransition = mock(() => Promise.resolve());
+Object.assign(mockPrisma, {
+  $transaction: async (operation: (tx: typeof mockPrisma) => unknown) => operation(mockPrisma),
+  agentExecution: { findFirst: async () => null },
+  themeAutoRun: { findUnique: async () => null },
+});
+Object.assign(mockPrisma.workflowFile, { findUnique: () => mockPrisma.workflowFile.findFirst() });
+Object.assign(mockPrisma.workflowTransition, {
+  create: async (args: { data: { metadata: string } }) =>
+    (recordTransition as (...args: unknown[]) => Promise<void>)({
+      ...args.data,
+      metadata: JSON.parse(args.data.metadata),
+    }),
+});
 
 mock.module('../../config/logger', () => ({ createLogger: () => noopLogger }));
 mock.module('../../config/database', () => ({
@@ -55,12 +78,16 @@ const { attemptVerifyRepair, isTamperOnlyVerdict, VERIFY_NON_REPAIRABLE_CAUSE } 
 
 describe('attemptVerifyRepair — 修復予算のダブルチェック (task 749)', () => {
   beforeEach(() => {
+    taskWorkflowStatus = 'research_done';
+    mockPrisma.task.findUnique
+      .mockReset()
+      .mockImplementation(async () => taskRow() as unknown as null);
     mockPrisma.userSettings.findFirst.mockReset().mockResolvedValue(null);
     mockPrisma.activityLog.findFirst.mockReset().mockResolvedValue(null);
     mockPrisma.workflowTransition.count.mockReset().mockResolvedValue(0);
     mockPrisma.workflowTransition.findMany.mockReset().mockResolvedValue([]);
     mockPrisma.task.updateMany.mockReset().mockResolvedValue({ count: 1 });
-    mockPrisma.task.findUnique.mockReset().mockResolvedValue(null);
+
     mockPrisma.workflowFile.findFirst.mockReset().mockResolvedValue(null);
     readWorkflowFile.mockReset().mockResolvedValue('');
     writeWorkflowFile.mockReset().mockResolvedValue(undefined);
@@ -121,6 +148,7 @@ describe('attemptVerifyRepair — tamper 単独失敗は修復不能として即
 
   test('tamper 単独失敗は bounce せず、非修復の遷移を記録して cutoffRecorded を返す', async () => {
     mockPrisma.workflowTransition.count.mockResolvedValue(0);
+    taskWorkflowStatus = 'verify_done';
     const result = await attemptVerifyRepair(867, 'verify_done', TAMPER_ONLY, 'verify body');
     expect(result.bounced).toBe(false);
     expect(result.cutoffRecorded).toBe(true);

@@ -1,0 +1,109 @@
+import { afterEach, beforeEach, expect, test } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
+import { PrismaClient } from '../../generated/prisma-sqlite';
+import type { PrismaClient as PostgresClient } from '../../generated/prisma-postgres';
+import { commitVerifyRepair, type RepairAdmission } from './verify-repair-commit';
+let dir: string;
+let db: PrismaClient;
+const now = new Date('2026-09-08T00:00:00Z');
+const input: RepairAdmission = {
+  taskId: 1,
+  updatedAt: now,
+  workflowStatus: 'verify_done',
+  executionId: 1,
+  max: 2,
+  reason: 'Required behavior failed',
+  verifyContent: 'Original failure evidence',
+  caller: 'test',
+};
+const commit = (overrides: Partial<RepairAdmission> = {}) =>
+  commitVerifyRepair(db as unknown as PostgresClient, { ...input, ...overrides });
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), 'rapitas-repair-atomic-'));
+  db = new PrismaClient({
+    datasources: { db: { url: `file:${join(dir, 'test.db').replaceAll('\\', '/')}` } },
+  });
+  for (const sql of [
+    'CREATE TABLE Task (id INTEGER PRIMARY KEY, status TEXT, workflowStatus TEXT, updatedAt DATETIME, themeId INTEGER)',
+    'CREATE TABLE WorkflowFile (id INTEGER PRIMARY KEY, taskId INTEGER, fileType TEXT, UNIQUE(taskId,fileType))',
+    'CREATE TABLE DeveloperModeConfig (id INTEGER PRIMARY KEY, taskId INTEGER)',
+    'CREATE TABLE AgentSession (id INTEGER PRIMARY KEY, configId INTEGER)',
+    'CREATE TABLE AgentExecution (id INTEGER PRIMARY KEY, sessionId INTEGER, status TEXT, startedAt DATETIME, createdAt DATETIME)',
+    'CREATE TABLE ThemeAutoRun (id INTEGER PRIMARY KEY, themeId INTEGER UNIQUE, status TEXT)',
+    'CREATE TABLE ActivityLog (id INTEGER PRIMARY KEY, taskId INTEGER, action TEXT, createdAt DATETIME)',
+    'CREATE TABLE WorkflowTransition (id INTEGER PRIMARY KEY AUTOINCREMENT, taskId INTEGER, fromStatus TEXT, toStatus TEXT, actor TEXT, cause TEXT, phase TEXT, executionId INTEGER, sessionId INTEGER, metadata TEXT DEFAULT "{}", invariantViolation BOOLEAN DEFAULT 0, invariantMessage TEXT, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP)',
+    "INSERT INTO WorkflowFile VALUES (1,1,'plan')",
+    'INSERT INTO DeveloperModeConfig VALUES (1,1)',
+    'INSERT INTO AgentSession VALUES (1,1)',
+  ])
+    await db.$executeRawUnsafe(sql);
+  await db.$executeRawUnsafe("INSERT INTO Task VALUES (1,'in-progress','verify_done',?,NULL)", now);
+  await db.$executeRawUnsafe("INSERT INTO AgentExecution VALUES (1,1,'running',?,?)", now, now);
+});
+afterEach(async () => {
+  await db?.$disconnect();
+  if (dir) {
+    const target = resolve(dir);
+    if (
+      dirname(target) !== resolve(tmpdir()) ||
+      !basename(target).startsWith('rapitas-repair-atomic-')
+    )
+      throw new Error('Unsafe test cleanup path');
+    await rm(target, { recursive: true, force: true });
+  }
+});
+async function unchanged() {
+  expect(await db.task.findUnique({ where: { id: 1 }, select: { workflowStatus: true } })).toEqual({
+    workflowStatus: 'verify_done',
+  });
+  expect(await db.workflowTransition.count({ where: { cause: 'verify_repair' } })).toBe(0);
+}
+test('audit failure rolls back state and budget together', async () => {
+  await db.$executeRawUnsafe(
+    "CREATE TRIGGER fail_audit BEFORE INSERT ON WorkflowTransition BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END",
+  );
+  await expect(commit()).rejects.toThrow();
+  await unchanged();
+});
+test('concurrent verdicts consume one attempt and retain exact recovery evidence', async () => {
+  const results = await Promise.all([commit(), commit()]);
+  expect(results.filter((r) => r.committed)).toHaveLength(1);
+  const rows = await db.workflowTransition.findMany({ select: { metadata: true } });
+  expect(rows).toHaveLength(1);
+  expect(JSON.parse(rows[0].metadata)).toMatchObject({
+    attempt: 1,
+    verifyContent: input.verifyContent,
+  });
+});
+test('durable stop intent blocks repair before task status changes', async () => {
+  await db.$executeRawUnsafe(
+    "INSERT INTO WorkflowTransition (taskId,cause,createdAt) VALUES (1,'theme_stop_execution_requested',?)",
+    now,
+  );
+  expect(await commit()).toEqual({ committed: false, reason: 'stop_requested' });
+  await unchanged();
+});
+test('new execution does not authorize an old verdict', async () => {
+  await db.$executeRawUnsafe(
+    "INSERT INTO AgentExecution VALUES (2,1,'running',?,?)",
+    new Date(now.getTime() + 1),
+    new Date(now.getTime() + 1),
+  );
+  expect(await commit()).toEqual({ committed: false, reason: 'execution_superseded' });
+  await unchanged();
+});
+test('canceling execution blocks admission', async () => {
+  await db.$executeRawUnsafe("UPDATE AgentExecution SET status='canceling'");
+  expect(await commit()).toEqual({ committed: false, reason: 'execution_stopped' });
+  await unchanged();
+});
+test('budget is enforced in the transaction', async () => {
+  const first = await commit({ max: 1 });
+  if (!first.committed) throw new Error('First repair failed');
+  expect(
+    await commit({ max: 1, workflowStatus: first.newStatus, updatedAt: first.updatedAt }),
+  ).toEqual({ committed: false, reason: 'budget_exhausted' });
+  expect(await db.workflowTransition.count()).toBe(1);
+});
