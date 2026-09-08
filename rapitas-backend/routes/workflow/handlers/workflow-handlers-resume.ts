@@ -354,14 +354,17 @@ async function applyResumeFromQuestionAnswerLocked(params: ApplyResumeAnswerPara
 
   let resumeStatus: WorkflowStatus = 'in_progress';
   let source: 'transition_metadata' | 'fallback' = 'fallback';
-  if (lastWaitingTransition?.metadata) {
+  if (lastWaitingTransition) {
     // Prisma's Json field is typed as string|number|boolean|object|array. Narrow via unknown.
-    const meta = lastWaitingTransition.metadata as unknown as Record<string, unknown>;
-    const prev = meta.previousStatus;
+    const meta = lastWaitingTransition.metadata as unknown as Record<string, unknown> | null;
+    const prev = meta?.previousStatus;
     if (typeof prev === 'string' && prev !== 'awaiting_question') {
       resumeStatus = prev as WorkflowStatus;
       source = 'transition_metadata';
-    } else if (lastWaitingTransition.fromStatus) {
+    } else if (
+      lastWaitingTransition.fromStatus &&
+      lastWaitingTransition.fromStatus !== 'awaiting_question'
+    ) {
       // metadata 欠落でも fromStatus が残っていれば優先する
       resumeStatus = lastWaitingTransition.fromStatus as WorkflowStatus;
       source = 'transition_metadata';
