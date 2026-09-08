@@ -59,3 +59,4 @@ services/workflow/workflow-runner.advancing.test.ts
 routes/workflow/workflow-auto-commit.test.ts
 services/workflow/requirement-replan-plan-policy.test.ts
 services/workflow/reviewed-plan-policy.test.ts
+services/workflow/requirement-replan-sources.test.ts

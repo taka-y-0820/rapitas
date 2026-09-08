@@ -1,3 +1,4 @@
+import { parseReplanVerdict } from './requirement-replan-verdict';
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -174,4 +175,48 @@ test('mode setting changed after review invalidates the completion receipt', asy
     'stale_snapshot',
   );
   expect(await db.workflowTransition.count({ where: { cause: 'verify_passed' } })).toBe(0);
+});
+
+test('description evidence survives transactional replan without rewriting requirements', async () => {
+  const description = 'Delayed questions must preserve completed status.';
+  await db.$executeRawUnsafe(
+    'UPDATE Task SET description = ?, acceptanceCriteria = ?',
+    description,
+    '[]',
+  );
+  const result = await attemptRequirementReplan(
+    db as unknown as PostgresClient,
+    1,
+    async (source) => ({
+      ...review,
+      snapshotDigest: replanSnapshotDigest(source),
+      verdict: parseReplanVerdict(
+        JSON.stringify({
+          kind: 'mismatch',
+          reason: 'Original requested state preservation is excluded',
+          requirementUnmet: true,
+          planPreventsRequirement: true,
+          preservesRequirements: true,
+          requiresOverridingUserConstraint: false,
+          requirementIsRequestedOutcome: true,
+          criterionSource: 'description',
+          criterionIndex: 0,
+          planLines: [0, 0],
+          failureLines: [0, 0],
+        }),
+        source,
+      ),
+    }),
+  );
+  expect(result.committed).toBe(true);
+  const task = await db.task.findUnique({
+    where: { id: 1 },
+    select: { description: true, acceptanceCriteria: true, workflowStatus: true },
+  });
+  expect(task).toEqual({ description, acceptanceCriteria: '[]', workflowStatus: 'research_done' });
+  const audit = await db.workflowTransition.findFirst({
+    where: { cause: 'requirement_evidence_replan' },
+    select: { metadata: true },
+  });
+  expect(JSON.parse(audit!.metadata).evidence.criterionSource).toBe('description');
 });

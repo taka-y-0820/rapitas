@@ -12,8 +12,11 @@ test('preserves requirements and artifact tails without truncation', () => {
     verify: '失敗証拠',
   };
   const input = JSON.parse(buildReplanReviewInput(snapshot)!);
+  const { requirementSources, ...original } = input;
+  expect(requirementSources.description.join('\n')).toBe(snapshot.description);
+  expect(requirementSources.acceptanceCriteria).toEqual(snapshot.acceptanceCriteria);
   expect({
-    ...input,
+    ...original,
     plan: input.plan.map((r: { text: string }) => r.text).join('\n'),
     verify: input.verify.map((r: { text: string }) => r.text).join('\n'),
   }).toEqual(snapshot);

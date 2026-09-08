@@ -1,6 +1,8 @@
 /** Strict boundary for an independent judge; never treats malformed output as approval. */
 import {
   replanSnapshotDigest,
+  replanRequirementSources,
+  type ReplanRequirementSource,
   validateReplanEvidence,
   type ReplanEvidence,
   type ReplanSnapshot,
@@ -60,8 +62,19 @@ export function parseReplanVerdict(content: string, snapshot: ReplanSnapshot): R
   ) {
     return { kind: 'unknown', reason: 'incomplete_mismatch_verdict' };
   }
+  const criterionSource = row.criterionSource ?? 'acceptanceCriteria';
+  if (
+    typeof criterionSource !== 'string' ||
+    !['acceptanceCriteria', 'description', 'goals', 'constraints', 'title'].includes(
+      criterionSource,
+    )
+  )
+    return { kind: 'unknown', reason: 'invalid_requirement_source' };
+  if (criterionSource !== 'acceptanceCriteria' && row.requirementIsRequestedOutcome !== true)
+    return { kind: 'unknown', reason: 'unconfirmed_requirement_intent' };
+  const criteria = replanRequirementSources(snapshot)[criterionSource as ReplanRequirementSource];
   const usesLines = 'planLines' in row || 'failureLines' in row;
-  const criterion = usesLines ? snapshot.acceptanceCriteria[row.criterionIndex] : row.criterion;
+  const criterion = usesLines ? criteria[row.criterionIndex] : row.criterion;
   const planQuote = usesLines ? sourceLines(snapshot.plan, row.planLines) : row.planQuote;
   const failureQuote = usesLines
     ? sourceLines(snapshot.verify, row.failureLines)
@@ -75,6 +88,9 @@ export function parseReplanVerdict(content: string, snapshot: ReplanSnapshot): R
   }
   const evidence: ReplanEvidence = {
     snapshotDigest: replanSnapshotDigest(snapshot),
+    ...(criterionSource === 'acceptanceCriteria'
+      ? {}
+      : { criterionSource: criterionSource as ReplanRequirementSource }),
     criterionIndex: row.criterionIndex,
     criterion,
     planQuote,
