@@ -38,9 +38,55 @@ const writeWorkflowFile = mock(() => Promise.resolve('/p/question.md'));
 const readWorkflowFile = mock(() => Promise.resolve('' as string | null));
 const resolveWorkflowDir = mock(() => Promise.resolve({ dir: '/wf/1' }));
 
+const evaluatedAt = new Date('2026-09-08T00:00:00Z');
+const queuedItem = mock(async (): Promise<{ id: number } | null> => null);
+const databaseMock = {
+  ...mockPrisma,
+  task: {
+    ...mockPrisma.task,
+    findUnique: async (...args: unknown[]) => {
+      const row = await (
+        mockPrisma.task.findUnique as (
+          ...args: unknown[]
+        ) => Promise<Record<string, unknown> | null>
+      )(...args);
+      return row
+        ? { status: 'in-progress', workflowStatus: 'in_progress', updatedAt: evaluatedAt, ...row }
+        : null;
+    },
+  },
+  agentExecution: { findFirst: async () => null },
+  themeAutoRun: { findUnique: async () => null },
+  workflowQueueItem: { findFirst: queuedItem },
+  workflowFile: {
+    ...mockPrisma.workflowFile,
+    findUnique: () => mockPrisma.workflowFile.findFirst(),
+  },
+  workflowTransition: {
+    ...mockPrisma.workflowTransition,
+    findFirst: async (...args: unknown[]) => {
+      const row = await (
+        mockPrisma.workflowTransition.findFirst as (
+          ...args: unknown[]
+        ) => Promise<{ cause: string; createdAt: Date } | null>
+      )(...args);
+      const query = args[0] as { where?: { cause?: { in: string[] } } };
+      return row && query.where?.cause && !query.where.cause.in.includes(row.cause) ? null : row;
+    },
+    create: async (args: { data: { metadata: string } }) =>
+      (recordTransition as (...args: unknown[]) => Promise<void>)({
+        ...args.data,
+        metadata: JSON.parse(args.data.metadata),
+      }),
+  },
+};
+Object.assign(databaseMock, {
+  $transaction: async (operation: (tx: typeof databaseMock) => unknown) => operation(databaseMock),
+});
+
 const noopLogger = { info: () => {}, error: () => {}, warn: () => {}, debug: () => {} };
 mock.module('../../config/database', () => ({
-  prisma: mockPrisma,
+  prisma: databaseMock,
   ensureDatabaseConnection: () => Promise.resolve(),
 }));
 mock.module('../../config/logger', () => ({
@@ -89,6 +135,7 @@ const { attemptVerifyRepair, hasFreshVerifyRejection } =
 
 describe('attemptVerifyRepair', () => {
   beforeEach(() => {
+    queuedItem.mockReset().mockResolvedValue(null);
     delete process.env.RAPITAS_MAX_VERIFY_REPAIRS;
     mockPrisma.workflowTransition.count.mockReset();
     mockPrisma.workflowFile.findFirst.mockReset();
@@ -138,7 +185,9 @@ describe('attemptVerifyRepair', () => {
     expect(r.attempt).toBe(1);
     // task を in-progress に戻し、修復 transition を記録すること
     const tu = mockPrisma.task.updateMany.mock.calls[0][0] as { data: { status: string } };
-    expect(tu.data.status).toBe('in-progress');
+    expect(
+      (mockPrisma.task.updateMany.mock.calls[0][0] as { where: { status: string } }).where.status,
+    ).toBe('in-progress');
     const rt = recordTransition.mock.calls[0][0] as { cause: string; toStatus: string };
     expect(rt.cause).toBe('verify_repair');
     expect(rt.toStatus).toBe('plan_approved');
@@ -180,6 +229,7 @@ describe('attemptVerifyRepair', () => {
   test('既にキュー済み(enqueue が throw)でもランナー起動は行い、bounce は継続すること', async () => {
     mockPrisma.workflowFile.findFirst.mockResolvedValue({ id: 7 });
     enqueue.mockRejectedValueOnce(new Error('already in the queue'));
+    queuedItem.mockResolvedValueOnce({ id: 1 });
     const r = await attemptVerifyRepair(1, 'in_progress', 'fail', 'v');
     expect(r.bounced).toBe(true);
     expect(startProcessing).toHaveBeenCalledTimes(1);
