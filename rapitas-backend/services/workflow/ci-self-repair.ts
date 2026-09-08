@@ -179,7 +179,8 @@ async function writeCiFeedback(
       '- 失敗したチェックに対応するゲートをローカルで再現して直す（例: "Check Frontend"→フロントのテスト、"Lint Code"→lint/型、"Test Backend"/"Test SQLite"→バックエンドのテスト）。',
       '- `bun test --isolate` / `bunx tsc --noEmit` / lint / prettier をローカルで実行し、緑になるまで直す。',
       '- スコープ厳守（plan.md 記載外のファイルは変更しない）。テスト結果の改ざんは禁止。',
-      '- 失敗の原因が plan.md 記載外のファイルにある場合は、そのファイルを修正せず `POST /concerns` で懸念バックログに起票し、その旨を verify.md に明記した上でスコープ内の変更のみで完了してよい。',
+      '- plan.md 記載外のファイルに原因があっても、元の要件・受け入れ基準・停止/完了の不変条件・必須完了ゲートに関わる失敗は未達のまま扱う。懸念起票だけで免除したり、判定を成功へ書き換えたりしてはならない。計画の修正が必要なら理由と再現証拠を報告し、正規の再計画または保留へ進める。',
+      '- 元の要件と無関係な既存失敗は POST /concerns に起票し、無関係と判断した根拠を verify.md に残す。ただし、必須チェックや完了ゲートの成功を代替するものではない。',
       // The ratchet's decisive NEW/GREW lines sit at the TOP of its listing and
       // the 50-line tail excerpt cuts them off — repairs kept fixing the wrong
       // thing (PR #537, PR #542). Local reproduction is exact, so demand it.

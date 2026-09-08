@@ -41,7 +41,47 @@ export async function computeAndApplyStatusTransition(params: {
   currentStatus: string | null | undefined;
   savedContent: string;
 }): Promise<StatusTransitionOutcome> {
-  const { taskId, fileType, currentStatus, savedContent } = params;
+  const { taskId, fileType, savedContent } = params;
+  let { currentStatus } = params;
+  // Question saves may have waited behind a scheduler/answer decision. Never
+  // use the caller's pre-lock snapshot to overwrite a terminal or held task.
+  const questionSnapshot =
+    fileType === 'question'
+      ? await prisma.task.findUnique({
+          where: { id: taskId },
+          select: { status: true, workflowStatus: true, updatedAt: true },
+        })
+      : null;
+  if (fileType === 'question') {
+    if (!questionSnapshot || !['todo', 'in-progress'].includes(questionSnapshot.status)) {
+      return {
+        researchCompleted: false,
+        verifyRerunAlreadyDone: false,
+        verifyRepairBounced: false,
+      };
+    }
+    currentStatus = questionSnapshot.workflowStatus;
+    if (questionSnapshot.status === 'todo') {
+      // stop-execution preserves workflowStatus and resets task.status to todo.
+      // System bookkeeping must not hide the latest deliberate user stop.
+      const lastUserTransition = await prisma.workflowTransition.findFirst({
+        where: { taskId, OR: [{ actor: 'user' }, { cause: 'auto_run_stop_revert' }] },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        select: { cause: true },
+      });
+      if (
+        lastUserTransition?.cause === 'manual_execution_stop_revert' ||
+        lastUserTransition?.cause === 'manual_execution_stop_withdraw' ||
+        lastUserTransition?.cause === 'auto_run_stop_revert'
+      ) {
+        return {
+          researchCompleted: false,
+          verifyRerunAlreadyDone: false,
+          verifyRepairBounced: false,
+        };
+      }
+    }
+  }
 
   // Auto-update workflowStatus
   let newStatus: string | undefined;
@@ -207,20 +247,39 @@ export async function computeAndApplyStatusTransition(params: {
   }
 
   if (newStatus && !verifyRepairBounced) {
-    await prisma.task.update({
-      where: { id: taskId },
-      // Research-no-change completion (and the verify re-run already-done
-      // false-negative guard) also mark the task itself done.
-      data:
-        researchCompleted || verifyRerunAlreadyDone
-          ? {
-              workflowStatus: newStatus,
-              status: 'done',
-              completedAt: new Date(),
-              updatedAt: new Date(),
-            }
-          : { workflowStatus: newStatus, updatedAt: new Date() },
-    });
+    if (fileType === 'question' && questionSnapshot) {
+      const changed = await prisma.task.updateMany({
+        where: {
+          id: taskId,
+          status: questionSnapshot.status,
+          workflowStatus: questionSnapshot.workflowStatus,
+          updatedAt: questionSnapshot.updatedAt,
+        },
+        data: { workflowStatus: newStatus, updatedAt: new Date() },
+      });
+      if (changed.count !== 1) {
+        log.info({ taskId }, '[Workflow] Question transition skipped: task changed during save');
+        return {
+          researchCompleted: false,
+          verifyRerunAlreadyDone: false,
+          verifyRepairBounced: false,
+        };
+      }
+    } else
+      await prisma.task.update({
+        where: { id: taskId },
+        // Research-no-change completion (and the verify re-run already-done
+        // false-negative guard) also mark the task itself done.
+        data:
+          researchCompleted || verifyRerunAlreadyDone
+            ? {
+                workflowStatus: newStatus,
+                status: 'done',
+                completedAt: new Date(),
+                updatedAt: new Date(),
+              }
+            : { workflowStatus: newStatus, updatedAt: new Date() },
+      });
     // Record the transition + immediately verify invariants. We log
     // violations but DO NOT throw — the file was already saved on disk
     // and rolling back would create a worse "ghost" state.
