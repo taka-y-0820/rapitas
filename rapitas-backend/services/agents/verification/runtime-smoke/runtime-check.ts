@@ -6,7 +6,7 @@
  * browser, and turn hard failures (won't start / uncaught page errors /
  * 5xx) into a failing VerificationCheck — which the existing verify-repair
  * loop bounces back to the implementer. Console errors are advisory only
- * (dev builds are noisy). Tooling absence (no browser) fails OPEN.
+ * (dev builds are noisy). Missing browser tooling leaves runtime verification incomplete.
  */
 import { createLogger } from '../../../../config/logger';
 import type { VerificationCheck } from '../automated-verifier';
@@ -154,7 +154,8 @@ export async function runRuntimeSmokeCheck(
     return {
       name: 'runtime',
       ran: false,
-      ok: true,
+      ok: false,
+      unverifiable: true,
       errorCount: 0,
       details:
         'runtime検証はスキップしました（この worktree は直近で環境起因の起動失敗を記録済み — 再起動試行は同一結果になるため省略）。',
@@ -178,18 +179,19 @@ export async function runRuntimeSmokeCheck(
         ? `（プロセスは exitCode=${app.exitCode()} で終了済み）`
         : '';
       // Environment failures (broken worktree symlinks, missing tooling) are
-      // not fixable by the implementer — fail OPEN with the evidence instead
+      // not fixable by the implementer — hold as unverifiable with evidence instead
       // of bouncing the phase into an unfixable repair loop.
       if (looksLikeEnvironmentFailure(logs)) {
         recentEnvFailures.set(workdir, Date.now());
         log.warn(
           { workdir, label, exitCode: app.exitCode() },
-          '[runtime-smoke] launch failed with an ENVIRONMENT signature — skipping (fail-open)',
+          '[runtime-smoke] launch failed with an ENVIRONMENT signature — unverifiable; completion withheld',
         );
         return {
           name: 'runtime',
           ran: false,
-          ok: true,
+          ok: false,
+          unverifiable: true,
           errorCount: 0,
           details:
             `runtime検証は環境起因の起動失敗のためスキップしました（worktreeセットアップ問題 — 実装の欠陥ではありません）${exitNote}。` +
@@ -209,11 +211,12 @@ export async function runRuntimeSmokeCheck(
 
     const smoke = await runBrowserSmoke(baseUrl, cfg.checkPaths, label);
     if (!smoke.browserAvailable) {
-      // Fail-open on tooling: HTTP health already proved the app starts.
+      // HTTP readiness alone does not prove the configured browser checks.
       return {
         name: 'runtime',
-        ran: true,
-        ok: true,
+        ran: false,
+        ok: false,
+        unverifiable: true,
         errorCount: 0,
         details: `起動確認のみ成功 (HTTP応答あり)。ブラウザ確認はスキップ: ${smoke.unavailableReason}`,
       };
@@ -229,11 +232,12 @@ export async function runRuntimeSmokeCheck(
     };
   } catch (err) {
     // Harness crash (not app failure) — fail open, never block on our own bug.
-    log.warn({ err, workdir }, '[runtime-smoke] harness error — skipping (fail-open)');
+    log.warn({ err, workdir }, '[runtime-smoke] harness error — unverifiable; completion withheld');
     return {
       name: 'runtime',
       ran: false,
-      ok: true,
+      ok: false,
+      unverifiable: true,
       errorCount: 0,
       details: `runtime検証ハーネスの内部エラーによりスキップ: ${err instanceof Error ? err.message : err}`,
     };

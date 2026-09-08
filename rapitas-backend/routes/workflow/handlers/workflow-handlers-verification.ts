@@ -28,39 +28,24 @@ const log = createLogger('routes:workflow:self-verification');
 /** Tasks with a verification currently running — one at a time per task. */
 const inFlight = new Set<number>();
 
-/** Successful run-verification response shape, cached per task. */
-interface CachedVerificationResponse {
+/** Completed verification response; never reused as a new measurement. */
+interface VerificationResponse {
   success: true;
   ok: boolean;
   summary: unknown;
   markdown: string;
 }
 
-/** One task's most recent cached result, keyed by verification identity. */
-interface CachedVerificationEntry {
-  key: string;
-  at: number;
-  response: CachedVerificationResponse;
-}
-
-/**
- * Cached results, one per task. A client that disconnects mid-run (the
- * runtime-smoke stage alone can take ~130s) used to force a full re-run on
- * its next request even though nothing had changed — this lets an identical
- * verification identity return the already-measured result instead of
- * re-paying the whole gate.
- */
-const resultCache = new Map<number, CachedVerificationEntry>();
-
-/** How long a cached result stays valid. Overridable for tests/tuning. */
-const CACHE_TTL_MS = Number(process.env.RAPITAS_SELFVERIFY_CACHE_TTL_MS) || 5 * 60 * 1000;
+// Completed results are not reusable: Git content alone cannot identify
+// runtime settings, generated files, dependencies, or external service state.
+// Task 899 will retain results by run ID without treating a previous run as fresh.
 
 /** Default cap on total untracked-file bytes hashed into the cache key. */
 const DEFAULT_MAX_UNTRACKED_BYTES = 32 * 1024 * 1024;
 /** Default cap on the number of untracked files hashed into the cache key. */
 const DEFAULT_MAX_UNTRACKED_FILES = 500;
 
-/** Everything that determines whether a prior gate result is still valid. */
+/** Inputs covered by the concurrent-change fingerprint. */
 export interface VerificationCacheInputs {
   worktreePath: string;
   planContent?: string;
@@ -71,39 +56,13 @@ export interface VerificationCacheInputs {
 }
 
 /**
- * Derive a cache key from the worktree's actual content (not just its git
- * status codes) plus every input that feeds the gate, so a cached result can
- * only be reused when nothing an implementer could have changed has changed.
+ * Fingerprint Git content and the supplied task inputs to detect changes
+ * during verification. This is not a complete identity for external state
+ * and must never authorize reuse of a completed verification result.
+ * Structured path/content-digest pairs avoid ambiguous binary boundaries.
  *
- * `git status --porcelain` alone is unsafe: it reports change TYPE (`M`/`??`)
- * but never content, so re-editing an already-dirty tracked file to a
- * DIFFERENT value keeps producing the identical status line and therefore an
- * identical (wrong) key (task 897 supervisor repro: same `M app.txt` line
- * across two edits with different SHA256 content). `git diff HEAD` instead
- * emits the tracked working-tree's actual diff against HEAD — content-bearing
- * and provably distinct per edit — and untracked files (invisible to `diff`)
- * are separately enumerated and content-hashed.
- *
- * Untracked files are folded into the key as a `JSON.stringify`d
- * `[relPath, sha256hex]` array — NOT as raw `relPath + NUL + content + NUL`
- * concatenation. The naive delimiter scheme is ambiguous: a single untracked
- * file `a` containing the bytes `x\0b\0y` produces the exact same byte stream
- * as two untracked files `a='x'` and `b='y'` (both reduce to `a\0x\0b\0y\0`),
- * so they collided on an identical key (task 897 supervisor repro,
- * reconfirmed here against this file's own prior implementation: both states
- * hashed to `c8d9a2ee...`). Digesting each file's content to a fixed-length
- * hex string FIRST, then only ever concatenating path/digest pairs (never raw
- * content) into the framing, removes the ambiguity — no digest can itself
- * contain the array/string delimiters `JSON.stringify` uses.
- *
- * @param inputs - Worktree path plus every verification-affecting input
- *   (plan/acceptance/requireTests/base branch/task text). / 検証に影響する入力一式
- * @returns A sha256 hex digest identity, or null when a robust identity
- *          cannot be guaranteed (git unavailable, untracked read/stat
- *          failure, an untracked symlink, or content exceeding the
- *          safety-valve caps) — callers must treat null as "do not cache
- *          this request" rather than falling back to a weaker key. /
- *          取得不能時は null（キャッシュ回避）
+ * @param inputs - Worktree and task inputs observed for this run.
+ * @returns Fingerprint, or null when inputs cannot be identified.
  */
 export async function computeVerificationCacheKey(
   inputs: VerificationCacheInputs,
@@ -198,7 +157,7 @@ export async function computeVerificationCacheKey(
  * identity. Called twice per request — before and after the gate runs — so
  * that a plan/task/acceptance-criteria edit made WHILE verification was in
  * flight (which can take minutes) is reflected in `keyAfter` and correctly
- * invalidates the cache write, not just an in-memory worktree re-hash of
+ * invalidates the measured result, not just an in-memory worktree re-hash of
  * variables captured before the run started.
  *
  * @param taskId - Task whose plan/acceptance/base branch to load. / 対象タスクID
@@ -212,15 +171,13 @@ async function buildCacheInputs(
   const [planContent, preferredBaseBranch, taskRow] = await Promise.all([
     readWorkflowFile(taskId, 'plan'),
     resolvePreferredBaseBranch(taskId),
-    // Fail-open: a missing task row just skips both requireTests-forcing and
-    // acceptance criteria (see the original single-read version's comment).
-    prisma.task
-      .findUnique({
-        where: { id: taskId },
-        select: { title: true, description: true, acceptanceCriteria: true },
-      })
-      .catch(() => null),
+    // Unavailable task inputs must not silently weaken the verification gate.
+    prisma.task.findUnique({
+      where: { id: taskId },
+      select: { title: true, description: true, acceptanceCriteria: true },
+    }),
   ]);
+  if (!taskRow) throw new Error('Verification task inputs are unavailable');
   const taskText = taskRow ? `${taskRow.title}\n${taskRow.description ?? ''}` : '';
   const acceptanceCriteria = taskRow ? resolveAcceptanceCriteria(taskRow) : [];
   return {
@@ -295,23 +252,12 @@ export async function handleRunVerification(ctx: RunVerificationContext) {
     };
 
     const keyBefore = await computeVerificationCacheKey(cacheInputsBefore);
-    if (keyBefore) {
-      const cached = resultCache.get(taskId);
-      if (cached && cached.key === keyBefore && Date.now() - cached.at < CACHE_TTL_MS) {
-        log.info(
-          { taskId, ageMs: Date.now() - cached.at },
-          '[self-verification] returning cached result — verification identity unchanged',
-        );
-        return { ...cached.response, cached: true };
-      }
-    }
-
     const result = await runAutomatedVerification(session.worktreePath, verificationOptions);
     log.info(
       { taskId, ok: result.ok, checks: result.checks.length },
       '[self-verification] gate run complete',
     );
-    const response: CachedVerificationResponse = {
+    const response: VerificationResponse = {
       success: true,
       ok: result.ok,
       summary: result.summary,
@@ -329,13 +275,18 @@ export async function handleRunVerification(ctx: RunVerificationContext) {
     // DB-side input changes).
     const cacheInputsAfter = await buildCacheInputs(taskId, session.worktreePath);
     const keyAfter = await computeVerificationCacheKey(cacheInputsAfter);
-    if (keyBefore && keyBefore === keyAfter) {
-      resultCache.set(taskId, { key: keyBefore, at: Date.now(), response });
-    } else {
-      log.warn(
-        { taskId, hadKeyBefore: !!keyBefore, hadKeyAfter: !!keyAfter },
-        '[self-verification] worktree/identity changed during verification (or identity unavailable) — result not cached',
-      );
+    if (!keyBefore || !keyAfter || keyBefore !== keyAfter) {
+      return {
+        ...response,
+        ok: false,
+        unverifiable: true,
+        summary:
+          'Verification inputs changed or could not be identified; verification is unconfirmed.',
+        markdown:
+          '# Verification unconfirmed\nInputs changed or could not be identified during this run.\n\n' +
+          response.markdown,
+        cached: false,
+      };
     }
     return { ...response, cached: false };
   } catch (err) {

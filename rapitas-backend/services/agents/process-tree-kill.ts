@@ -151,6 +151,9 @@ export function collectKillTargets(
     }
   }
 
+  // Apply ancestry protection to the final set, including BFS/cyclic snapshots.
+  for (const pid of collectAncestors(snapshot, process.pid)) targets.delete(pid);
+  for (const pid of collectAncestors(snapshot, rootPid)) targets.delete(pid);
   targets.delete(rootPid);
   targets.delete(process.pid); // never self-terminate the backend
   return targets;

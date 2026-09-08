@@ -42,7 +42,7 @@ const base: ExecutionBodyProps = {
 
 afterEach(() => vi.unstubAllGlobals());
 
-it.each(['isRunning', 'isCompleted', 'isCancelled', 'isInterrupted', 'isFailed'] as const)(
+it.each(['idle', 'isRunning', 'isCompleted', 'isCancelled', 'isInterrupted', 'isFailed'] as const)(
   'loads saved planning output with empty live logs when %s',
   async (flag) => {
     const fetchMock = vi.fn(async (url: string) => ({
@@ -81,7 +81,7 @@ it.each(['isRunning', 'isCompleted', 'isCancelled', 'isInterrupted', 'isFailed']
           : { success: true, logs: [{ logChunk: 'Saved planning execution output' }] },
     }));
     vi.stubGlobal('fetch', fetchMock);
-    render(<ExecutionBody {...base} {...{ [flag]: true }} />);
+    render(<ExecutionBody {...base} {...(flag === 'idle' ? {} : { [flag]: true })} />);
     expect(await screen.findByText(/Saved planning execution output/)).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/executions/3865/logs'));
   },

@@ -117,7 +117,11 @@ beforeEach(() => {
   diffCallCount = 0;
   gitUntrackedOutput = '';
   findFirstMock.mockImplementation(async () => ({ worktreePath: 'C:/wt/task-1' }));
-  taskFindUniqueMock.mockImplementation(async () => null);
+  taskFindUniqueMock.mockImplementation(async () => ({
+    title: 'Feature',
+    description: '',
+    acceptanceCriteria: null,
+  }));
   runAutomatedVerificationMock.mockImplementation(async () => ({
     ok: true,
     summary: 'ok',
@@ -190,18 +194,6 @@ describe('handleRunVerification', () => {
     expect(opts.acceptanceCriteria).toBeUndefined();
   });
 
-  it('runs the gate with defaults when the task row cannot be loaded', async () => {
-    taskFindUniqueMock.mockImplementation(async () => {
-      throw new Error('db down');
-    });
-    const res = await handleRunVerification(ctx('7'));
-    expect(res).toMatchObject({ success: true, ok: true });
-    expect(runAutomatedVerificationMock).toHaveBeenCalledWith(
-      'C:/wt/task-1',
-      expect.objectContaining({ requireTests: false }),
-    );
-  });
-
   it('passes a failing gate result through as ok:false (not an error)', async () => {
     runAutomatedVerificationMock.mockImplementation(async () => ({
       ok: false,
@@ -252,35 +244,24 @@ describe('handleRunVerification', () => {
 
   describe('回帰(task897 監督差戻し): inFlight の同期予約', () => {
     it('session読み取りが保留中でも同一taskへの2件目は即429（awaitより前にinFlight予約）', async () => {
-      // Every findFirstMock invocation gets its own resolver pushed here —
-      // if the admission guard regresses and a 2nd request slips through to
-      // its own session lookup, that lookup would otherwise hang forever
-      // (only the LAST resolver would ever be reachable), turning a logic
-      // regression into a test timeout instead of a clean assertion failure.
-      const releaseSessions: Array<() => void> = [];
-      findFirstMock.mockImplementation(
+      let releaseSession!: () => void;
+      findFirstMock.mockImplementationOnce(
         () =>
           new Promise((resolve) => {
-            releaseSessions.push(() => resolve({ worktreePath: 'C:/wt/task-1' }));
+            releaseSession = () => resolve({ worktreePath: 'C:/wt/task-1' });
           }),
       );
       const first = handleRunVerification(ctx('55'));
-      // A pending session lookup used to leave inFlight.add unreached until
-      // AFTER this await resolved — a concurrent request in that window was
-      // wrongly admitted (no 429). This tick proves the reservation already
-      // happened before the session promise settles.
-      await new Promise((r) => setTimeout(r, 5));
-      const c2 = ctx('55');
-      const res2 = await handleRunVerification(c2);
-      expect(c2.set.status).toBe(429);
-      expect(res2).toMatchObject({ success: false });
-      // Only ONE session lookup should ever have been started — the second
-      // request must be rejected by the inFlight guard before it reaches
-      // this await at all.
-      expect(findFirstMock).toHaveBeenCalledTimes(1);
-      releaseSessions.forEach((release) => release());
-      const res1 = await first;
-      expect(res1).toMatchObject({ success: true });
+      const secondContext = ctx('55');
+      try {
+        const second = await handleRunVerification(secondContext);
+        expect(secondContext.set.status).toBe(429);
+        expect(second).toMatchObject({ success: false });
+        expect(findFirstMock).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseSession();
+        await first;
+      }
     });
 
     it('404(worktreeなし)応答の直後は同一taskへの再要求が429で固着しない', async () => {
@@ -299,7 +280,7 @@ describe('handleRunVerification', () => {
   });
 
   describe('result cache (content-aware identity)', () => {
-    it('returns the cached result without re-running the gate when the identity is unchanged', async () => {
+    it('runs a fresh gate even when Git and task inputs are unchanged', async () => {
       const c1 = ctx('101');
       const res1 = await handleRunVerification(c1);
       expect(res1).toMatchObject({ success: true, ok: true, cached: false });
@@ -307,9 +288,9 @@ describe('handleRunVerification', () => {
 
       const c2 = ctx('101');
       const res2 = await handleRunVerification(c2);
-      expect(res2).toMatchObject({ success: true, ok: true, cached: true });
-      // Gate was not invoked again — the cached response was served instead.
-      expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(1);
+      expect(res2).toMatchObject({ success: true, ok: true, cached: false });
+      // The same fingerprint still requires a fresh verification.
+      expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(2);
     });
 
     it('re-runs the gate when HEAD changes between requests', async () => {
@@ -340,8 +321,14 @@ describe('handleRunVerification', () => {
       runGitCommandMock.mockImplementation(async () => {
         throw new Error('git not found');
       });
-      await handleRunVerification(ctx('104'));
-      await handleRunVerification(ctx('104'));
+      expect(await handleRunVerification(ctx('104'))).toMatchObject({
+        ok: false,
+        unverifiable: true,
+      });
+      expect(await handleRunVerification(ctx('104'))).toMatchObject({
+        ok: false,
+        unverifiable: true,
+      });
       expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(2);
     });
 
@@ -378,7 +365,7 @@ describe('handleRunVerification', () => {
       readWorkflowFileMock.mockImplementationOnce(async () => 'plan v1');
       readWorkflowFileMock.mockImplementationOnce(async () => 'plan v2');
       const res1 = await handleRunVerification(ctx('106'));
-      expect(res1).toMatchObject({ success: true, cached: false });
+      expect(res1).toMatchObject({ success: true, ok: false, unverifiable: true, cached: false });
       expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(1);
 
       // Request 2 has a STABLE 'plan v1' identity for both its own before
@@ -512,3 +499,24 @@ describe('computeVerificationCacheKey (実git回帰: task897 監督差戻し)', 
     expect(key).toBeNull();
   });
 });
+
+for (const missing of [false, true]) {
+  it(`does not run a weakened gate when task inputs are ${missing ? 'missing' : 'unavailable'}`, async () => {
+    taskFindUniqueMock.mockImplementation(async () => {
+      if (missing) return null;
+      throw new Error('database unavailable');
+    });
+    const context = ctx(missing ? '9202' : '9201');
+    const result = await handleRunVerification(context);
+    expect(result.success).toBe(false);
+    expect(context.set.status).toBe(500);
+    expect(runAutomatedVerificationMock).not.toHaveBeenCalled();
+    taskFindUniqueMock.mockImplementation(async () => ({
+      title: 'Feature',
+      description: '',
+      acceptanceCriteria: null,
+    }));
+    expect((await handleRunVerification(context)).success).toBe(true);
+    expect(runAutomatedVerificationMock).toHaveBeenCalledTimes(1);
+  });
+}

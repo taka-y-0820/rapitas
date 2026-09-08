@@ -109,3 +109,17 @@ describe('collectKillTargets', () => {
     expect(t.has(300)).toBe(true); // 無関係な孤児は引き続き回収される（orphan sweep 非後退）
   });
 });
+
+// A stale/cyclic snapshot can place an ancestor in the BFS set, independently
+// of the workdir match. Final-set exclusion must still protect that ancestor.
+test('excludes launch ancestors from the final BFS set', () => {
+  const result = collectKillTargets(
+    [
+      { pid: 100, ppid: 50, cmd: 'app' },
+      { pid: 50, ppid: 100, cmd: 'ancestor' },
+      { pid: 101, ppid: 100, cmd: 'child' },
+    ],
+    100,
+  );
+  expect([...result]).toEqual([101]);
+});

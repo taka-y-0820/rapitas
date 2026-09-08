@@ -159,7 +159,7 @@ describe('runRuntimeSmokeCheck', () => {
   test('reports the captured exit code instead of spinning the full readyTimeout when the app crashes on launch', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'rt-check-'));
     const failScript = path.join(dir, 'fail.js');
-    // Matches ENV_FAILURE_RE so this exercises the fail-open/skip branch,
+    // Matches ENV_FAILURE_RE so this exercises the unverifiable branch,
     // which is where the exit-code diagnostic is most valuable — an
     // implementer cannot fix a worktree environment failure, but they can
     // use the exit code to tell it apart from a genuinely hung health check.
@@ -179,7 +179,8 @@ describe('runRuntimeSmokeCheck', () => {
     const result = await runRuntimeSmokeCheck(dir, 'diag-test');
     expect(result).not.toBeNull();
     expect(result!.ran).toBe(false);
-    expect(result!.ok).toBe(true);
+    expect(result!.ok).toBe(false);
+    expect(result!.unverifiable).toBe(true);
     expect(result!.details).toContain('exitCode=7');
     // The early-exit short-circuit must fire well before the 20s readyTimeout.
     expect(Date.now() - start).toBeLessThan(15_000);
