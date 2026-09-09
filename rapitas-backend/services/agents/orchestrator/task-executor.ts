@@ -360,9 +360,7 @@ async function buildTaskWithContext(
   return taskWithAnalysis;
 }
 
-// NOTE: FallbackContext / executeWithFallbackAgent moved verbatim to
-// fallback-executor.ts (file-size ratchet) and instrumented there with
-// recovery-metrics recording (task 641). Behavior is unchanged.
+// Provider fallback and recovery metrics are handled in fallback-executor.ts.
 
 /**
  * Merge the primary agent's CLI segment time into a fallback result.
@@ -613,6 +611,8 @@ export async function executeTask(
           agentConfig,
         );
 
+        if (fallbackResult.result.failureType === 'cancelled')
+          r = mergeFallbackSegmentTime(r, fallbackResult.result);
         if (fallbackResult.newAgentConfig) {
           // NOTE: keep the primary run's CLI segment time — replacing the
           // result wholesale would discard it and under-record executionTimeMs.

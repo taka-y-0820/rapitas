@@ -59,12 +59,44 @@ mock.module('../../../config/logger', () => ({
 
 const { executeWithFallbackAgent } = await import('./fallback-executor');
 
-const FALLBACK_CTX = { options: { taskId: 612 } } as unknown as FallbackContext;
+const runningExecution = async () => ({ status: 'running', session: { status: 'active' } });
+const FALLBACK_CTX = {
+  options: { taskId: 612 },
+  execution: { id: 1 },
+  state: { status: 'running' },
+  ctx: { prisma: { agentExecution: { findUnique: runningExecution } } },
+} as unknown as FallbackContext;
 const ORIGINAL_AGENT_CONFIG = {
   type: 'claude-code',
   name: 'primary',
   modelId: 'sonnet',
 } as unknown as AgentConfigInput;
+
+test('durable cancellation prevents provider classification and fallback startup', async () => {
+  findFallbackAgentConfigMock.mockClear();
+  findFallbackAgentConfigMock.mockImplementation(async () => null);
+  const stopped = {
+    ctx: {
+      prisma: {
+        agentExecution: {
+          findUnique: async () => ({ status: 'cancelled', session: { status: 'cancelled' } }),
+        },
+      },
+    },
+    execution: { id: 3947 },
+    state: { status: 'running' },
+    options: { taskId: 913, sessionId: 4013 },
+    fileLogger: { logWarn: () => {} },
+  } as unknown as FallbackContext;
+  const result = await executeWithFallbackAgent(
+    stopped,
+    'gemini rate limit 429',
+    ORIGINAL_AGENT_CONFIG,
+  );
+  expect(findFallbackAgentConfigMock).not.toHaveBeenCalled();
+  expect(result.result.failureType).toBe('cancelled');
+  expect(result.fallbackSucceeded).toBe(false);
+});
 
 describe('executeWithFallbackAgent — no_candidate診断のfire-and-forget', () => {
   beforeEach(() => {
@@ -118,7 +150,7 @@ const FALLBACK_CTX_RETRY = {
       modelId: null,
     }),
     emitEvent: () => {},
-    prisma: { agentExecution: { update: async () => {} } },
+    prisma: { agentExecution: { update: async () => {}, findUnique: runningExecution } },
   },
   execution: { id: 1 },
   state: { output: '' },
@@ -140,6 +172,34 @@ describe('executeWithFallbackAgent — retryEvidence は成功時に output 全�
     classifyAgentErrorMock.mockImplementation(() => null);
     recordRecoveryAttemptMock.mockClear();
     createAgentMock.mockClear();
+  });
+
+  test('stop during fallback configuration prevents the prepared agent from executing', async () => {
+    let cancelled = false;
+    const execute = mock(async () => ({ success: true }));
+    createAgentMock.mockImplementation(() => ({ id: 'stopped-fallback', execute }));
+    const context = {
+      ...FALLBACK_CTX_RETRY,
+      fileLogger: { logOutput: () => {}, logWarn: () => {} },
+      ctx: {
+        ...FALLBACK_CTX_RETRY.ctx,
+        prisma: {
+          agentExecution: {
+            findUnique: async () => ({
+              status: cancelled ? 'cancelled' : 'running',
+              session: { status: 'active' },
+            }),
+            update: async () => {
+              cancelled = true;
+            },
+          },
+        },
+      },
+    } as unknown as FallbackContext;
+    const result = await executeWithFallbackAgent(context, '429 rate limit', ORIGINAL_AGENT_CONFIG);
+    expect(execute).not.toHaveBeenCalled();
+    expect(result.result.failureType).toBe('cancelled');
+    expect(result.fallbackSucceeded).toBe(false);
   });
 
   test('成功+errorMessage無し+output本文に429を含む場合、classifyAgentErrorは呼ばれずfallbackSucceededはtrue', async () => {
