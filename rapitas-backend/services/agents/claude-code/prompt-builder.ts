@@ -5,6 +5,7 @@
  * Not responsible for spawning processes or parsing output.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { AgentTask } from '../base-agent';
 import { createLogger } from '../../../config/logger';
 
@@ -44,7 +45,10 @@ export function buildStructuredPrompt(task: AgentTask, workDir: string, logPrefi
  * @returns Simple prompt string / シンプルなプロンプト文字列
  */
 function buildSimplePrompt(task: AgentTask, workDir: string): string {
+  const transportPath = `${workDir}/.wf-${randomUUID()}.md`;
   const basePrompt = task.description || task.title;
+  const freshnessRule =
+    'Create a new report from the current code and current task requirements in this run before uploading. Never upload an existing transport file or copy a previous report unchanged; interrupted or rejected reports are stale evidence. The transport path below is unique to this invocation.';
   const port = process.env.PORT || '3001';
   const workflowInstructions = [
     `\n\n## Working Directory`,
@@ -53,6 +57,7 @@ function buildSimplePrompt(task: AgentTask, workDir: string): string {
     ``,
     `## Workflow Steps`,
     `Please execute the task in the following order. **research/question/plan/verify are NOT files — each is a DB row (WorkflowFile.content), saved exclusively via the API below. There is no research.md/plan.md/verify.md on disk; do not refer to them as files when narrating progress ("DBに保存しました", not "research.mdを保存しました").**`,
+    freshnessRule,
     `1. Research → record findings to the DB (fileType=research)`,
     `   - **調査は時間を区切る**: 問題を理解できる程度に調べたら、すぐ調査結果をDBに保存して次へ進む。完全に原因特定できなくても、現時点の所見・仮説・未解明点を保存すること（延々と grep/read を繰り返さない）。`,
     `   - **調査で Task/Agent（サブエージェント）を起動しない**: 自分で直接調べる。サブエージェントは時間とトークンを浪費する。`,
@@ -66,12 +71,13 @@ function buildSimplePrompt(task: AgentTask, workDir: string): string {
     `5. Record verification results to the DB (fileType=verify)`,
     ``,
     `**保存API（UTF-8厳守）— 実体はDB行、一時ファイルは送信用の使い捨て器にすぎない**:`,
-    `1. 保存内容を Write ツールで UTF-8 の一時ファイルに書き出す（例: \`${workDir}/.wf-tmp.md\`。プロジェクトルートには作らない。このファイルはHTTPリクエストボディを渡すためだけの使い捨てで、保存の実体ではない）`,
-    `2. 生ファイルを送信: \`curl.exe -X PUT http://127.0.0.1:${port}/workflow/tasks/${task.id}/files/<research|question|plan|verify> -H "Content-Type: text/markdown; charset=utf-8" --data-binary @${workDir}/.wf-tmp.md\` — この呼び出しでDBの WorkflowFile 行に保存される（これが唯一の永続化先）`,
+    freshnessRule,
+    `1. 保存内容を Write ツールで UTF-8 の一時ファイルに書き出す（例: \`${transportPath}\`。プロジェクトルートには作らない。このファイルはHTTPリクエストボディを渡すためだけの使い捨てで、保存の実体ではない）`,
+    `2. 生ファイルを送信: \`curl.exe -X PUT http://127.0.0.1:${port}/workflow/tasks/${task.id}/files/<research|question|plan|verify> -H "Content-Type: text/markdown; charset=utf-8" --data-binary @${transportPath}\` — この呼び出しでDBの WorkflowFile 行に保存される（これが唯一の永続化先）`,
     `3. 2xx 応答を確認できたらDB保存は完了。一時ファイルは役目を終えたので削除する（削除してもDBの内容には一切影響しない）`,
     `- **重要**: Windows では PowerShell のパイプや \`-d\` のインライン文字列で curl に渡さない（既定の US-ASCII で日本語が "?" に化ける）。必ず上記の一時ファイル+\`--data-binary\` 方式・\`curl.exe\` を使う。`,
     `- 文字化け("?"置換)を検出すると保存APIは HTTP 422 で拒否する。その場合は UTF-8 で再送信する。`,
-    `- **2xx を確認したら、同じ fileType を再送信しない。** パス区切り文字（\`C:\\\\...\` と \`/c/...\`）を変えて2回叩くようなリトライは不要かつ有害 — 2回目は状態遷移済みのため 400 で拒否されるか、無駄な二重リクエストになるだけ。1回目の \`--data-binary @${workDir}/.wf-tmp.md\`（バックスラッシュ区切りのままでよい）で 2xx が返れば、それ以上の確認や再送信は不要。`,
+    `- **2xx を確認したら、同じ fileType を再送信しない。** パス区切り文字（\`C:\\\\...\` と \`/c/...\`）を変えて2回叩くようなリトライは不要かつ有害 — 2回目は状態遷移済みのため 400 で拒否されるか、無駄な二重リクエストになるだけ。1回目の \`--data-binary @${transportPath}\`（バックスラッシュ区切りのままでよい）で 2xx が返れば、それ以上の確認や再送信は不要。`,
     ``,
     `## Question Format (MANDATORY)`,
     `When asking questions via AskUserQuestion, you MUST provide multiple-choice options.`,
@@ -99,7 +105,10 @@ function buildSimplePrompt(task: AgentTask, workDir: string): string {
  * @returns Detailed structured prompt string / 詳細な構造化プロンプト文字列
  */
 function buildAnalysisPrompt(task: AgentTask, workDir: string): string {
+  const transportPath = `${workDir}/.wf-${randomUUID()}.md`;
   const analysis = task.analysisInfo!;
+  const freshnessRule =
+    'Create a new report from the current code and current task requirements in this run before uploading. Never upload an existing transport file or copy a previous report unchanged; interrupted or rejected reports are stale evidence. The transport path below is unique to this invocation.';
   const port = process.env.PORT || '3001';
 
   // Priority label mapping
@@ -237,10 +246,11 @@ function buildAnalysisPrompt(task: AgentTask, workDir: string): string {
   sections.push('');
   sections.push('**Procedure (per record):**');
   sections.push(
-    `1. Write the markdown to a UTF-8 temp file with your Write tool inside the working directory (e.g. \`${workDir}/.wf-tmp.md\`) — NOT in the project root. This file is a disposable transport container for the HTTP request body, not the persisted artifact.`,
+    freshnessRule,
+    `1. Write the markdown to a UTF-8 temp file with your Write tool inside the working directory (e.g. \`${transportPath}\`) — NOT in the project root. This file is a disposable transport container for the HTTP request body, not the persisted artifact.`,
   );
   sections.push(
-    `2. Send the raw file as the body: \`curl.exe -X PUT http://127.0.0.1:${port}/workflow/tasks/${task.id}/files/<research|question|plan|verify> -H "Content-Type: text/markdown; charset=utf-8" --data-binary @${workDir}/.wf-tmp.md\` — this call is what actually persists the content, to the WorkflowFile DB row.`,
+    `2. Send the raw file as the body: \`curl.exe -X PUT http://127.0.0.1:${port}/workflow/tasks/${task.id}/files/<research|question|plan|verify> -H "Content-Type: text/markdown; charset=utf-8" --data-binary @${transportPath}\` — this call is what actually persists the content, to the WorkflowFile DB row.`,
   );
   sections.push(
     '3. Once you see a 2xx response, the DB save is complete. Delete the temp file — it has served its purpose and its deletion has no effect on the saved DB content.',
