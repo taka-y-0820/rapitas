@@ -172,6 +172,7 @@ export class AutoRestartMergedCodeScheduler {
     }
 
     const snapshot = await getAgentSystemSnapshot();
+    if (snapshot.activeExecutionsDegraded) return false;
     const lastRestartAt = readLastRestartAt();
     const decision = decideAutoRestart({
       aheadCount,
@@ -205,6 +206,7 @@ export class AutoRestartMergedCodeScheduler {
     // base), so a skipped restart is retried, not lost.
     const recheck = await getAgentSystemSnapshot();
     if (
+      recheck.activeExecutionsDegraded ||
       recheck.isShuttingDown ||
       recheck.activeExecutions > 0 ||
       recheck.runningExecutions > 0 ||
@@ -272,6 +274,7 @@ export class AutoRestartMergedCodeScheduler {
       if (aheadCount === null || aheadCount <= 0) return false;
 
       const snapshot = await getAgentSystemSnapshot();
+      if (snapshot.activeExecutionsDegraded) return false;
       const lastRestartAt = readLastRestartAt();
       const lastUiAt = getLastUiRequestAt();
       const deferCount = readDeferCount();
@@ -316,6 +319,17 @@ export class AutoRestartMergedCodeScheduler {
       if (!(await fastForwardToRemote(branch))) {
         return false;
       }
+      const recheck = await getAgentSystemSnapshot();
+      if (
+        recheck.activeExecutionsDegraded ||
+        recheck.isShuttingDown ||
+        recheck.activeExecutions > 0 ||
+        recheck.runningExecutions > 0 ||
+        recheck.queueDepth > 0 ||
+        countLiveTrackedProcesses('cli-agent') > 0 ||
+        AutoMergeWatcher.getInstance().isMerging()
+      )
+        return false;
       await createNotification({
         type: 'system',
         title: '自動再起動',

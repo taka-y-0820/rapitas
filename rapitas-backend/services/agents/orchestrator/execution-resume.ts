@@ -27,9 +27,12 @@ import {
 } from './execution-helpers';
 import { buildResumePrompt, resolveAgentConfig } from './resume-helpers';
 import { buildShutdownErrorMessage } from './shutdown-error';
+import { ExecutionCancelledError } from '../execution-cancelled-error';
+import { transitionResumedExecution } from './resume-state-transition';
 import { withLlmCallScope, getLlmCallCount } from '../../../utils/llm-call-context';
 import {
   acquireTaskExecutionLock,
+  getTaskExecutionLockOwner,
   releaseTaskExecutionLock,
   WORKFLOW_LOCK_TTL_MS,
 } from '../task-execution-lock';
@@ -96,6 +99,13 @@ export async function resumeInterruptedExecution(
   if (!acquireTaskExecutionLock(taskId, WORKFLOW_LOCK_TTL_MS)) {
     throw new ResumeLockConflictError(taskId);
   }
+  const lockOwner = getTaskExecutionLockOwner(taskId);
+  const assertOwnership = () => {
+    options.assertExecutionAllowed?.();
+    if (!lockOwner || getTaskExecutionLockOwner(taskId) !== lockOwner) {
+      throw new ExecutionCancelledError(`Resume execution ${executionId} lost its task lease`);
+    }
+  };
 
   try {
     // CRITICAL: Require explicit workingDirectory to prevent accidental modification of rapitas source
@@ -165,6 +175,7 @@ export async function resumeInterruptedExecution(
       );
     }
 
+    assertOwnership();
     const agent = agentFactory.createAgent(agentConfig);
 
     const fileLogger = new ExecutionFileLogger(
@@ -206,80 +217,81 @@ export async function resumeInterruptedExecution(
     };
     ctx.activeAgents.set(execution.id, agentInfo);
 
-    if (ctx.isShuttingDown) {
-      ctx.activeAgents.delete(execution.id);
-      ctx.activeExecutions.delete(execution.id);
-      const shutdownMsg = buildShutdownErrorMessage('resume execution');
-      fileLogger.logWarn(shutdownMsg);
-      await fileLogger.flush();
-      throw new Error(shutdownMsg);
-    }
+    let cleanupLogHandler: (() => Promise<void>) | undefined;
+    try {
+      if (ctx.isShuttingDown) {
+        ctx.activeAgents.delete(execution.id);
+        ctx.activeExecutions.delete(execution.id);
+        const shutdownMsg = buildShutdownErrorMessage('resume execution');
+        fileLogger.logWarn(shutdownMsg);
+        throw new Error(shutdownMsg);
+      }
 
-    setupQuestionDetectedHandler(agent, {
-      prisma: ctx.prisma,
-      executionId: execution.id,
-      sessionId: execution.sessionId,
-      taskId,
-      state,
-      fileLogger,
-      existingClaudeSessionId: execution.claudeSessionId,
-      emitEvent: (event) => ctx.emitEvent(event),
-      startQuestionTimeout: (eid, tid, qk) => ctx.startQuestionTimeout(eid, tid, qk),
-      getQuestionTimeoutInfo: (eid) => ctx.getQuestionTimeoutInfo(eid),
-    });
-
-    const existingLogs = await ctx.prisma.agentExecutionLog.findMany({
-      where: { executionId: execution.id },
-      orderBy: { sequenceNumber: 'desc' },
-      take: 1,
-    });
-
-    const logManager = createLogChunkManager({
-      prisma: ctx.prisma,
-      executionId: execution.id,
-      initialSequenceNumber: existingLogs.length > 0 ? existingLogs[0].sequenceNumber + 1 : 0,
-    });
-
-    const cleanupLogHandler = logManager.cleanup;
-
-    setupOutputHandler(
-      agent,
-      {
+      setupQuestionDetectedHandler(agent, {
         prisma: ctx.prisma,
         executionId: execution.id,
         sessionId: execution.sessionId,
         taskId,
         state,
-        agentInfo,
         fileLogger,
-        onOutput: options.onOutput,
+        existingClaudeSessionId: execution.claudeSessionId,
         emitEvent: (event) => ctx.emitEvent(event),
-      },
-      logManager,
-    );
+        startQuestionTimeout: (eid, tid, qk) => ctx.startQuestionTimeout(eid, tid, qk),
+        getQuestionTimeoutInfo: (eid) => ctx.getQuestionTimeoutInfo(eid),
+      });
 
-    const resumeMessage = `\n[再開] 中断された作業を再開します...\n`;
-    state.output += resumeMessage;
+      const existingLogs = await ctx.prisma.agentExecutionLog.findMany({
+        where: { executionId: execution.id },
+        orderBy: { sequenceNumber: 'desc' },
+        take: 1,
+      });
+      assertOwnership();
 
-    await ctx.prisma.agentExecution.update({
-      where: { id: execution.id },
-      data: {
-        status: 'running',
-        errorMessage: null,
-        output: state.output,
-      },
-    });
+      const logManager = createLogChunkManager({
+        prisma: ctx.prisma,
+        executionId: execution.id,
+        initialSequenceNumber: existingLogs.length > 0 ? existingLogs[0].sequenceNumber + 1 : 0,
+      });
 
-    ctx.emitEvent({
-      type: 'execution_started',
-      executionId: execution.id,
-      sessionId: execution.sessionId,
-      taskId,
-      data: { resumed: true },
-      timestamp: new Date(),
-    });
+      cleanupLogHandler = logManager.cleanup;
 
-    try {
+      setupOutputHandler(
+        agent,
+        {
+          prisma: ctx.prisma,
+          executionId: execution.id,
+          sessionId: execution.sessionId,
+          taskId,
+          state,
+          agentInfo,
+          fileLogger,
+          onOutput: options.onOutput,
+          emitEvent: (event) => ctx.emitEvent(event),
+        },
+        logManager,
+      );
+
+      const resumeMessage = `\n[再開] 中断された作業を再開します...\n`;
+      state.output += resumeMessage;
+
+      await transitionResumedExecution(
+        ctx.prisma,
+        execution.id,
+        taskId,
+        state.output,
+        assertOwnership,
+      );
+      assertOwnership();
+
+      ctx.emitEvent({
+        type: 'execution_started',
+        executionId: execution.id,
+        sessionId: execution.sessionId,
+        taskId,
+        data: { resumed: true },
+        timestamp: new Date(),
+      });
+
       const agentTask: AgentTask = {
         id: taskId,
         title: task.title,
@@ -288,6 +300,7 @@ export async function resumeInterruptedExecution(
       };
 
       const result = await withLlmCallScope(async () => {
+        assertOwnership();
         let r = await agent.execute(agentTask);
 
         // Merge Tier 2 (ALS sendAIMessage calls) into Tier 1 (CLI num_turns)
@@ -297,6 +310,7 @@ export async function resumeInterruptedExecution(
         }
         return r;
       });
+      assertOwnership();
 
       await saveExecutionResult(
         ctx.prisma,
@@ -314,12 +328,17 @@ export async function resumeInterruptedExecution(
           peakRssKb: execution.peakRssKb,
         },
       );
+      assertOwnership();
       emitResultEvent(result, execution.id, execution.sessionId, taskId, (event) =>
         ctx.emitEvent(event),
       );
 
       return result;
     } catch (error) {
+      if (error instanceof ExecutionCancelledError) {
+        fileLogger.logWarn(error.message);
+        throw error;
+      }
       await handleExecutionError(
         ctx.prisma,
         execution.id,
@@ -333,14 +352,22 @@ export async function resumeInterruptedExecution(
       );
       throw error;
     } finally {
-      await cleanupLogHandler();
-      await fileLogger.flush();
-      ctx.activeExecutions.delete(execution.id);
-      ctx.activeAgents.delete(execution.id);
-      await agentFactory.removeAgent(agent.id);
+      try {
+        await cleanupLogHandler?.();
+      } finally {
+        try {
+          await fileLogger.flush();
+        } finally {
+          if (ctx.activeExecutions.get(execution.id) === state)
+            ctx.activeExecutions.delete(execution.id);
+          if (ctx.activeAgents.get(execution.id) === agentInfo)
+            ctx.activeAgents.delete(execution.id);
+          await agentFactory.removeAgent(agent.id);
+        }
+      }
     }
   } finally {
-    releaseTaskExecutionLock(taskId);
+    releaseTaskExecutionLock(taskId, lockOwner);
   }
 }
 

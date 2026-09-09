@@ -33,9 +33,11 @@ const mockOrchestrator = {
   isInShutdown: mock(() => false),
   // Consumed by services/agents/resumable-execution/current-active-task-ids.ts
   // (getAgentSystemSnapshot()'s resumable-interrupted computation).
-  getActiveExecutionIdsAsync: mock(() => Promise.resolve([])),
+  getActiveExecutionIdsAsync: mock((): Promise<number[]> => Promise.resolve([])),
   getActiveExecutions: mock(() => []),
 };
+
+let mainActiveIds: number[] = [];
 
 const mockRealtimeService = {
   broadcast: mock(() => {}),
@@ -64,7 +66,9 @@ mock.module('../../../services/core/orchestrator-instance', () => ({
 mock.module('../../../routes/agents/approvals', () => ({ orchestrator: mockOrchestrator }));
 mock.module('../../../services/agents/agent-orchestrator', () => ({
   AgentOrchestrator: {
-    getInstance: () => ({ getActiveAgentInfos: () => [] }),
+    getInstance: () => ({
+      getActiveAgentInfos: () => mainActiveIds.map((executionId) => ({ executionId })),
+    }),
   },
 }));
 mock.module('../../../utils/common/encryption', () => ({
@@ -201,6 +205,7 @@ describe('Agent System Router', () => {
       expect(Object.keys(data).sort()).toEqual(
         [
           'activeExecutions',
+          'activeExecutionsDegraded',
           'activePreviewCount',
           'interruptedExecutions',
           'interruptedExecutionsHistoryCount',
@@ -230,6 +235,10 @@ describe('Agent System Router', () => {
       // this file mounts a single module-level mockOrchestrator/mockPrisma shared
       // across every describe block, so leaking an override would corrupt later tests.
       afterEach(() => {
+        mainActiveIds = [];
+        mockOrchestrator.getActiveExecutionIdsAsync = mock(
+          (): Promise<number[]> => Promise.resolve([]),
+        );
         mockOrchestrator.isInShutdown = mock(() => false);
         mockOrchestrator.getActiveExecutionCountAsync = mock(() => Promise.resolve(0));
         mockPrisma.agentExecution.count = mock(() => Promise.resolve(0));
@@ -253,7 +262,7 @@ describe('Agent System Router', () => {
       });
 
       it("reports 'busy' when there are active executions", async () => {
-        mockOrchestrator.getActiveExecutionCountAsync = mock(() => Promise.resolve(2));
+        mockOrchestrator.getActiveExecutionIdsAsync = mock(() => Promise.resolve([1, 2]));
 
         const response = await app.handle(new Request('http://localhost/agents/system-status'));
         const data = (await response.json()) as SystemStatusResponse;
@@ -327,14 +336,27 @@ describe('Agent System Router', () => {
         expect(data.queueDepth).toBe(7);
       });
 
+      for (const workerIds of [[], [11], [12]]) {
+        it(`counts main and worker IDs without duplication: ${workerIds}`, async () => {
+          mainActiveIds = [11];
+          mockOrchestrator.getActiveExecutionIdsAsync = mock(() => Promise.resolve(workerIds));
+          const response = await app.handle(new Request('http://localhost/agents/system-status'));
+          const data = await response.json();
+          expect(data.activeExecutions).toBe(new Set([11, ...workerIds]).size);
+          expect(data.activeExecutionsDegraded).toBe(false);
+          expect(data.status).toBe('busy');
+          expect(mockOrchestrator.getActiveExecutionIdsAsync).toHaveBeenCalledTimes(1);
+        });
+      }
+
       // Regression: right after every restart, the worker subprocess isn't
       // ready yet — sendIPCRequest throws 'Worker not ready' for the first
       // few seconds. This endpoint is polled by the frontend on a timer, so
       // it always lands in that window at least once per restart. Without a
       // fallback, that expected transient condition propagated as an
       // "Unhandled error" logged at ERROR level on every single restart.
-      it('falls back to the cached sync count (200, not 500) when the worker is not ready yet', async () => {
-        mockOrchestrator.getActiveExecutionCountAsync = mock(() =>
+      it('reports unknown (200, not healthy) when the worker is not ready yet', async () => {
+        mockOrchestrator.getActiveExecutionIdsAsync = mock(() =>
           Promise.reject(new Error('Worker not ready')),
         );
         mockOrchestrator.getActiveExecutionCount = mock(() => 0);
@@ -343,7 +365,8 @@ describe('Agent System Router', () => {
         expect(response.status).toBe(200);
         const data = (await response.json()) as SystemStatusResponse;
         expect(data.activeExecutions).toBe(0);
-        expect(data.status).toBe('healthy');
+        expect(data.activeExecutionsDegraded).toBe(true);
+        expect(data.status).toBe('active_executions_unknown');
       });
     });
   });

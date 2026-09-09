@@ -33,6 +33,7 @@ interface HealthSnapshot {
   database?: string;
   uptimeSeconds?: number;
   activeExecutions?: number;
+  activeExecutionsDegraded?: boolean;
   runningExecutions?: number;
   interruptedExecutions?: number;
   interruptedExecutionsDegraded?: boolean;
@@ -76,6 +77,7 @@ const PILL_STYLES: Record<PillStatus, string> = {
 function derivePillStatus(data: HealthSnapshot | null): PillStatus {
   if (!data) return 'unhealthy';
   if (data.status === 'unhealthy') return 'unhealthy';
+  if (data.activeExecutionsDegraded) return 'unknown';
   if (data.interruptedExecutionsDegraded) return 'unknown';
   if (data.status === 'shutting_down') return 'shutting_down';
   if ((data.interruptedExecutions ?? 0) > 0) return 'interrupted';
