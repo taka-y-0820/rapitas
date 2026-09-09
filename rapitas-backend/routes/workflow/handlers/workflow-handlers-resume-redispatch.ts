@@ -9,7 +9,6 @@
  * fail the caller's own response.
  */
 
-import { prisma } from '../../../config';
 import { createLogger } from '../../../config';
 import { resolveTaskThemeId } from '../../../services/task/task-resolver';
 import { WorkflowQueueService } from '../../../services/workflow/workflow-queue';
@@ -31,10 +30,9 @@ const log = createLogger('routes:workflow:resume');
  * phase-completion message, which always claims "次のフェーズへ自動で進みます"
  * for the researcher phase regardless of whether it ended in a question.
  *
- * Reuses the SAME agent config the task's last execution used (falls back to
- * the execute route's own default-agent resolution when none is found).
+ * Uses workflow role selection and existing artifact reuse for manual resumes.
  * Active AutoRun themes use the scheduler queue and refresh the claim only
- * after enqueue succeeds. Other themes use the manual route. Errors remain
+ * after enqueue succeeds. Other themes advance the workflow directly. Errors remain
  * best-effort and never undo the already persisted answer.
  *
  * @param taskId - Task whose question was just answered. / 回答されたタスクID
@@ -51,48 +49,20 @@ export async function triggerReExecutionAfterAnswer(taskId: number): Promise<voi
       return;
     }
 
-    // NOTE: A task run through the workflow CLI executor (research/plan/verify
-    // phases) never gets an AgentExecution row via this session→config chain —
-    // that relation is populated by a different execution path. Task 513
-    // (research already ran, a mid-research question paused it, answered,
-    // never resumed) had zero AgentExecution rows despite research.md
-    // existing, proving lastExecution is null for exactly the common case
-    // this function exists to handle. Previously this returned early here,
-    // silently skipping the re-run entirely — contradicting this function's
-    // own doc comment, which already promised execute-route's default-agent
-    // resolution as the fallback. Proceed with agentConfigId left undefined
-    // instead so that fallback actually runs.
-    const lastExecution = await prisma.agentExecution.findFirst({
-      where: { session: { config: { taskId } } },
-      orderBy: { createdAt: 'desc' },
-      select: { agentConfigId: true },
-    });
-    if (!lastExecution) {
-      log.info(
-        { taskId },
-        '[Workflow:Answer] No prior execution found for this task — re-running with the default agent config',
-      );
-    }
-
-    const port = process.env.PORT || '3001';
-    const apiToken = process.env.RAPITAS_API_TOKEN;
-    const res = await fetch(`http://127.0.0.1:${port}/tasks/${taskId}/execute`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(apiToken ? { Authorization: `Bearer ${apiToken}` } : {}),
-      },
-      body: JSON.stringify({ agentConfigId: lastExecution?.agentConfigId ?? undefined }),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      log.warn(
-        { taskId, status: res.status, body },
-        '[Workflow:Answer] Auto re-run request was rejected — task remains draft until manually re-run',
-      );
-      return;
-    }
-    log.info({ taskId }, '[Workflow:Answer] Auto re-run triggered after question answer');
+    // An answered workflow question must retain role selection and artifact
+    // reuse. The generic execute route replays the task description instead.
+    const { WorkflowOrchestrator } =
+      await import('../../../services/workflow/workflow-orchestrator');
+    void WorkflowOrchestrator.getInstance()
+      .advanceWorkflow(taskId)
+      .then((result) => {
+        if (!result.success)
+          log.warn({ taskId, result }, '[Workflow:Answer] Workflow resume failed');
+      })
+      .catch((err) => {
+        log.warn({ taskId, err }, '[Workflow:Answer] Workflow resume failed');
+      });
+    log.info({ taskId }, '[Workflow:Answer] Workflow resume started after question answer');
   } catch (err) {
     log.warn({ err, taskId }, '[Workflow:Answer] Auto re-run trigger failed (non-fatal)');
   }
