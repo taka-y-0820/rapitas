@@ -46,13 +46,22 @@ export interface StopTaskAgentsResult {
  * @param reason - Reason recorded on the cancelled executions. / キャンセル理由
  * @returns IDs actually processed. / 実際に処理したID
  */
-async function stopExecutions(executionIds: number[], reason: string): Promise<number[]> {
+export async function stopExecutions(executionIds: number[], reason: string): Promise<number[]> {
   const agentWorkerManager = AgentWorkerManager.getInstance();
   const mainOrchestrator = AgentOrchestrator.getInstance(prisma);
   const done: number[] = [];
   const failures: unknown[] = [];
   for (const executionId of executionIds) {
     try {
+      await prisma.agentExecution
+        .update({
+          where: { id: executionId },
+          data: { status: 'canceling', errorMessage: reason },
+        })
+        .catch((err) => {
+          failures.push(err);
+          log.error({ err, executionId }, 'Stop intent persistence failed; still stopping process');
+        });
       // Ask BOTH orchestrators — only the owner can taskkill the CLI handle.
       await agentWorkerManager.stopExecution(executionId).catch(() => false);
       await mainOrchestrator.stopExecution(executionId).catch(() => false);

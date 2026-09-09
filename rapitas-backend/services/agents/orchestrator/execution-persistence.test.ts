@@ -1,4 +1,4 @@
-/**
+﻿/**
  * execution-persistence ユニットテスト（状態判定／DB永続化系）
  *
  * determineExecutionStatus の分岐と、saveExecutionResult の DB書き込み・
@@ -56,7 +56,7 @@ function makeFileLogger() {
 function makePrisma(overrides: Record<string, unknown> = {}) {
   return {
     agentExecution: {
-      update: mock(async () => ({})),
+      updateMany: mock(async () => ({ count: 1 })),
       findUnique: mock(async () => ({ session: { config: { taskId: 99 } } })),
     },
     agentSession: {
@@ -71,6 +71,27 @@ function makePrisma(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   recordWorkflowExecutionMock.mockClear();
+});
+
+test('a cancellation winning the result write suppresses success and learning', async () => {
+  const prisma = makePrisma();
+  prisma.agentExecution.updateMany.mockImplementation(async () => ({ count: 0 }));
+  prisma.agentExecution.findUnique.mockImplementation(
+    async () => ({ status: 'cancelled' }) as never,
+  );
+  const state = makeState();
+  const result = {
+    success: true,
+    output: 'late success',
+    failureType: undefined as string | undefined,
+  };
+  await saveExecutionResult(prisma as never, 1, 2, state, result, makeFileLogger());
+  expect(state.status).toBe('cancelled');
+  expect(result.success).toBe(false);
+  expect(result.failureType).toBe('cancelled');
+  expect(prisma.agentSession.update).not.toHaveBeenCalled();
+  expect(prisma.gitCommit.create).not.toHaveBeenCalled();
+  expect(recordWorkflowExecutionMock).not.toHaveBeenCalled();
 });
 
 // ── determineExecutionStatus() ───────────────────────────────────────────────
@@ -207,8 +228,8 @@ describe('saveExecutionResult()', () => {
       { tokensUsed: 5, executionTimeMs: 500, artifacts: null, claudeSessionId: null },
     );
 
-    expect(prisma.agentExecution.update).toHaveBeenCalledWith({
-      where: { id: 1 },
+    expect(prisma.agentExecution.updateMany).toHaveBeenCalledWith({
+      where: { id: 1, status: { notIn: ['canceling', 'cancelling', 'cancelled', 'canceled'] } },
       data: expect.objectContaining({
         status: 'completed',
         output: 'final output',
@@ -221,7 +242,7 @@ describe('saveExecutionResult()', () => {
     });
 
     // No cost/model/llmCallCount signal was provided → usageUpdate stays empty.
-    const updateArg = prisma.agentExecution.update.mock.calls[0][0] as {
+    const updateArg = prisma.agentExecution.updateMany.mock.calls[0][0] as {
       data: Record<string, unknown>;
     };
     expect(updateArg.data.costUsd).toBeUndefined();
@@ -255,7 +276,7 @@ describe('saveExecutionResult()', () => {
       fileLogger,
     );
 
-    const updateArg = prisma.agentExecution.update.mock.calls[0][0] as {
+    const updateArg = prisma.agentExecution.updateMany.mock.calls[0][0] as {
       data: Record<string, unknown>;
     };
     expect(updateArg.data.completedAt).toBeNull();
@@ -286,7 +307,7 @@ describe('saveExecutionResult()', () => {
       fileLogger,
     );
 
-    const updateArg = prisma.agentExecution.update.mock.calls[0][0] as {
+    const updateArg = prisma.agentExecution.updateMany.mock.calls[0][0] as {
       data: Record<string, unknown>;
     };
     expect(updateArg.data.costUsd).toBe(1.46);
@@ -329,7 +350,7 @@ describe('saveExecutionResult()', () => {
   test('taskId が解決できない場合は自己学習レコーダーを呼ばない', async () => {
     const prisma = makePrisma({
       agentExecution: {
-        update: mock(async () => ({})),
+        updateMany: mock(async () => ({ count: 1 })),
         findUnique: mock(async () => ({ session: { config: null } })),
       },
     });
@@ -344,7 +365,7 @@ describe('saveExecutionResult()', () => {
   test('自己学習レコーダーの探索が失敗しても saveExecutionResult 自体は失敗しない', async () => {
     const prisma = makePrisma({
       agentExecution: {
-        update: mock(async () => ({})),
+        updateMany: mock(async () => ({ count: 1 })),
         findUnique: mock(async () => {
           throw new Error('DB down');
         }),
@@ -405,7 +426,7 @@ describe('saveExecutionResult()', () => {
       { claudeSessionId: 'old-session' },
     );
 
-    const updateArg = prisma.agentExecution.update.mock.calls[0][0] as {
+    const updateArg = prisma.agentExecution.updateMany.mock.calls[0][0] as {
       data: Record<string, unknown>;
     };
     expect(updateArg.data.claudeSessionId).toBe('old-session');
@@ -444,7 +465,7 @@ describe('saveExecutionResult()', () => {
       fileLogger,
     );
 
-    const updateArg = prisma.agentExecution.update.mock.calls[0][0] as {
+    const updateArg = prisma.agentExecution.updateMany.mock.calls[0][0] as {
       data: Record<string, unknown>;
     };
     expect(updateArg.data.cpuTimeMs).toBe(1200);
@@ -466,7 +487,7 @@ describe('saveExecutionResult()', () => {
       { cpuTimeMs: 1000, peakRssKb: 60000 },
     );
 
-    const updateArg = prisma.agentExecution.update.mock.calls[0][0] as {
+    const updateArg = prisma.agentExecution.updateMany.mock.calls[0][0] as {
       data: Record<string, unknown>;
     };
     expect(updateArg.data.cpuTimeMs).toBe(1800);
@@ -488,7 +509,7 @@ describe('saveExecutionResult()', () => {
       { cpuTimeMs: 1000, peakRssKb: 60000 },
     );
 
-    const updateArg = prisma.agentExecution.update.mock.calls[0][0] as {
+    const updateArg = prisma.agentExecution.updateMany.mock.calls[0][0] as {
       data: Record<string, unknown>;
     };
     expect(updateArg.data.cpuTimeMs).toBeUndefined();
@@ -509,7 +530,7 @@ describe('saveExecutionResult()', () => {
       fileLogger,
     );
 
-    const updateArg = prisma.agentExecution.update.mock.calls[0][0] as {
+    const updateArg = prisma.agentExecution.updateMany.mock.calls[0][0] as {
       data: Record<string, unknown>;
     };
     expect(updateArg.data.cpuTimeMs).toBe(500);
@@ -534,7 +555,7 @@ describe('saveExecutionResult()', () => {
       fileLogger,
     );
 
-    const updateArg = prisma.agentExecution.update.mock.calls[0][0] as {
+    const updateArg = prisma.agentExecution.updateMany.mock.calls[0][0] as {
       data: Record<string, unknown>;
     };
     expect(updateArg.data.cpuTimeMs).toBe(900);

@@ -3,7 +3,7 @@ import { prisma } from '../../../config/database';
 import { createLogger } from '../../../config/logger';
 
 const log = createLogger('routes:agent-session');
-import { orchestrator } from '../../../services/core/orchestrator-instance';
+import { stopExecutions } from '../../../services/agents/stop-task-agents';
 import type { AgentExecutionWithExtras } from '../../../types/agent-execution-types';
 import {
   isResumableInterrupted,
@@ -41,23 +41,18 @@ export const agentSessionRouter = new Elysia({ prefix: '/agents' })
     const { params } = context;
     const sessionId = parseInt(params.id);
 
-    // Attempt to stop via orchestrator
-    // Asynchronously get and stop executions within the session via the worker process
-    try {
-      const { AgentWorkerManager } = await import('../../../services/agents/agent-worker-manager');
-      const executions =
-        await AgentWorkerManager.getInstance().getSessionExecutionsAsync(sessionId);
-      for (const execution of executions) {
-        await orchestrator.stopExecution(execution.executionId).catch((err) => {
-          log.warn(
-            { err, executionId: execution.executionId },
-            'Failed to stop execution during session termination',
-          );
-        });
-      }
-    } catch (err) {
-      log.warn({ err }, 'Failed to get session executions from worker');
-    }
+    // Enumerate durable executions: the worker does not own main-process CLIs.
+    const executions = await prisma.agentExecution.findMany({
+      where: {
+        sessionId,
+        status: { in: ['running', 'pending', 'waiting_for_input', 'canceling'] },
+      },
+      select: { id: true },
+    });
+    await stopExecutions(
+      executions.map((execution) => execution.id),
+      'Manually stopped',
+    );
 
     // Cancel all running/pending executions in the database
     await prisma.agentExecution.updateMany({
