@@ -9,6 +9,10 @@ const isCI = process.env.CI === 'true';
 // 「webpack 設定あり・turbopack 設定なし」を validateTurboNextConfig が検出すると process.exit(1) で
 // 強制失敗する(task #553 で実測)。バンドル予算は scripts/check-bundle-size.cjs の eager 限定判定で担保する。
 const nextConfig: NextConfig = {
+  // Runtime checks and local API links use the IPv4 loopback host. Next's
+  // default localhost allowlist otherwise rejects their dev WebSocket/font requests.
+  allowedDevOrigins: ['127.0.0.1'],
+
   // ビルド出力ディレクトリを環境で分離
   // CI環境では標準の.nextを使用（静的エクスポートは常にoutディレクトリに出力される）
   distDir: !isCI && isTauriBuild ? '.next-tauri' : '.next',

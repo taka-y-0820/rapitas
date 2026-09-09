@@ -148,6 +148,18 @@ describe('resume completion respects task completion gates', () => {
 });
 
 describe('handleResumeCompletion() — ResumeLockConflictError', () => {
+  test('intentional cancellation preserves a newer run and sends no failure notification', async () => {
+    const error = new Error('stop won admission');
+    error.name = 'ExecutionCancelledError';
+    resumeInterruptedExecutionMock = mock(async () => {
+      throw error;
+    });
+    handleResumeCompletion(10, EXECUTION, TASK, TASK.theme.workingDirectory, 900_000);
+    await flush();
+    expect(taskUpdateManyMock).not.toHaveBeenCalled();
+    expect(agentSessionUpdateMock).not.toHaveBeenCalled();
+    expect(notificationCreateMock).not.toHaveBeenCalled();
+  });
   test('ResumeLockConflictError の reject では task.status / agentSession.status を変更しない', async () => {
     resumeInterruptedExecutionMock = mock(async () => {
       throw new ResumeLockConflictError(TASK.id);

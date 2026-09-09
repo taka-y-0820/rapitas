@@ -42,6 +42,14 @@ beforeEach(() => {
 });
 
 describe('healAutoApproveStalls', () => {
+  test('candidate selection excludes stopped todo and terminal tasks', async () => {
+    await healAutoApproveStalls(Date.now());
+    expect(taskFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: 'in-progress' }),
+      }),
+    );
+  });
   test('stale plan_created with active policy → re-approved with autoAdvance', async () => {
     staleTasks = [{ id: 492 }];
     policyByTask = { 492: true };

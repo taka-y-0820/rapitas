@@ -19,6 +19,21 @@ import { getTaskExecutionCancellationVersion } from '../agents/task-execution-lo
 
 const log = createLogger('plan-auto-approve');
 
+/** A manual rejection remains a human gate until a later manual approval. */
+async function isManualPlanApprovalHeld(taskId: number): Promise<boolean> {
+  try {
+    const decision = await prisma.workflowTransition.findFirst({
+      where: { taskId, cause: { in: ['manual_plan_rejected', 'manual_plan_approved'] } },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { cause: true },
+    });
+    return decision?.cause === 'manual_plan_rejected';
+  } catch (err) {
+    log.warn({ err, taskId }, '[plan-auto-approve] Cannot verify manual approval; holding');
+    return true;
+  }
+}
+
 /**
  * Resolves whether the plan WILL be auto-approved for this task: task-level flag
  * OR the global userSettings flag OR (for subtasks) the subtask flag — the SAME
@@ -40,6 +55,7 @@ export async function resolveEffectiveAutoApprovePlan(taskId: number): Promise<b
       .catch(() => null),
   ]);
   if (!task) return false;
+  if (await isManualPlanApprovalHeld(taskId)) return false;
   const isSubtask = task.parentId !== null && task.parentId !== undefined;
   const settings = userSettings as Record<string, unknown> | null;
   return (
@@ -82,7 +98,13 @@ export async function maybeAutoApprovePlan(
   const task = await prisma.task
     .findUnique({
       where: { id: taskId },
-      select: { autoApprovePlan: true, parentId: true, workflowStatus: true },
+      select: {
+        autoApprovePlan: true,
+        parentId: true,
+        workflowStatus: true,
+        status: true,
+        updatedAt: true,
+      },
     })
     .catch(() => null);
 
@@ -103,6 +125,9 @@ export async function maybeAutoApprovePlan(
   if (!taskLevel && !globalLevel && !subtaskLevel) {
     return { newStatus: 'plan_created', autoApproved: false };
   }
+  if (await isManualPlanApprovalHeld(taskId)) {
+    return { newStatus: 'plan_created', autoApproved: false };
+  }
 
   const reason = taskLevel
     ? 'task-level autoApprovePlan setting enabled'
@@ -110,14 +135,19 @@ export async function maybeAutoApprovePlan(
       ? 'subtask autoApproveSubtaskPlan setting enabled'
       : 'global autoApprovePlan setting enabled';
 
-  await prisma.task
-    .update({
-      where: { id: taskId },
-      data: { workflowStatus: 'plan_approved', updatedAt: new Date() },
-    })
-    .catch((err) => {
-      log.warn({ err, taskId }, '[plan-auto-approve] Failed to flip status to plan_approved');
-    });
+  if (getTaskExecutionCancellationVersion(taskId) !== cancellationVersion) {
+    return { newStatus: 'plan_created', autoApproved: false };
+  }
+  const approved = await prisma.task.updateMany({
+    where: {
+      id: taskId,
+      workflowStatus: 'plan_created',
+      status: 'in-progress',
+      updatedAt: task.updatedAt,
+    },
+    data: { workflowStatus: 'plan_approved', updatedAt: new Date() },
+  });
+  if (approved.count !== 1) return { newStatus: 'plan_created', autoApproved: false };
 
   await recordTransition({
     taskId,
@@ -186,6 +216,8 @@ export async function maybeAutoApprovePlan(
           log.info({ taskId }, '[plan-auto-approve] Stop revoked the scheduled next phase');
           return;
         }
+        if (await isManualPlanApprovalHeld(taskId)) return;
+        if (getTaskExecutionCancellationVersion(taskId) !== cancellationVersion) return;
         const result = await WorkflowOrchestrator.getInstance().advanceWorkflow(taskId, language);
         log.info(
           { taskId, success: result.success, error: result.error },

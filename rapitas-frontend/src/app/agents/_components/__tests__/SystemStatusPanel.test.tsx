@@ -138,6 +138,25 @@ describe('SystemStatusPanel', () => {
     expect(screen.getByText('systemStatus.pill.unhealthy')).toBeInTheDocument();
   });
 
+  it.each([0, 1])('shows unknown when live ownership is unavailable, count=%s', async (count) => {
+    mockFetch.mockResolvedValue({
+      json: async () => ({
+        status: 'healthy',
+        activeExecutions: count,
+        runningExecutions: count,
+        activeExecutionsDegraded: true,
+        interruptedExecutions: 0,
+      }),
+    });
+    render(<SystemStatusPanel />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText('systemStatus.pill.unknown')).toBeInTheDocument();
+    expect(screen.queryByText('systemStatus.pill.healthy')).not.toBeInTheDocument();
+    expect(screen.queryByText('systemStatus.pill.busy')).not.toBeInTheDocument();
+  });
+
   it('re-polls every 10s but skips the request while the tab is hidden', async () => {
     mockFetch.mockResolvedValue({
       json: async () => ({

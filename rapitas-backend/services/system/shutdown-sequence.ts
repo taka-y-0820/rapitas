@@ -7,7 +7,8 @@
  * can trigger the exact same exit path.
  * Not responsible for deciding WHEN to shut down — callers own that.
  */
-import { orchestrator, stopServer } from '../core/orchestrator-instance';
+import { stopServer } from '../core/orchestrator-instance';
+import { shutdownExecutionOwners } from './shutdown-execution-owners';
 import { realtimeService } from '../communication/realtime-service';
 import { createLogger } from '../../config/logger';
 
@@ -43,7 +44,7 @@ export function scheduleShutdownSequence(prefix: string, exitCode: number): void
       log.info(`${prefix} Listening socket closed, port released.`);
 
       log.info(`${prefix} Stopping agents and saving state...`);
-      await orchestrator.gracefulShutdown({ skipServerStop: true });
+      await shutdownExecutionOwners();
       log.info(`${prefix} Agent shutdown completed.`);
     } catch (error) {
       log.error({ err: error }, `${prefix} Graceful shutdown error`);

@@ -132,9 +132,11 @@ import type { OrchestratorContext } from './types';
 // ── ヘルパー ──────────────────────────────────────────────────────────────────
 
 type MockPrisma = {
+  $transaction: <T>(fn: (tx: MockPrisma) => Promise<T>) => Promise<T>;
+  task: { updateMany: ReturnType<typeof mock> };
   agentExecution: {
     findUnique: ReturnType<typeof mock>;
-    update: ReturnType<typeof mock>;
+    updateMany: ReturnType<typeof mock>;
   };
   agentExecutionLog: {
     findMany: ReturnType<typeof mock>;
@@ -178,9 +180,11 @@ function makeCtx(
   overrides: Partial<OrchestratorContext> = {},
 ): { ctx: OrchestratorContext; prisma: MockPrisma } {
   const prisma: MockPrisma = {
+    $transaction: async (fn) => fn(prisma),
+    task: { updateMany: mock(async () => ({ count: 1 })) },
     agentExecution: {
       findUnique: mock(async () => execution),
-      update: mock(async () => ({})),
+      updateMany: mock(async () => ({ count: 1 })),
     },
     agentExecutionLog: {
       findMany: mock(async () => []),
@@ -338,9 +342,9 @@ describe('resumeInterruptedExecution() — 正常系', () => {
     const createdConfig = createAgentMock.mock.calls[0][0];
     expect(createdConfig.resumeSessionId).toBe('claude-session-abc');
 
-    expect(prisma.agentExecution.update).toHaveBeenCalledWith(
+    expect(prisma.agentExecution.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 10 },
+        where: { id: 10, status: 'interrupted' },
         data: expect.objectContaining({ status: 'running', errorMessage: null }),
       }),
     );
@@ -363,7 +367,7 @@ describe('resumeInterruptedExecution() — 正常系', () => {
     await resumeInterruptedExecution(ctx, 10);
 
     expect(sharedLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('No Claude session ID found'),
+      expect.stringContaining('No agent session ID found'),
     );
     const createdConfig = createAgentMock.mock.calls[0][0];
     expect(createdConfig.resumeSessionId).toBeUndefined();
@@ -472,6 +476,93 @@ describe('resumeInterruptedExecution() — 正常系', () => {
 });
 
 describe('resumeInterruptedExecution() — エラー処理', () => {
+  test('a cancelled DB execution cannot be claimed or launch an agent', async () => {
+    const { ctx, prisma } = makeCtx(makeExecutionRecord());
+    prisma.agentExecution.updateMany.mockResolvedValueOnce({ count: 0 });
+    await expect(resumeInterruptedExecution(ctx, 10)).rejects.toThrow('no longer interrupted');
+    expect(prisma.task.updateMany).not.toHaveBeenCalled();
+    expect(createAgentMock.mock.results[0].value.execute).not.toHaveBeenCalled();
+    expect(handleExecutionErrorMock).not.toHaveBeenCalled();
+    expect(ctx.activeAgents.size).toBe(0);
+  });
+  for (const boundary of ['logs', 'running update', 'agent result'] as const) {
+    test(`stop during ${boundary} prevents later execution effects and cleans registrations`, async () => {
+      const { releaseTaskExecutionLock } = await import('../task-execution-lock');
+      const { ctx, prisma } = makeCtx(makeExecutionRecord());
+      const execute = mock(async () => {
+        if (boundary === 'agent result') releaseTaskExecutionLock(5);
+        return {
+          success: true,
+          output: 'late result',
+          artifacts: [],
+          commits: [],
+          executionTimeMs: 1,
+          waitingForInput: false,
+        };
+      });
+      createAgentMock.mockImplementationOnce((config) => ({
+        id: 'cancel-test',
+        type: config.type,
+        name: config.name,
+        execute,
+      }));
+      if (boundary === 'logs')
+        prisma.agentExecutionLog.findMany.mockImplementationOnce(async () => {
+          releaseTaskExecutionLock(5);
+          return [];
+        });
+      if (boundary === 'running update')
+        prisma.agentExecution.updateMany.mockImplementationOnce(async () => {
+          releaseTaskExecutionLock(5);
+          return { count: 1 };
+        });
+      await expect(resumeInterruptedExecution(ctx, 10)).rejects.toThrow('lost its task lease');
+      if (boundary !== 'agent result') expect(execute).not.toHaveBeenCalled();
+      expect(saveExecutionResultMock).not.toHaveBeenCalled();
+      expect(emitResultEventMock).not.toHaveBeenCalled();
+      expect(handleExecutionErrorMock).not.toHaveBeenCalled();
+      expect(ctx.activeAgents.size).toBe(0);
+      expect(ctx.activeExecutions.size).toBe(0);
+      expect(removeAgentMock).toHaveBeenCalledWith('cancel-test');
+    });
+  }
+
+  test('stop during config lookup prevents launch and preserves a replacement lease', async () => {
+    const { acquireTaskExecutionLock, releaseTaskExecutionLock, getTaskExecutionLockOwner } =
+      await import('../task-execution-lock');
+    const { ctx, prisma } = makeCtx(makeExecutionRecord({ agentConfigId: 42 }));
+    let resolveConfig!: (value: null) => void;
+    let signalLookup!: () => void;
+    const lookupStarted = new Promise<void>((resolve) => {
+      signalLookup = resolve;
+    });
+    prisma.aIAgentConfig.findUnique.mockImplementationOnce(() => {
+      signalLookup();
+      return new Promise<null>((resolve) => {
+        resolveConfig = resolve;
+      });
+    });
+    const pending = resumeInterruptedExecution(ctx, 10);
+    const outcome = pending.then(
+      () => null,
+      (error: Error) => error,
+    );
+    await lookupStarted;
+    releaseTaskExecutionLock(5);
+    expect(acquireTaskExecutionLock(5)).toBe(true);
+    const replacementOwner = getTaskExecutionLockOwner(5);
+    resolveConfig(null);
+    try {
+      const error = await outcome;
+      expect(error).toBeInstanceOf(Error);
+      expect(createAgentMock).not.toHaveBeenCalled();
+      expect(prisma.agentExecution.updateMany).not.toHaveBeenCalled();
+      expect(getTaskExecutionLockOwner(5)).toBe(replacementOwner);
+    } finally {
+      releaseTaskExecutionLock(5, replacementOwner);
+    }
+  });
+
   test('agent.execute が失敗 → handleExecutionError を呼び、後始末してから rethrow する', async () => {
     const executeError = new Error('agent crashed');
     createAgentMock.mockImplementationOnce((config: { type: string; name: string }) => ({
