@@ -10,6 +10,9 @@
   },
   "bundle": {
     "active": true,
+    "linux": {
+      "rpm": { "compression": { "type": "gzip", "level": 1 } }
+    },
     "targets": ["deb", "rpm", "nsis", "msi", "dmg", "app"],
     "externalBin": [],
     "resources": [

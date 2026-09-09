@@ -101,6 +101,8 @@ jobs:
             ca-certificates \
             zsync \
             squashfs-tools \
+            rpm \
+            cpio \
             libc6-dev \
             libgcc-s1
 
@@ -580,6 +582,24 @@ jobs:
           CI: true
           DATABASE_URL: "postgresql://user:password@localhost:5432/rapitas?schema=public"  # Valid dummy URL for CI
           TARGET: ${{ matrix.target }}  # Pass target to build scripts
+
+      - name: Verify RPM payload
+        if: matrix.platform == 'ubuntu-latest'
+        working-directory: rapitas-desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_dir="src-tauri/target/${{ matrix.target }}/release/bundle/rpm"
+          packages=("$bundle_dir"/*.rpm)
+          test "${#packages[@]}" -eq 1
+          rpm --checksig --nosignature "${packages[0]}"
+          rpm -qp --qf 'RPM payload: %{PAYLOADCOMPRESSOR}, flags %{PAYLOADFLAGS}, installed bytes %{SIZE}\n' "${packages[0]}"
+          payload_dir=$(mktemp -d "$RUNNER_TEMP/rpm-payload.XXXXXX")
+          rpm2cpio "${packages[0]}" | (cd "$payload_dir" && cpio -idm --quiet)
+          cmp "src-tauri/target/${{ matrix.target }}/release/rapitas" "$payload_dir/usr/bin/rapitas"
+          mapfile -t backends < <(find "$payload_dir" -type f -name "rapitas-backend-${{ matrix.target }}")
+          test "${#backends[@]}" -eq 1
+          cmp "src-tauri/binaries/rapitas-backend-${{ matrix.target }}" "${backends[0]}"
 
       - name: List build artifacts
         working-directory: rapitas-desktop
