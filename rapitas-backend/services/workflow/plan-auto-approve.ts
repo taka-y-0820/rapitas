@@ -11,6 +11,7 @@
  * silently skipped — leaving the task stuck at `plan_created` even when
  * the user had `userSettings.autoApprovePlan = true` configured.
  */
+import { ExecutionCancelledError } from '../agents/execution-cancelled-error';
 import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
 import { recordTransition } from './transition-recorder';
@@ -191,6 +192,13 @@ export async function maybeAutoApprovePlan(
           '[plan-auto-approve] Auto-advance after auto-approval',
         );
       } catch (err) {
+        if (err instanceof ExecutionCancelledError) {
+          log.info(
+            { taskId, reason: err.message },
+            '[plan-auto-approve] Auto-advance cancelled by stop',
+          );
+          return;
+        }
         log.error({ err, taskId }, '[plan-auto-approve] Auto-advance failed (non-fatal)');
       }
     }, 1000);
