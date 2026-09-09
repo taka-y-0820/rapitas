@@ -93,10 +93,12 @@ describe('GET /agents/decision-ledger', () => {
   test('narrows the window to the requested days', async () => {
     const before = Date.now();
     await decisionLedgerRouter.handle(new Request(`${BASE}?days=7`));
+    const after = Date.now();
 
     const arg = readDecisions.mock.calls[0]?.[0] as { since: Date };
-    const elapsed = before - arg.since.getTime();
-    expect(elapsed).toBeGreaterThanOrEqual(7 * 24 * 60 * 60 * 1000);
-    expect(elapsed).toBeLessThan(7 * 24 * 60 * 60 * 1000 + 5000);
+    const windowMs = 7 * 24 * 60 * 60 * 1000;
+    // The handler reads its clock between the observations, not before them.
+    expect(arg.since.getTime()).toBeGreaterThanOrEqual(before - windowMs);
+    expect(arg.since.getTime()).toBeLessThanOrEqual(after - windowMs);
   });
 });
