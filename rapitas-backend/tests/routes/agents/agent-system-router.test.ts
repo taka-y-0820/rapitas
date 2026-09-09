@@ -12,6 +12,7 @@ const mockPrisma = {
   },
   agentExecution: {
     count: mock(() => Promise.resolve(0)),
+    findMany: mock(() => Promise.resolve([])),
   },
   // getAgentSystemSnapshot() (agent-system-router.ts) queries the auto-run
   // backlog depth via workflowQueueItem.count — must be mocked or /system-status
@@ -28,6 +29,10 @@ const mockOrchestrator = {
   getActiveExecutionCount: mock(() => 0),
   getActiveExecutionCountAsync: mock(() => Promise.resolve(0)),
   isInShutdown: mock(() => false),
+  // Consumed by services/agents/resumable-execution/current-active-task-ids.ts
+  // (getAgentSystemSnapshot()'s resumable-interrupted computation).
+  getActiveExecutionIdsAsync: mock(() => Promise.resolve([])),
+  getActiveExecutions: mock(() => []),
 };
 
 const mockRealtimeService = {
@@ -55,6 +60,11 @@ mock.module('../../../services/core/orchestrator-instance', () => ({
   stopServer: mock(() => Promise.resolve()),
 }));
 mock.module('../../../routes/agents/approvals', () => ({ orchestrator: mockOrchestrator }));
+mock.module('../../../services/agents/agent-orchestrator', () => ({
+  AgentOrchestrator: {
+    getInstance: () => ({ getActiveAgentInfos: () => [] }),
+  },
+}));
 mock.module('../../../utils/common/encryption', () => ({
   isEncryptionKeyConfigured: mock(() => true),
 }));
@@ -189,6 +199,8 @@ describe('Agent System Router', () => {
           'activeExecutions',
           'activePreviewCount',
           'interruptedExecutions',
+          'interruptedExecutionsHistoryCount',
+          'interruptedExecutionsDegraded',
           'isShuttingDown',
           'queueDepth',
           'runningExecutions',
@@ -201,6 +213,8 @@ describe('Agent System Router', () => {
       expect(typeof data.activeExecutions).toBe('number');
       expect(typeof data.runningExecutions).toBe('number');
       expect(typeof data.interruptedExecutions).toBe('number');
+      expect(typeof data.interruptedExecutionsHistoryCount).toBe('number');
+      expect(typeof data.interruptedExecutionsDegraded).toBe('boolean');
       expect(typeof data.queueDepth).toBe('number');
       expect(typeof data.activePreviewCount).toBe('number');
       expect(typeof data.serverTime).toBe('string');
@@ -215,6 +229,7 @@ describe('Agent System Router', () => {
         mockOrchestrator.isInShutdown = mock(() => false);
         mockOrchestrator.getActiveExecutionCountAsync = mock(() => Promise.resolve(0));
         mockPrisma.agentExecution.count = mock(() => Promise.resolve(0));
+        mockPrisma.agentExecution.findMany = mock(() => Promise.resolve([]));
         mockPrisma.workflowQueueItem.count = mock(() => Promise.resolve(0));
       });
 
@@ -242,13 +257,62 @@ describe('Agent System Router', () => {
         expect(data.activeExecutions).toBe(2);
       });
 
-      it("reports 'interrupted_executions' when idle but rows are stranded", async () => {
+      it("reports 'interrupted_executions' when idle and a resumable row is stranded under a non-terminal task", async () => {
         mockPrisma.agentExecution.count = mock(() => Promise.resolve(1));
+        mockPrisma.agentExecution.findMany = mock(() =>
+          Promise.resolve([
+            { session: { config: { task: { id: 1, status: 'todo', workflowStatus: null } } } },
+          ]),
+        );
 
         const response = await app.handle(new Request('http://localhost/agents/system-status'));
         const data = (await response.json()) as SystemStatusResponse;
         expect(data.status).toBe('interrupted_executions');
         expect(data.interruptedExecutions).toBe(1);
+        expect(data.interruptedExecutionsHistoryCount).toBe(1);
+        expect(data.interruptedExecutionsDegraded).toBe(false);
+      });
+
+      // task658/execution2806: the task finished (status='done') so its interrupted
+      // row is a stale leftover, not operationally relevant work. Regression for the
+      // bug this task fixes — the raw count alone would have reported 'interrupted_executions'.
+      it("reports 'healthy' when the only interrupted row belongs to a terminal (done) task", async () => {
+        mockPrisma.agentExecution.count = mock(() => Promise.resolve(1));
+        mockPrisma.agentExecution.findMany = mock(() =>
+          Promise.resolve([
+            {
+              session: {
+                config: { task: { id: 658, status: 'done', workflowStatus: 'completed' } },
+              },
+            },
+          ]),
+        );
+
+        const response = await app.handle(new Request('http://localhost/agents/system-status'));
+        const data = (await response.json()) as SystemStatusResponse;
+        expect(data.status).toBe('healthy');
+        expect(data.interruptedExecutions).toBe(0);
+        expect(data.interruptedExecutionsHistoryCount).toBe(1);
+        expect(data.interruptedExecutionsDegraded).toBe(false);
+      });
+
+      // Counter-example flagged in supervisor review: a failed resumable-interrupted
+      // computation must never read as 'healthy', even when the raw-count fallback
+      // is 0. Regression for that exact scenario.
+      it("reports 'interrupted_executions_unknown' (never 'healthy') when the resumable computation fails, even if the raw count is 0", async () => {
+        mockPrisma.agentExecution.count = mock(() => Promise.resolve(0));
+        mockPrisma.agentExecution.findMany = mock(() =>
+          Promise.reject(new Error('DB unreachable')),
+        );
+
+        const response = await app.handle(new Request('http://localhost/agents/system-status'));
+        expect(response.status).toBe(200);
+        const data = (await response.json()) as SystemStatusResponse;
+        expect(data.status).toBe('interrupted_executions_unknown');
+        expect(data.status).not.toBe('healthy');
+        expect(data.interruptedExecutionsDegraded).toBe(true);
+        expect(data.interruptedExecutions).toBe(0);
+        expect(data.interruptedExecutionsHistoryCount).toBe(0);
       });
 
       it('reflects the auto-run backlog depth via queueDepth', async () => {
