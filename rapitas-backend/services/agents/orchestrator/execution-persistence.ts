@@ -202,8 +202,11 @@ export async function saveExecutionResult(
         }
       : {};
 
-  await prisma.agentExecution.update({
-    where: { id: executionId },
+  const saved = await prisma.agentExecution.updateMany({
+    where: {
+      id: executionId,
+      status: { notIn: ['canceling', 'cancelling', 'cancelled', 'canceled'] },
+    },
     data: {
       status: executionStatus,
       output: state.output || result.output,
@@ -222,6 +225,24 @@ export async function saveExecutionResult(
       ...resourceUpdate,
     },
   });
+  if (saved.count === 0) {
+    const current = await prisma.agentExecution.findUnique({
+      where: { id: executionId },
+      select: { status: true },
+    });
+    if (!current || !['canceling', 'cancelling', 'cancelled', 'canceled'].includes(current.status))
+      throw new Error('Execution result was not saved; cancellation could not be confirmed');
+    // A stop won the race. Preserve its persisted status and suppress success
+    // handling in callers that retain this result object after saving it.
+    state.status = 'cancelled';
+    result.success = false;
+    result.waitingForInput = false;
+    result.failureType = 'cancelled';
+    result.errorMessage = 'Execution result ignored after cancellation';
+    fileLogger.logWarn(result.errorMessage);
+    fileLogger.logStatusChange(executionStatus, 'cancelled', result.errorMessage);
+    return;
+  }
 
   // NOTE: Same defensive coercion as above — if upstream bugs send strings
   // for these fields, we still write a clean number to Prisma so the

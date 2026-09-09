@@ -12,6 +12,7 @@ import type { AgentConfigInput } from '../agent-factory';
 import type { AgentTask, AgentExecutionResult } from '../base-agent';
 import type { ExecutionFileLogger } from '../execution-file-logger';
 import { createLogger } from '../../../config/logger';
+import { stoppedFallbackResult } from './fallback-stop-guard';
 import type {
   ExecutionOptions,
   ExecutionState,
@@ -65,6 +66,8 @@ export async function executeWithFallbackAgent(
   const { ctx, execution, state, agentInfo, fileLogger, logManager, options, taskWithAnalysis } =
     fallbackCtx;
 
+  const stopped = await stoppedFallbackResult(fallbackCtx);
+  if (stopped) return stopped;
   const { findFallbackAgentConfig } = await import('../../ai/agent-fallback');
   const fallback = await findFallbackAgentConfig(errorBlob, originalAgentConfig.type);
 
@@ -190,6 +193,8 @@ export async function executeWithFallbackAgent(
       timestamp: new Date(),
     });
 
+    const stoppedBeforeSpawn = await stoppedFallbackResult(fallbackCtx);
+    if (stoppedBeforeSpawn) return stoppedBeforeSpawn;
     const retryStartedMs = Date.now();
     const retryResult = await newAgent.execute(taskWithAnalysis);
 

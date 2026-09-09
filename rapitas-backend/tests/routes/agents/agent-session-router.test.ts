@@ -5,6 +5,15 @@
 
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Elysia } from 'elysia';
+const stopOrder: string[] = [];
+const mainStop = mock(async (id: number) => {
+  stopOrder.push(`main:${id}`);
+  return true;
+});
+const workerStop = mock(async (id: number) => {
+  stopOrder.push(`worker:${id}`);
+  return false;
+});
 
 mock.module('../../../config/logger', () => ({
   createLogger: () => ({
@@ -21,6 +30,10 @@ const mockPrisma = {
     update: mock(() => Promise.resolve({})),
   },
   agentExecution: {
+    update: mock(async (args: { where: { id: number }; data: { status: string } }) => {
+      stopOrder.push(`${args.data.status}:${args.where.id}`);
+      return {};
+    }),
     findMany: mock(() => Promise.resolve([])),
     updateMany: mock(() => Promise.resolve({ count: 0 })),
   },
@@ -61,6 +74,7 @@ mock.module('../../../services/core/orchestrator-instance', () => ({
 mock.module('../../../services/agents/agent-orchestrator', () => ({
   AgentOrchestrator: {
     getInstance: () => ({
+      stopExecution: mainStop,
       getActiveAgentInfos: () => mockMainActiveExecutionIds.map((executionId) => ({ executionId })),
     }),
   },
@@ -69,6 +83,7 @@ mock.module('../../../services/agents/agent-orchestrator', () => ({
 mock.module('../../../services/agents/agent-worker-manager', () => ({
   AgentWorkerManager: {
     getInstance: () => ({
+      stopExecution: workerStop,
       getSessionExecutionsAsync: mock(() => Promise.resolve([])),
       getActiveExecutionIdsAsync: mock(() => Promise.resolve([])),
     }),
@@ -96,6 +111,20 @@ describe('Agent Session Router', () => {
   });
 
   describe('POST /agents/sessions/:id/stop', () => {
+    it('stops DB-owned main executions even when the worker inventory is empty', async () => {
+      stopOrder.length = 0;
+      mainStop.mockClear();
+      workerStop.mockClear();
+      mockPrisma.agentExecution.findMany.mockResolvedValueOnce([{ id: 3947 }] as never);
+      const response = await app.handle(
+        new Request('http://localhost/agents/sessions/4013/stop', { method: 'POST' }),
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ success: true });
+      expect(stopOrder).toEqual(['canceling:3947', 'worker:3947', 'main:3947', 'cancelled:3947']);
+      expect(mainStop).toHaveBeenCalledWith(3947);
+      expect(workerStop).toHaveBeenCalledWith(3947);
+    });
     it('should stop a session', async () => {
       const mockSessionId = '999'; // Use numeric ID as expected by implementation
       const response = await app.handle(
