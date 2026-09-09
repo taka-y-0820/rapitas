@@ -275,27 +275,27 @@ describe('SSEStreamController', () => {
     const controller = new SSEStreamController({ maxRetries: 3, initialDelay: 10 });
     controller.createStream();
 
-    const startTime = Date.now();
-    let callTimes: number[] = [];
-
+    const requestedDelays: number[] = [];
+    const realTimeout = globalThis.setTimeout;
+    let calls = 0;
+    globalThis.setTimeout = ((callback: () => void, ms: number) => {
+      requestedDelays.push(ms);
+      queueMicrotask(callback);
+      return 1;
+    }) as unknown as typeof setTimeout;
     try {
-      await controller.executeWithRetry(async () => {
-        callTimes.push(Date.now());
-        throw new Error('network connection failed');
-      });
-    } catch {
-      // expected
+      await expect(
+        controller.executeWithRetry(async () => {
+          calls++;
+          throw new Error('network connection failed');
+        }),
+      ).rejects.toThrow('network connection failed');
+      expect(calls).toBe(4);
+      expect(requestedDelays).toEqual([10, 20, 40]);
+    } finally {
+      globalThis.setTimeout = realTimeout;
+      controller.close();
     }
-
-    // maxRetries: 3 means 3 retries AFTER initial attempt = 4 total calls
-    expect(callTimes).toHaveLength(4);
-
-    // Check exponential backoff delays (approximately)
-    const delay1 = callTimes[1] - callTimes[0];
-    const delay2 = callTimes[2] - callTimes[1];
-
-    expect(delay1).toBeGreaterThanOrEqual(10);
-    expect(delay2).toBeGreaterThanOrEqual(20);
   });
 });
 
