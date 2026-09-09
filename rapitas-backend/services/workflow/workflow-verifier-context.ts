@@ -43,7 +43,12 @@ export async function buildVerifierContext(
   styleRule: string,
 ): Promise<string> {
   const plan = await readWorkflowFile(taskId, 'plan');
-  let ctx = taskInfo;
+  let ctx = `${taskInfo}
+
+## Verification and publication evidence
+Report technical verification and downstream publication (push, CI, merge) separately. An unattempted publication step is pending, not a failed test and not completed. Use a pending marker for it; never claim 100% or M/M completion when the same checklist contains unfinished items. Include unfinished items in the denominator, or explicitly label a separate implementation-only count.
+For each CI result, record the commit SHA it tested. A failure on an older commit is historical evidence, not the current commit's result; query the current PR head and checks. Unknown or pending checks remain unverified. Actual failing tests/checks must remain failures. A passing technical report does not authorize task completion before all required publication gates succeed.
+Preserve command exit codes before formatting output: piping a command into tail and reading $? reports tail's status. Save the original command status and full output; do not claim success from the pipe's status.`;
   // Recall prior knowledge for the verifier too — failure lessons from
   // similar tasks tell it exactly which regressions to probe for.
   const verifierMemory = await buildMemoryContext(taskId, task, language);
