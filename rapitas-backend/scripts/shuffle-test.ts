@@ -37,7 +37,7 @@ const DEFAULT_SEED = 20250101;
  * file's own header NOTE for the full rationale.
  */
 export const INTEGRATION_EXCLUDE_PATTERN =
-  /[/\\]tests[/\\]integration[/\\]|[/\\]runtime-smoke[/\\](playwright-worker-client|runtime-readiness)\.test\.ts$/;
+  /(?:[/\\]tests[/\\]integration[/\\][\s\S]*|[/\\]runtime-smoke[/\\](playwright-worker-client|runtime-readiness)\.test\.ts)$/;
 
 /**
  * Creates a Linear Congruential Generator (LCG) seeded PRNG.
