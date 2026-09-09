@@ -134,6 +134,7 @@ import type { OrchestratorContext } from './types';
 type MockPrisma = {
   agentExecution: {
     findUnique: ReturnType<typeof mock>;
+    findFirst: ReturnType<typeof mock>;
     update: ReturnType<typeof mock>;
   };
   agentExecutionLog: {
@@ -180,6 +181,7 @@ function makeCtx(
   const prisma: MockPrisma = {
     agentExecution: {
       findUnique: mock(async () => execution),
+      findFirst: mock(async () => null),
       update: mock(async () => ({})),
     },
     agentExecutionLog: {
@@ -468,6 +470,67 @@ describe('resumeInterruptedExecution() — 正常系', () => {
     const result = await resumeInterruptedExecution(ctx, 10);
 
     expect(result.llmCallCount).toBe(7);
+  });
+});
+
+describe('resumeInterruptedExecution() — prompt_too_long ガード (task 900)', () => {
+  test('直近failedのerrorMessageが【Prompt Too Long】を含む → resumeSessionId は undefined でコールドスタートする', async () => {
+    const { ctx, prisma } = makeCtx(makeExecutionRecord());
+    prisma.agentExecution.findFirst.mockResolvedValue({
+      errorMessage: '【Prompt Too Long】Claude Code CLI reported the prompt/context was too long',
+    });
+
+    const result = await resumeInterruptedExecution(ctx, 10);
+
+    expect(result.success).toBe(true);
+    const createdConfig = createAgentMock.mock.calls[0][0];
+    expect(createdConfig.resumeSessionId).toBeUndefined();
+    expect(prisma.agentExecution.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { claudeSessionId: 'claude-session-abc', status: 'failed' },
+      }),
+    );
+  });
+
+  test('直近failedの理由が prompt_too_long 以外（認証等）→ 既存どおり claudeSessionId を渡す', async () => {
+    const { ctx, prisma } = makeCtx(makeExecutionRecord());
+    prisma.agentExecution.findFirst.mockResolvedValue({
+      errorMessage: 'Claude CLI の認証に失敗しました（認証情報の期限切れ/無効）。',
+    });
+
+    await resumeInterruptedExecution(ctx, 10);
+
+    const createdConfig = createAgentMock.mock.calls[0][0];
+    expect(createdConfig.resumeSessionId).toBe('claude-session-abc');
+  });
+
+  test('failed実行が無い（findFirstがnull）→ 既存どおり claudeSessionId を渡す', async () => {
+    const { ctx, prisma } = makeCtx(makeExecutionRecord());
+    prisma.agentExecution.findFirst.mockResolvedValue(null);
+
+    await resumeInterruptedExecution(ctx, 10);
+
+    const createdConfig = createAgentMock.mock.calls[0][0];
+    expect(createdConfig.resumeSessionId).toBe('claude-session-abc');
+  });
+
+  test('claudeSessionId が無い場合は findFirst を呼ばない', async () => {
+    const { ctx, prisma } = makeCtx(makeExecutionRecord({ claudeSessionId: null }));
+
+    await resumeInterruptedExecution(ctx, 10);
+
+    expect(prisma.agentExecution.findFirst).not.toHaveBeenCalled();
+  });
+
+  test('findFirst が失敗しても resume はブロックされない（claudeSessionId を渡す）', async () => {
+    const { ctx, prisma } = makeCtx(makeExecutionRecord());
+    prisma.agentExecution.findFirst.mockRejectedValue(new Error('db down'));
+
+    const result = await resumeInterruptedExecution(ctx, 10);
+
+    expect(result.success).toBe(true);
+    const createdConfig = createAgentMock.mock.calls[0][0];
+    expect(createdConfig.resumeSessionId).toBe('claude-session-abc');
   });
 });
 

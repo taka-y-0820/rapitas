@@ -44,6 +44,15 @@ export async function checkNeedsFallback(
     return { needsFallback: false, errorBlob };
   }
 
+  // NOTE: A prompt-too-long failure is a request-size problem, not provider
+  // evidence — falling back to a different provider would neither fix the
+  // oversized session context nor deserve a provider cooldown (task 900).
+  // Short-circuits BEFORE classifyAgentError so a resume-mode "Prompt is too
+  // long" failure never triggers the diagnoseErrorWithLlm cost either.
+  if (result.failureType === 'prompt_too_long') {
+    return { needsFallback: false, errorBlob };
+  }
+
   let needsFallback = !result.success;
 
   // Successful prose/code may legitimately discuss 429 or provider limits.

@@ -122,6 +122,34 @@ describe('checkNeedsFallback — cancelled バイパス (#808)', () => {
   });
 });
 
+describe('checkNeedsFallback — prompt_too_long バイパス (task 900)', () => {
+  test('prompt_too_long + 失敗 → needsFallback:false、分類器を呼ばない', async () => {
+    classifyCallCount = 0;
+    const result = createResult({
+      success: false,
+      failureType: 'prompt_too_long',
+      errorMessage: '【Prompt Too Long】Claude Code CLI reported the prompt/context was too long',
+    });
+
+    const decision = await checkNeedsFallback(result, 'claude-code');
+    expect(decision.needsFallback).toBe(false);
+    expect(classifyCallCount).toBe(0);
+  });
+
+  test('prompt_too_long でも errorBlob は従来どおり構築される', async () => {
+    const result = createResult({
+      success: false,
+      failureType: 'prompt_too_long',
+      errorMessage: '【Prompt Too Long】too long',
+      output: 'tail of output',
+    });
+
+    const decision = await checkNeedsFallback(result, 'claude-code');
+    expect(decision.errorBlob).toContain('Prompt Too Long');
+    expect(decision.errorBlob).toContain('tail of output');
+  });
+});
+
 describe('checkNeedsFallback — 既存判定の維持', () => {
   test('通常の失敗（failureType 未設定）→ needsFallback:true', async () => {
     const result = createResult({ success: false, errorMessage: 'build failed' });

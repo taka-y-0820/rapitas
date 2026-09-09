@@ -26,6 +26,7 @@ import {
   handleExecutionError,
 } from './execution-helpers';
 import { buildResumePrompt, resolveAgentConfig } from './resume-helpers';
+import { classifySessionFailureReason } from '../claude-code/failure-reason-markers';
 import { buildShutdownErrorMessage } from './shutdown-error';
 import { withLlmCallScope, getLlmCallCount } from '../../../utils/llm-call-context';
 import {
@@ -146,13 +147,40 @@ export async function resumeInterruptedExecution(
       task.workflowStatus,
     );
 
+    // Structural gap this closes (task 900): this crash-recovery path does
+    // NOT go through phase-session-resume.ts's exclusion guard, so a session
+    // whose most recent resume already failed with "Prompt is too long" would
+    // otherwise be resumed unconditionally after every server restart.
+    // buildResumePrompt is already short, so only the --resume flag changes.
+    let resumeSessionIdForCli = claudeSessionId;
+    if (claudeSessionId) {
+      try {
+        const failedResume = await ctx.prisma.agentExecution.findFirst({
+          where: { claudeSessionId, status: 'failed' },
+          orderBy: { id: 'desc' },
+          select: { errorMessage: true },
+        });
+        if (
+          failedResume &&
+          classifySessionFailureReason(failedResume.errorMessage) === 'prompt_too_long'
+        ) {
+          logger.info(
+            `[ExecutionResume] Session ${claudeSessionId} last failed with a prompt-too-long error — cold-starting instead of resuming (execution ${executionId}).`,
+          );
+          resumeSessionIdForCli = null;
+        }
+      } catch (err) {
+        logger.warn({ err }, `[ExecutionResume] prompt-too-long lookup failed — resuming anyway`);
+      }
+    }
+
     let agentConfig: AgentConfigInput = {
       type: 'claude-code',
       name: 'Claude Code Agent',
       workingDirectory,
       timeout: options.timeout || 900000,
       dangerouslySkipPermissions: true,
-      resumeSessionId: claudeSessionId || undefined,
+      resumeSessionId: resumeSessionIdForCli || undefined,
       continueConversation: false,
     };
 
@@ -161,7 +189,7 @@ export async function resumeInterruptedExecution(
         ctx,
         execution.agentConfigId,
         agentConfig,
-        claudeSessionId,
+        resumeSessionIdForCli,
       );
     }
 
