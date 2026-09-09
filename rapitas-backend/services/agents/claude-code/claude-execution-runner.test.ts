@@ -11,6 +11,18 @@ import { ClaudeCodeAgent } from './agent-core';
 import { buildClaudeArgs, buildSpawnEnv } from './claude-execution-runner';
 
 describe('buildClaudeArgs', () => {
+  test('verifier can execute checks and save evidence while recursive tools remain denied', () => {
+    const agent = new ClaudeCodeAgent('verifier', 'verifier', {
+      investigationMode: false,
+      investigationOutputType: 'verify',
+    });
+    const { args } = buildClaudeArgs(agent);
+    const denied = args[args.indexOf('--disallowedTools') + 1].split(',');
+    expect(denied).not.toContain('Bash');
+    expect(denied).toContain('Task');
+    expect(denied).toContain('EnterWorktree');
+    expect(args).toContain('--strict-mcp-config');
+  });
   test('dangerouslySkipPermissions=true のとき bypass 系フラグが両方付与される', () => {
     const agent = new ClaudeCodeAgent('t1', 'test-agent', {
       dangerouslySkipPermissions: true,

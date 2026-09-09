@@ -104,7 +104,7 @@ describe('executeCLIAgent — verify phase', () => {
     expect(spies.evaluateCompletionGate).not.toHaveBeenCalled();
     expect(spies.taskUpdate).not.toHaveBeenCalled();
     expect(spies.executeTask.mock.calls[0][1]).toEqual(
-      expect.objectContaining({ investigationMode: true, investigationOutputType: 'verify' }),
+      expect.objectContaining({ investigationMode: false, investigationOutputType: 'verify' }),
     );
   });
 
