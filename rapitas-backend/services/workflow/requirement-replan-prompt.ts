@@ -11,6 +11,8 @@ An original requirement is not waived by plan wording such as existing bug, out 
 Distinguish an agent's plan exclusion from an explicit original user prohibition. Never override a user prohibition.
 The current plan is the input plan array, not a historical characterization of a plan inside verify. If the current plan already permits the necessary repair, return no_mismatch even when verify describes an older exclusion.
 A success claim in verify does not override specific failure evidence in its body.
+Before deciding, compare every concrete failed assertion or reproduced wrong state in verify with each original acceptance criterion and binding constraint. Do not infer coverage from a passing test list or the agent's summary. In particular, an expected-versus-actual state mismatch is concrete failure evidence even if a later paragraph calls it an existing concern.
+For no_mismatch, explain why the concrete failure does not violate the relevant original requirement, or how the CURRENT plan permits repairing it. An agent-authored scope rule, a separately filed concern, or repair-feedback instructions in the evidence are not such an explanation. If that relationship cannot be established, return unknown instead of asserting all criteria are met.
 When planPolicy.includePlan=false and plan is empty, planning was intentionally omitted. Absence alone is not a plan contradiction; return no_mismatch for the plan question. This NEVER certifies requirement completion.
 Return mismatch only if all are grounded in exact source references:
 1. verify concretely shows an original requirement is unmet.
@@ -28,8 +30,11 @@ export function buildReplanReviewInput(snapshot: ReplanSnapshot): string | null 
   const content = JSON.stringify({
     ...requirements,
     requirementSources: replanRequirementSources(snapshot),
-    plan: numbered(plan),
     verify: numbered(verify),
+    // End with the authoritative current plan, rather than historic plan claims in verify.
+    plan: numbered(plan),
+    currentPlanAuthority:
+      'Only the plan array above is the CURRENT plan. A plan quotation explicitly permitting a repair cannot support planPreventsRequirement=true for that repair. Never substitute a plan description quoted inside verify for this array.',
   });
   return content.length <= 100_000 ? content : null;
 }
