@@ -897,15 +897,9 @@ export async function runAutomatedVerification(
   const tamper = tamperCheck(allChanged, tamperPlan);
   const schemaGate = schemaChangeGateCheck(allChanged, planFiles);
   const hardGateChecks = collectHardGateChecks(scopeCheck, tamper, schemaGate);
-  if (changedFiles.length === 0 && hardGateChecks.every((c) => c.ok)) {
-    return {
-      ok: true,
-      changedFiles: [],
-      checks: hardGateChecks,
-      summary: '自動検証: 対象のコード変更なし',
-      unverifiable: false,
-    };
-  }
+  // An empty diff skips scoped static commands, but does not prove that a
+  // configured runtime works (for example after restoring a merged task).
+  // Continue to the runtime stage and preserve unavailable/failed evidence.
 
   const groups = groupByProjectRoot(workdir, changedFiles);
   const lintParts: VerificationCheck[] = [];
