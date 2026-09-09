@@ -265,6 +265,7 @@ function makeIntegrationPrisma() {
   return {
     agentExecution: {
       update: mock(async () => ({})),
+      updateMany: mock(async () => ({ count: 1 })),
       // config=null → learning recorder is skipped (out of scope here).
       findUnique: mock(async () => ({ session: { config: null } })),
     },
