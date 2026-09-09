@@ -21,10 +21,10 @@ const current: LogLevel =
 const throttleMap = new Map<string, number>();
 const THROTTLE_WINDOW_MS = 5_000;
 
-function shouldThrottle(key: string): boolean {
+function shouldThrottle(key: string, windowMs = THROTTLE_WINDOW_MS): boolean {
   const now = Date.now();
   const last = throttleMap.get(key);
-  if (last && now - last < THROTTLE_WINDOW_MS) {
+  if (last !== undefined && now - last < windowMs) {
     return true;
   }
   throttleMap.set(key, now);
@@ -67,6 +67,13 @@ export function createLogger(name: string) {
     // an expected flood of network errors that should not surface as noise.
     warn: (...a: unknown[]) => !isServerRestarting() && ok('warn') && console.warn(p, ...a),
     error: (...a: unknown[]) => !isServerRestarting() && ok('error') && console.error(p, ...a),
+
+    /** Transient warning: emit at most once per message per minute. */
+    warnThrottled: (...a: unknown[]) => {
+      if (isServerRestarting() || !ok('warn')) return;
+      if (shouldThrottle(`warn|${makeThrottleKey(p, a)}`, 60_000)) return;
+      console.warn(p, ...a);
+    },
 
     /**
      * Error log with throttling

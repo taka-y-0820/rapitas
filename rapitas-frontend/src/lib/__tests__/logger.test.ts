@@ -305,3 +305,33 @@ describe('isTransientError', () => {
     expect(isTransientError(undefined)).toBe(false);
   });
 });
+
+describe('warnThrottled', () => {
+  it('logs transient warnings at most once per minute, including at epoch zero', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    vi.resetModules();
+    const prior = process.env.NEXT_PUBLIC_LOG_LEVEL;
+    process.env.NEXT_PUBLIC_LOG_LEVEL = 'debug';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { createLogger } = await import('../logger');
+      const log = createLogger('Timeout');
+      log.warnThrottled('timeout', 'GET /tasks/1');
+      log.warnThrottled('timeout', 'GET /tasks/2');
+      vi.advanceTimersByTime(59_999);
+      log.warnThrottled('timeout', 'GET /tasks/1');
+      expect(warn).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1);
+      log.warnThrottled('timeout', 'GET /tasks/1');
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      if (prior === undefined) delete process.env.NEXT_PUBLIC_LOG_LEVEL;
+      else process.env.NEXT_PUBLIC_LOG_LEVEL = prior;
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+});
