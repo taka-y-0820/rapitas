@@ -6,6 +6,7 @@
  * verify feedback, plan, question, bug-fix protocol). Does not build contexts
  * for other roles.
  */
+import { observeWorkflowStage } from './workflow-stage-timing';
 import { readWorkflowFile } from './workflow-file-utils';
 import { buildMemoryContext } from './workflow-memory-context';
 import { buildKnownPitfallsSection } from './workflow-pitfall-context';
@@ -57,20 +58,28 @@ export async function buildImplementerContext(
   let ctx = `${taskInfo}${goalAnchor ? `\n\n${goalAnchor}` : ''}`;
   // Recall prior knowledge for the implementer too — known pitfalls and past
   // design decisions should steer the actual code changes, not just research.
-  const memory = await buildMemoryContext(taskId, task, language);
+  const memory = await observeWorkflowStage(taskId, 'context.buildMemoryContext', () =>
+    buildMemoryContext(taskId, task, language),
+  );
   if (memory) {
     ctx += `\n\n${memory}`;
   }
   // Known pitfalls from the knowledge graph: gate rejections this task's
   // type/technologies have historically hit, with cause-specific advice.
-  const pitfalls = await buildKnownPitfallsSection(task, language);
+  const pitfalls = await observeWorkflowStage(taskId, 'context.buildKnownPitfallsSection', () =>
+    buildKnownPitfallsSection(task, language),
+  );
   if (pitfalls) {
     ctx += `\n\n${pitfalls}`;
   }
   // Cross-task learning loop: recurring adversarial diff-review rejections
   // (scope drift, missing planned files, acceptance-criteria misreads)
   // injected BEFORE coding so known bounce causes are prevented in-phase.
-  const implementLessons = await buildCriticLessonsSection('implement', language);
+  const implementLessons = await observeWorkflowStage(
+    taskId,
+    'context.buildCriticLessonsSection',
+    () => buildCriticLessonsSection('implement', language),
+  );
   if (implementLessons) {
     ctx += `\n\n${implementLessons}`;
   }

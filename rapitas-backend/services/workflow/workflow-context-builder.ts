@@ -39,7 +39,7 @@ export { researchModeDirective, applyPlanModeDirective } from './workflow-mode-d
 export async function buildRoleContext(
   taskId: number,
   role: WorkflowRole,
-  task: { title: string; description: string | null },
+  task: { title: string; description: string | null; acceptanceCriteria?: string | null },
   language: 'ja' | 'en' = 'ja',
   mode: 'lightweight' | 'standard' | 'comprehensive' = 'comprehensive',
 ): Promise<string> {

@@ -102,6 +102,36 @@ describe('resolveCliPathAsync', () => {
     expect(mockInfo).toHaveBeenCalled();
   });
 
+  it('where と .cmd の両方が失敗しても .exe 再試行が成功すれば絶対パスを返す', async () => {
+    if (process.platform !== 'win32') return;
+
+    const exePath = 'C:\\npm\\claude.exe';
+    execImpl = (cmd, cb) => {
+      if (cmd.endsWith('.exe')) return cb(null, { stdout: `${exePath}\r\n`, stderr: '' });
+      cb(new Error('not found'));
+    };
+    existsSyncImpl = () => true;
+
+    const name = uniqueName('test-exe-fallback');
+    const result = await resolveCliPathAsync(name);
+
+    expect(result).toBe(exePath);
+    expect(execCallCount).toBe(3); // where -> .cmd -> .exe
+    expect(mockWarn).not.toHaveBeenCalled();
+  });
+
+  it('.cmd で終わる名前は .exe 再試行もしない（既知拡張子はフォールバック対象外）', async () => {
+    if (process.platform !== 'win32') return;
+
+    execImpl = (_cmd, cb) => cb(new Error('not found'));
+    existsSyncImpl = () => false;
+
+    const name = `${uniqueName('test-cmd-no-exe-fallback')}.cmd`;
+    await resolveCliPathAsync(name);
+
+    expect(execCallCount).toBe(1); // where のみ、.cmd も .exe も再試行しない
+  });
+
   it('.cmd で終わる名前は .cmd 再試行をしない（無限ループ防止）', async () => {
     if (process.platform !== 'win32') return;
 
@@ -203,7 +233,24 @@ describe('resolveCliPathAsync', () => {
 });
 
 describe('getClaudePathAsync', () => {
-  it('CLAUDE_CODE_PATH が未設定のとき Windows では claude.cmd を基底名に使う', async () => {
+  it('finds a native exe install when no cmd shim exists', async () => {
+    if (process.platform !== 'win32') return;
+    const original = process.env.CLAUDE_CODE_PATH;
+    delete process.env.CLAUDE_CODE_PATH;
+    try {
+      const native = 'C:\\Users\\fixture\\.local\\bin\\claude.exe';
+      execImpl = (command, callback) =>
+        command === 'where claude.exe'
+          ? callback(null, { stdout: native, stderr: '' })
+          : callback(new Error('not found'));
+      existsSyncImpl = () => true;
+      expect(await getClaudePathAsync()).toBe(native);
+    } finally {
+      if (original === undefined) delete process.env.CLAUDE_CODE_PATH;
+      else process.env.CLAUDE_CODE_PATH = original;
+    }
+  });
+  it('CLAUDE_CODE_PATH が未設定でも npm の cmd インストールを解決する', async () => {
     if (process.platform !== 'win32') return;
 
     const original = process.env.CLAUDE_CODE_PATH;

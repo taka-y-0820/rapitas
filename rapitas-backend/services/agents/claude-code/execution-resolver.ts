@@ -11,40 +11,14 @@
  * outer Promise. All status mutations go through `ctx.status = ...`.
  */
 import { tolegacyQuestionType } from '../question-detection';
-import type { QuestionWaitingState } from '../question-detection';
 import type { AgentArtifact, AgentExecutionResult, GitCommitInfo } from '../base-agent';
 import { checkGitDiff } from './git-diff-checker';
 import { createLogger } from '../../../config/logger';
 import { notifyAuthenticationFailure } from '../../communication/notification-service';
-import type { WorkerResultUsageSnapshot } from './worker-message-handler';
+import type { ResolverContext } from './execution-resolver-context';
+export type { ResolverContext } from './execution-resolver-context';
 
 const logger = createLogger('claude-code-agent');
-
-/** Read/write state the resolver needs from the host agent. */
-export interface ResolverContext {
-  readonly logPrefix: string;
-  readonly resumeSessionId: string | undefined;
-  readonly continueConversation: boolean | undefined;
-
-  // Buffers and accumulated state
-  outputBuffer: string;
-  /** Clean FINAL assistant message from the stream-json `result` event. */
-  finalResultText: string;
-  errorBuffer: string;
-  lineBuffer: string;
-  detectedQuestion: QuestionWaitingState;
-  claudeSessionId: string | null;
-  hasFileModifyingToolCalls: boolean;
-  idleTimeoutForceKilled: boolean;
-  wallClockTimeoutForceKilled: boolean;
-  workerResultUsage: WorkerResultUsageSnapshot | null;
-
-  // Mutated by the resolver
-  status: string;
-
-  // BaseAgent emit proxy
-  emitOutputInternal(output: string, isError?: boolean): void;
-}
 
 /**
  * Build the resolution callback used after the Worker finishes parsing.
@@ -123,6 +97,25 @@ export function buildResolveAfterParse(
     const forceKillFields: Partial<AgentExecutionResult> = ctx.wallClockTimeoutForceKilled
       ? { failureType: 'wall_clock_timeout' }
       : {};
+
+    // A wall-clock kill interrupts unfinished work. Partial files, output, or
+    // an earlier question cannot prove completion or authorize publication.
+    if (ctx.wallClockTimeoutForceKilled) {
+      ctx.status = 'failed';
+      resolve({
+        success: false,
+        output: ctx.outputBuffer,
+        artifacts,
+        commits,
+        executionTimeMs,
+        waitingForInput: false,
+        claudeSessionId: ctx.claudeSessionId || undefined,
+        errorMessage: 'Execution exceeded its wall-clock timeout; partial work was preserved.',
+        ...usageFields,
+        ...forceKillFields,
+      });
+      return;
+    }
 
     logger.info(`${ctx.logPrefix} Running question detection...`);
     logger.info(

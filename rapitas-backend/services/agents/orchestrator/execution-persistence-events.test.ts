@@ -8,6 +8,7 @@
 import { describe, test, expect, mock } from 'bun:test';
 import { emitResultEvent, handleExecutionError } from './execution-persistence';
 import type { ExecutionState, OrchestratorEvent } from './types';
+import { ExecutionCancelledError } from '../execution-cancelled-error';
 
 // ── ヘルパー ──────────────────────────────────────────────────────────────────
 
@@ -50,6 +51,32 @@ function makePrisma(overrides: Record<string, unknown> = {}) {
 }
 
 // ── emitResultEvent() ─────────────────────────────────────────────────────────
+
+test('revoked execution admission is persisted and emitted as cancellation', async () => {
+  const prisma = makePrisma();
+  const state = makeState();
+  const logger = makeFileLogger();
+  const emit = mock((_event: OrchestratorEvent) => {});
+  await handleExecutionError(
+    prisma as never,
+    1,
+    2,
+    3,
+    state,
+    new ExecutionCancelledError('ownership revoked'),
+    logger,
+    emit,
+    'Execution',
+  );
+  expect(state.status).toBe('cancelled');
+  expect(prisma.agentExecution.update).toHaveBeenCalledWith(
+    expect.objectContaining({
+      data: expect.objectContaining({ status: 'cancelled' }),
+    }),
+  );
+  expect(logger.logError).not.toHaveBeenCalled();
+  expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'execution_cancelled' }));
+});
 
 describe('emitResultEvent()', () => {
   test('waitingForInput=true → execution_output イベントを質問情報付きで発火する', () => {

@@ -408,7 +408,7 @@ describe('buildResolveAfterParse — investigation mode', () => {
     expect(result.errorMessage).toContain('API Overload');
   });
 
-  test('wall-clock kill + git diff 変更あり → success:true かつ failureType=wall_clock_timeout', async () => {
+  test('wall-clock kill + git diff 変更あり → success:false かつ failureType=wall_clock_timeout', async () => {
     mockGitDiffResult = true;
     const ctx = createCtx({
       idleTimeoutForceKilled: true, // wall-clock 分岐は両フラグをセットする（idle-monitor.ts）
@@ -429,7 +429,7 @@ describe('buildResolveAfterParse — investigation mode', () => {
     callback();
 
     const result = await promise;
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
     expect(result.failureType).toBe('wall_clock_timeout');
   });
 
@@ -507,4 +507,36 @@ describe('buildResolveAfterParse — investigation mode', () => {
     expect(result.success).toBe(false);
     expect(result.errorMessage).toContain('no actual code changes');
   });
+});
+
+describe('wall-clock timeout completion fence', () => {
+  test.each([0, 1, null])(
+    'rejects partial investigation output even with exit %s',
+    async (code) => {
+      const ctx = createCtx({
+        wallClockTimeoutForceKilled: true,
+        idleTimeoutForceKilled: true,
+        outputBuffer: 'partial research '.repeat(30),
+        finalResultText: 'earlier result',
+      });
+      const { resolve, promise } = createResolveTracker();
+      buildResolveAfterParse(
+        ctx,
+        code,
+        '/tmp/workdir',
+        Date.now(),
+        resolve,
+        () => [],
+        () => [],
+        undefined,
+        true,
+      )();
+      const result = await promise;
+      expect(result.success).toBe(false);
+      expect(result.waitingForInput).toBe(false);
+      expect(result.failureType).toBe('wall_clock_timeout');
+      expect(result.output).toBe(ctx.outputBuffer);
+      expect(ctx.status).toBe('failed');
+    },
+  );
 });

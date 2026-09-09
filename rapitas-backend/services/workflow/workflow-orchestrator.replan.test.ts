@@ -21,6 +21,7 @@ function makeTask(overrides: Record<string, unknown> = {}) {
   return {
     id: 1,
     title: 'Test task',
+    updatedAt: new Date(0),
     description: null,
     workflowStatus: 'plan_approved',
     workflowMode: 'standard',
@@ -121,6 +122,8 @@ mock.module('./workflow-agent-executor', () => ({
   ),
 }));
 mock.module('../agents/task-execution-lock', () => ({
+  getTaskExecutionCancellationVersion: () => 0,
+  getTaskExecutionLockOwner: () => Symbol.for('test-workflow-lock'),
   DEFAULT_LOCK_TTL_MS: 30 * 60 * 1000,
   WORKFLOW_LOCK_TTL_MS: 30 * 60 * 1000,
   acquireTaskExecutionLock: mock(() => true),

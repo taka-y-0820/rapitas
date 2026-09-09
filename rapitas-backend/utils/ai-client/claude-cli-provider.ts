@@ -18,6 +18,11 @@ import { getClaudePathAsync } from '../common/cli-path-resolver';
 import { type AIMessage, type AIResponse } from './types';
 import { describeCliFailure, extractLastJsonObject } from './cli-failure-reason';
 import { auxCliCleanup } from './aux-cli-cleanup';
+import { prepareAuxCli } from './aux-cli-launch';
+import { createClaudeCliStream } from './claude-cli-stream';
+import { ClaudeCliUnavailableError } from './cli-errors';
+
+export { ClaudeCliUnavailableError } from './cli-errors';
 
 const log = createLogger('ai-client:claude-cli');
 
@@ -25,7 +30,9 @@ const log = createLogger('ai-client:claude-cli');
 function buildSpawnCommand(claudePath: string, args: string[]): [string, string[]] {
   if (process.platform !== 'win32') return [claudePath, args];
   const argsString = args
-    .map((arg) => (arg.includes(' ') || arg.includes('&') || arg.includes('|') ? `"${arg}"` : arg))
+    .map((arg) =>
+      !arg || arg.includes(' ') || arg.includes('&') || arg.includes('|') ? `"${arg}"` : arg,
+    )
     .join(' ');
   const quotedPath = claudePath.includes(' ') ? `"${claudePath}"` : claudePath;
   return [`chcp 65001 >NUL 2>&1 && ${quotedPath} ${argsString}`, []];
@@ -33,33 +40,14 @@ function buildSpawnCommand(claudePath: string, args: string[]): [string, string[
 
 /** Whether the CLI responds to `--version` within 10s. */
 async function checkClaudeAvailable(): Promise<boolean> {
-  const claudePath = await getClaudePathAsync();
-  return new Promise((resolve) => {
-    const proc = spawn(claudePath, ['--version'], { shell: true, windowsHide: true });
-    const timeout = setTimeout(() => {
-      proc.kill();
-      resolve(false);
-    }, 10000);
-    proc.on('close', (code) => {
-      clearTimeout(timeout);
-      resolve(code === 0);
-    });
-    proc.on('error', () => {
-      clearTimeout(timeout);
-      resolve(false);
-    });
-  });
-}
-
-/**
- * Thrown when the CLI path cannot serve a request (binary missing, not logged
- * in, non-zero exit, timeout). Lets the router / callers degrade gracefully
- * instead of silently falling back to the paid API.
- */
-export class ClaudeCliUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ClaudeCliUnavailableError';
+  await acquireSlot();
+  try {
+    await spawnCli(['--version'], '', 10000);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    releaseSlot();
   }
 }
 
@@ -96,6 +84,7 @@ function releaseSlot(): void {
 // Availability probe result, memoized for the process lifetime (the CLI binary
 // does not appear/disappear during a run). A restart re-probes.
 let availabilityCache: boolean | null = null;
+let availabilityPending: Promise<boolean> | null = null;
 
 /**
  * Whether the Claude Code CLI binary responds to `--version`.
@@ -104,8 +93,15 @@ let availabilityCache: boolean | null = null;
  */
 export async function isClaudeCliAvailable(): Promise<boolean> {
   if (availabilityCache !== null) return availabilityCache;
-  availabilityCache = await checkClaudeAvailable();
-  return availabilityCache;
+  availabilityPending ??= checkClaudeAvailable()
+    .then((result) => {
+      availabilityCache = result;
+      return result;
+    })
+    .finally(() => {
+      availabilityPending = null;
+    });
+  return availabilityPending;
 }
 
 /**
@@ -150,6 +146,16 @@ function buildCliEnv(): NodeJS.ProcessEnv {
 const DISALLOWED_TOOLS =
   'Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,Task,NotebookEdit,TodoWrite,MultiEdit';
 
+/** Auxiliary calls generate text; they do not need the default coding-agent prompt or tools. */
+const TEXT_ONLY_ARGS = [
+  '--effort',
+  'low',
+  '--tools',
+  '',
+  '--system-prompt',
+  'You are a text processing assistant. Follow the supplied instructions and return only the requested text. Do not use tools.',
+];
+
 /**
  * Fold system prompt + conversation into a single stdin prompt. Passing text via
  * stdin (not CLI args) avoids all cross-platform shell-quoting hazards.
@@ -188,49 +194,94 @@ function trackAuxCliChild(child: ChildProcess): () => void {
 }
 
 /** Spawn the CLI with the given args, feed `prompt` on stdin, resolve stdout. */
-async function spawnCli(args: string[], prompt: string): Promise<string> {
+async function spawnCli(
+  args: string[],
+  prompt: string,
+  timeoutMs = CLI_TIMEOUT_MS,
+): Promise<string> {
   const claudePath = await getClaudePathAsync();
   auxCliCleanup.assertReady();
+  const [command, spawnArgs] = buildSpawnCommand(claudePath, args);
+  const launch = await prepareAuxCli(command, tmpdir(), buildCliEnv(), spawnArgs);
   return new Promise((resolve, reject) => {
-    const [command, spawnArgs] = buildSpawnCommand(claudePath, args);
-    const child: ChildProcess = spawn(command, spawnArgs, {
-      cwd: tmpdir(), // isolate from the repo even if a tool slipped through
-      shell: true,
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: buildCliEnv(),
-    });
+    let child: ChildProcess;
+    try {
+      child = spawn(
+        launch?.command ?? command,
+        launch?.args ?? spawnArgs,
+        launch?.options ?? {
+          cwd: tmpdir(), // isolate from the repo even if a tool slipped through
+          shell: true,
+          windowsHide: true,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: buildCliEnv(),
+        },
+      );
+    } catch (error) {
+      // A synchronous spawn failure must release local ownership while preserving its durable hold.
+      void (launch ? launch.stop() : Promise.resolve())
+        .catch((cleanupError) => {
+          log.error({ cleanupError }, 'Auxiliary launch cleanup unresolved');
+        })
+        .finally(() => reject(error));
+      return;
+    }
     const untrack = trackAuxCliChild(child);
 
     let stdout = '';
     let stderr = '';
-    let timedOut = false;
+    let settled = false;
+    const confirmed = launch?.attach(child) ?? Promise.resolve();
+    const cleanup = async (stop: boolean) => {
+      if (launch) {
+        if (stop) await launch.stop();
+        else await launch.finish();
+        untrack();
+      } else if (stop) auxCliCleanup.stop(child);
+      else untrack();
+    };
+    const fail = async (message: string, stop: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        await cleanup(stop);
+      } catch (error) {
+        log.error({ error, pid: child.pid }, 'Auxiliary CLI cleanup unresolved');
+        message += `; cleanup unresolved: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      reject(new ClaudeCliUnavailableError(message));
+    };
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', (d: string) => (stdout += d));
-    child.stderr?.on('data', (d: string) => (stderr += d));
+    child.stdout?.on('data', (d: string) => {
+      if (!settled) stdout += d;
+    });
+    child.stderr?.on('data', (d: string) => {
+      if (!settled) stderr += d;
+    });
 
     const timer = setTimeout(() => {
-      timedOut = true;
-      // Cleanup owns tracking until every observed member has exited.
-      try {
-        auxCliCleanup.stop(child);
-      } catch (error) {
-        log.error({ error, pid: child.pid }, 'Auxiliary CLI timeout cleanup failed');
-      }
-      reject(new ClaudeCliUnavailableError(`Claude CLI timed out after ${CLI_TIMEOUT_MS}ms`));
-    }, CLI_TIMEOUT_MS);
+      void fail(`Claude CLI timed out after ${timeoutMs}ms`, true);
+    }, timeoutMs);
 
     child.on('error', (err) => {
-      clearTimeout(timer);
-      if (timedOut) return;
-      untrack();
-      reject(new ClaudeCliUnavailableError(`Claude CLI spawn failed: ${err.message}`));
+      void fail(`Claude CLI spawn failed: ${err.message}`, Boolean(launch));
     });
-    child.on('close', (code) => {
+    child.on('close', async (code) => {
       clearTimeout(timer);
-      if (timedOut) return;
-      untrack();
+      if (settled) return;
+      settled = true;
+      try {
+        await cleanup(false);
+      } catch (error) {
+        reject(
+          new ClaudeCliUnavailableError(
+            `Claude CLI cleanup unresolved: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+        return;
+      }
       if (code === 0) {
         resolve(stdout);
       } else {
@@ -246,7 +297,16 @@ async function spawnCli(args: string[], prompt: string): Promise<string> {
     child.stdin?.on('error', (err) =>
       log.warn({ err }, 'Claude CLI stdin error while writing prompt'),
     );
-    child.stdin?.end(buf);
+    void confirmed.then(
+      () => {
+        if (!settled) child.stdin?.end(buf);
+      },
+      (error) =>
+        fail(
+          `Claude CLI ownership failed: ${error instanceof Error ? error.message : String(error)}`,
+          true,
+        ),
+    );
   });
 }
 
@@ -276,6 +336,7 @@ export async function callClaudeCli(
       toCliModel(model),
       '--disallowedTools',
       DISALLOWED_TOOLS,
+      ...TEXT_ONLY_ARGS,
     ];
     const stdout = await spawnCli(args, combinePrompt(messages, systemPrompt));
     const jsonText = extractLastJsonObject(stdout.trim()) ?? stdout.trim();
@@ -331,6 +392,7 @@ export async function callClaudeCliStream(
     toCliModel(model),
     '--disallowedTools',
     DISALLOWED_TOOLS,
+    ...TEXT_ONLY_ARGS,
   ];
 
   await acquireSlot();
@@ -343,107 +405,43 @@ export async function callClaudeCliStream(
     throw error;
   }
   const [command, spawnArgs] = buildSpawnCommand(claudePath, args);
-  const child = spawn(command, spawnArgs, {
-    cwd: tmpdir(),
-    shell: true,
-    windowsHide: true,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: buildCliEnv(),
-  });
+  let launch: Awaited<ReturnType<typeof prepareAuxCli>>;
+  let child: ChildProcess;
+  try {
+    launch = await prepareAuxCli(command, tmpdir(), buildCliEnv(), spawnArgs);
+    child = spawn(
+      launch?.command ?? command,
+      launch?.args ?? spawnArgs,
+      launch?.options ?? {
+        cwd: tmpdir(),
+        shell: true,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: buildCliEnv(),
+      },
+    );
+  } catch (error) {
+    if (launch!)
+      await launch
+        .stop()
+        .catch((cleanupError) =>
+          log.error({ cleanupError }, 'Auxiliary launch cleanup unresolved'),
+        );
+    releaseSlot();
+    throw error;
+  }
   const untrack = trackAuxCliChild(child);
+  const confirmed = launch?.attach(child) ?? Promise.resolve();
   child.stdout?.setEncoding('utf8');
   child.stderr?.setEncoding('utf8');
 
-  const encoder = new TextEncoder();
-  const emit = (controller: ReadableStreamDefaultController, payload: object) =>
-    controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
-
-  return new ReadableStream({
-    start(controller) {
-      let lineBuffer = '';
-      let emittedAny = false;
-      let fallbackResult = '';
-      let settled = false;
-
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        untrack();
-        if (!emittedAny && fallbackResult) emit(controller, { content: fallbackResult });
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-        controller.close();
-        releaseSlot();
-      };
-      const fail = (message: string) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        emit(controller, { error: message });
-        controller.close();
-        releaseSlot();
-        try {
-          auxCliCleanup.stop(child);
-        } catch (error) {
-          log.error({ error, pid: child.pid }, 'Auxiliary CLI stream cleanup failed');
-        }
-      };
-
-      const timer = setTimeout(
-        () => fail(`Claude CLI timed out after ${CLI_TIMEOUT_MS}ms`),
-        CLI_TIMEOUT_MS,
-      );
-
-      const handleLine = (line: string) => {
-        if (settled) return;
-        const trimmed = line.trim();
-        if (!trimmed) return;
-        let evt: {
-          type?: string;
-          result?: string;
-          message?: { content?: Array<{ type?: string; text?: string }> };
-        };
-        try {
-          evt = JSON.parse(trimmed);
-        } catch {
-          return; // ignore non-JSON noise
-        }
-        if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
-          for (const block of evt.message!.content!) {
-            if (block.type === 'text' && block.text) {
-              emittedAny = true;
-              emit(controller, { content: block.text });
-            }
-          }
-        } else if (evt.type === 'result' && typeof evt.result === 'string') {
-          fallbackResult = evt.result;
-        }
-      };
-
-      child.stdout?.on('data', (chunk: string) => {
-        if (settled) return;
-        lineBuffer += chunk;
-        let idx: number;
-        while ((idx = lineBuffer.indexOf('\n')) !== -1) {
-          handleLine(lineBuffer.slice(0, idx));
-          lineBuffer = lineBuffer.slice(idx + 1);
-        }
-      });
-      let stderr = '';
-      child.stderr?.on('data', (d: string) => (stderr += d));
-      child.on('error', (err) => fail(`Claude CLI spawn failed: ${err.message}`));
-      child.on('close', (code) => {
-        if (lineBuffer.trim()) handleLine(lineBuffer);
-        if (code === 0) finish();
-        else fail(`Claude CLI exited ${code}: ${stderr.slice(0, 300)}`);
-      });
-
-      // Feed the prompt now that stdout handlers are attached, then close stdin
-      // so the CLI produces output.
-      child.stdin?.on('error', (err) =>
-        log.warn({ err }, 'Claude CLI stdin error while writing prompt'),
-      );
-      child.stdin?.end(Buffer.from(prompt, 'utf8'));
-    },
-  });
+  return createClaudeCliStream(
+    child,
+    prompt,
+    launch,
+    confirmed,
+    untrack,
+    releaseSlot,
+    CLI_TIMEOUT_MS,
+  );
 }

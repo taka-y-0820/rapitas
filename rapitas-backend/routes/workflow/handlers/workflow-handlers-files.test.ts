@@ -30,7 +30,10 @@ const mockCreate = mock(() => Promise.resolve({}));
 const mockWorkflowTransitionFindFirst = mock(() => Promise.resolve(null));
 const mockPrisma = {
   task: {
-    findUnique: mockFindUnique,
+    findUnique: (args: any) =>
+      args.select?.updatedAt && Object.keys(args.select).length === 1
+        ? Promise.resolve({ updatedAt: new Date(0) })
+        : mockFindUnique(args),
     findMany: mockFindMany,
     update: mockUpdate,
     updateMany: mockUpdateMany,
@@ -468,8 +471,8 @@ describe('handleSaveFile — 再実行の fast-forward（既存 research.md の�
 });
 
 // -------------------------------------------------------------------------
-describe('handleSaveFile — research が修正不要結論ならタスクを完了すること', () => {
-  test('「結論: 修正不要」付き research.md 保存で completed + done になること', async () => {
+describe('handleSaveFile — 修正不要の調査でも完了ゲートを省略しない', () => {
+  test('「結論: 修正不要」でも運用確認が残る場合は research_done に留まる', async () => {
     mockResolveWorkflowDir.mockResolvedValueOnce({
       task: { workflowStatus: 'draft', id: 1 },
       dir: '/fake/dir/1',
@@ -480,12 +483,11 @@ describe('handleSaveFile — research が修正不要結論ならタスクを完
 
     const result = await handleSaveFile({
       params: { taskId: '1', fileType: 'research' },
-      body: '# 調査結果\n\n## 結論: 修正不要\n既存実装で充足',
+      body: '# 調査結果\n\n## 結論: 修正不要\n既存実装で充足。バックエンド再起動と運用経路の確認は未実施。',
       set: makeSet(),
     });
 
-    // newStatus='completed' は research-no-change 完了経路でのみ設定される。
-    expect((result as { workflowStatus?: string }).workflowStatus).toBe('completed');
+    expect((result as { workflowStatus?: string }).workflowStatus).toBe('research_done');
   });
 
   test('修正不要結論が無い通常 research.md は research_done に進むこと', async () => {
@@ -874,7 +876,7 @@ describe('handleSaveFile — validateVerify 失敗によるバウンスは冗長
     // Blocking side effects still happen...
     expect(mockUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 1 },
+        where: { id: 1, updatedAt: new Date(0) },
         data: expect.objectContaining({ status: 'blocked' }),
       }),
     );
@@ -1063,7 +1065,7 @@ describe('handleSaveFile — adversarial review FAIL with repairs exhausted', ()
 
     expect(mockUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 1 },
+        where: { id: 1, updatedAt: new Date(0) },
         data: expect.objectContaining({ status: 'blocked' }),
       }),
     );
@@ -1111,7 +1113,7 @@ describe('handleSaveFile — adversarial review FAIL with repairs exhausted', ()
 
     expect(mockUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 1 },
+        where: { id: 1, updatedAt: new Date(0) },
         data: expect.objectContaining({ status: 'blocked' }),
       }),
     );

@@ -46,7 +46,10 @@ export async function blockReviewedEmptyDiff(
             workflowStatus: 'verify_done',
             updatedAt: receipt.evaluatedUpdatedAt,
           },
-          data: { status: 'blocked', updatedAt: new Date() },
+          data: {
+            status: 'blocked',
+            updatedAt: new Date(Math.max(Date.now(), receipt.evaluatedUpdatedAt.getTime() + 1)),
+          },
         });
         if (updated.count !== 1) throw new Error('Empty-diff block held: task changed');
         await tx.workflowTransition.create({

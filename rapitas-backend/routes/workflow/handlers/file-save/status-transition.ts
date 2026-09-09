@@ -1,3 +1,4 @@
+import { writeBlockedTask } from '../../../../services/workflow/blocked-task-write';
 /**
  * FileSave Status Transition
  *
@@ -10,7 +11,6 @@
 import { prisma } from '../../../../config';
 import { createLogger } from '../../../../config/logger';
 import type { WorkflowFileType } from '../../core/workflow-helpers';
-import { researchConcludesNoChange } from '../../../../services/workflow/completion-gate';
 import { recordTransition } from '../../../../services/workflow/transition-recorder';
 import { checkWorkflowInvariants } from '../../../../services/workflow/workflow-invariants';
 import { attemptInvariantCutoff } from '../../../../services/workflow/verify-invariant-repair';
@@ -99,7 +99,7 @@ export async function computeAndApplyStatusTransition(params: {
   // universal save choke point) so the auto-run path — which writes via
   // writeWorkflowFile directly, bypassing this API route — also fires it.
   // writeWorkflowFile was already called above to persist savedContent.
-  let researchCompleted = false;
+  const researchCompleted = false;
   // True when a verify RE-RUN (ci_repair / verify_repair) reported a failure on
   // work that was ALREADY validated + PR'd — a false negative we complete instead
   // of looping. Marks the task done like researchCompleted does.
@@ -119,15 +119,8 @@ export async function computeAndApplyStatusTransition(params: {
   // live on task 415: verify_repair bounce → redundant file_saved:verify →
   // epilogue hard-block → blocked_auto_retry → reset to draft).
   let verifyRepairBounced = false;
-  if (
-    fileType === 'research' &&
-    (!currentStatus || currentStatus === 'draft' || currentStatus === 'research_done') &&
-    researchConcludesNoChange(savedContent)
-  ) {
-    log.info(`[Workflow] Research concluded no change needed — completing task ${taskId}`);
-    newStatus = 'completed';
-    researchCompleted = true;
-  } else if (fileType === 'research' && (!currentStatus || currentStatus === 'draft')) {
+  // Research may establish that code changes are unnecessary, not that verification is complete.
+  if (fileType === 'research' && (!currentStatus || currentStatus === 'draft')) {
     log.info(`[Workflow] Research completed: setting newStatus to research_done`);
     newStatus = 'research_done';
   } else if (fileType === 'plan' && (!currentStatus || currentStatus === 'research_done')) {
@@ -216,12 +209,7 @@ export async function computeAndApplyStatusTransition(params: {
             { taskId, summary: verifyValidation.summary },
             '[Workflow] verify.md failed validation and repairs exhausted — blocking task',
           );
-          await prisma.task
-            .update({
-              where: { id: taskId },
-              data: { status: 'blocked', updatedAt: new Date() },
-            })
-            .catch(() => {});
+          await writeBlockedTask(prisma, taskId).catch(() => {});
           // Align the execution/session to failed so the log viewer doesn't show
           // 「完了」 while the task is blocked (the status gap).
           await markLatestExecutionFailed(
@@ -331,9 +319,7 @@ export async function computeAndApplyStatusTransition(params: {
         return false;
       });
       if (invariantCutoffRecorded) {
-        await prisma.task
-          .update({ where: { id: taskId }, data: { status: 'blocked', updatedAt: new Date() } })
-          .catch(() => {});
+        await writeBlockedTask(prisma, taskId).catch(() => {});
         await markLatestExecutionFailed(
           taskId,
           `不変条件違反が複数サイクルで再発したためブロックしました: ${violations.map((v) => v.code).join(', ')}`,

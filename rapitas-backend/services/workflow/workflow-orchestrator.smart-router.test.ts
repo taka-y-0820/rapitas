@@ -124,6 +124,8 @@ mock.module('./workflow-agent-executor', () => ({
   executeAPIAgent: executeAPIAgentMock,
 }));
 mock.module('../agents/task-execution-lock', () => ({
+  getTaskExecutionCancellationVersion: () => 0,
+  getTaskExecutionLockOwner: () => Symbol.for('test-workflow-lock'),
   DEFAULT_LOCK_TTL_MS: 30 * 60 * 1000,
   WORKFLOW_LOCK_TTL_MS: 30 * 60 * 1000,
   acquireTaskExecutionLock: mock(() => true),

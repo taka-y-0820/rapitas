@@ -6,9 +6,18 @@
  * per-flag gating, and the reason it records for the transition/activity log.
  */
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { ExecutionCancelledError } from '../agents/execution-cancelled-error';
+import { releaseTaskExecutionLock } from '../agents/task-execution-lock';
 
+const advanceWorkflow = mock(async () => ({ success: true }));
+mock.module('./workflow-orchestrator', () => ({
+  WorkflowOrchestrator: { getInstance: () => ({ advanceWorkflow }) },
+}));
+
+const logError = mock(() => {});
+const logInfo = mock(() => {});
 mock.module('../../config/logger', () => ({
-  createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
+  createLogger: () => ({ info: logInfo, warn: () => {}, error: logError, debug: () => {} }),
   logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
 }));
 
@@ -55,6 +64,9 @@ const { resolveEffectiveAutoApprovePlan, maybeAutoApprovePlan } =
   await import('./plan-auto-approve');
 
 beforeEach(() => {
+  advanceWorkflow.mockClear();
+  logError.mockClear();
+  logInfo.mockClear();
   userSettings = null;
   taskRow = null;
   taskUpdates.length = 0;
@@ -93,6 +105,23 @@ describe('resolveEffectiveAutoApprovePlan', () => {
     taskRow = { autoApprovePlan: false, parentId: null };
     userSettings = { autoApprovePlan: false, autoApproveSubtaskPlan: false };
     expect(await resolveEffectiveAutoApprovePlan(1)).toBe(false);
+  });
+});
+
+describe('plan auto-approval continuation', () => {
+  test('stop after approval revokes the delayed next phase', async () => {
+    taskRow = { autoApprovePlan: true, workflowStatus: 'plan_created' };
+    await maybeAutoApprovePlan(99121);
+    releaseTaskExecutionLock(99121);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    expect(advanceWorkflow).not.toHaveBeenCalled();
+  });
+
+  test('an unstopped approval still advances normally', async () => {
+    taskRow = { autoApprovePlan: true, workflowStatus: 'plan_created' };
+    await maybeAutoApprovePlan(99122);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    expect(advanceWorkflow).toHaveBeenCalledWith(99122, 'ja');
   });
 });
 
@@ -150,5 +179,31 @@ describe('maybeAutoApprovePlan', () => {
     userSettings = { autoApprovePlan: true, autoApproveSubtaskPlan: true };
     const r = await maybeAutoApprovePlan(1, 'ja', { autoAdvance: false });
     expect(r.reason).toBe('task-level autoApprovePlan setting enabled');
+  });
+});
+
+describe('auto-advance error classification', () => {
+  test('intentional stop is informational', async () => {
+    taskRow = { autoApprovePlan: true, workflowStatus: 'plan_created' };
+    advanceWorkflow.mockRejectedValueOnce(new ExecutionCancelledError('ownership revoked'));
+    await maybeAutoApprovePlan(99123);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    expect(logError).not.toHaveBeenCalled();
+    expect(logInfo).toHaveBeenCalledWith(
+      { taskId: 99123, reason: 'ownership revoked' },
+      '[plan-auto-approve] Auto-advance cancelled by stop',
+    );
+  });
+
+  test('unexpected failures remain errors', async () => {
+    taskRow = { autoApprovePlan: true, workflowStatus: 'plan_created' };
+    const failure = new Error('database unavailable');
+    advanceWorkflow.mockRejectedValueOnce(failure);
+    await maybeAutoApprovePlan(99124);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    expect(logError).toHaveBeenCalledWith(
+      { err: failure, taskId: 99124 },
+      '[plan-auto-approve] Auto-advance failed (non-fatal)',
+    );
   });
 });

@@ -196,6 +196,7 @@ export async function executeWithFallbackAgent(
     const stoppedBeforeSpawn = await stoppedFallbackResult(fallbackCtx);
     if (stoppedBeforeSpawn) return stoppedBeforeSpawn;
     const retryStartedMs = Date.now();
+    options.assertExecutionAllowed?.();
     const retryResult = await newAgent.execute(taskWithAnalysis);
 
     // Check if retry also failed

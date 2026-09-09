@@ -5,6 +5,7 @@
  * roles (memory, lessons, hypothesis ledger, plan, worktree diff, measured
  * GROUND TRUTH verification). Does not build contexts for other roles.
  */
+import { observeWorkflowStage } from './workflow-stage-timing';
 import { prisma } from '../../config/database';
 import { readWorkflowFile } from './workflow-file-utils';
 import { buildMemoryContext } from './workflow-memory-context';
@@ -51,14 +52,20 @@ For each CI result, record the commit SHA it tested. A failure on an older commi
 Preserve command exit codes before formatting output: piping a command into tail and reading $? reports tail's status. Save the original command status and full output; do not claim success from the pipe's status.`;
   // Recall prior knowledge for the verifier too — failure lessons from
   // similar tasks tell it exactly which regressions to probe for.
-  const verifierMemory = await buildMemoryContext(taskId, task, language);
+  const verifierMemory = await observeWorkflowStage(taskId, 'context.buildMemoryContext', () =>
+    buildMemoryContext(taskId, task, language),
+  );
   if (verifierMemory) {
     ctx += `\n\n${verifierMemory}`;
   }
   // Cross-task learning loop: recurring verify.md rejections (measured-vs-
   // claimed contradictions, output-discipline violations) injected BEFORE
   // the report is written — the largest single bounce bucket historically.
-  const verifyLessons = await buildCriticLessonsSection('verify', language);
+  const verifyLessons = await observeWorkflowStage(
+    taskId,
+    'context.buildCriticLessonsSection',
+    () => buildCriticLessonsSection('verify', language),
+  );
   if (verifyLessons) {
     ctx += `\n\n${verifyLessons}`;
   }

@@ -12,7 +12,8 @@ test('preserves requirements and artifact tails without truncation', () => {
     verify: '失敗証拠',
   };
   const input = JSON.parse(buildReplanReviewInput(snapshot)!);
-  const { requirementSources, ...original } = input;
+  const { requirementSources, currentPlanAuthority, ...original } = input;
+  expect(typeof currentPlanAuthority).toBe('string');
   expect(requirementSources.description.join('\n')).toBe(snapshot.description);
   expect(requirementSources.acceptanceCriteria).toEqual(snapshot.acceptanceCriteria);
   expect({

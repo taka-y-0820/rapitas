@@ -8,9 +8,35 @@ import {
   acquireTaskExecutionLock,
   releaseTaskExecutionLock,
   isTaskExecutionLocked,
+  getTaskExecutionLockOwner,
+  getTaskExecutionCancellationVersion,
 } from './task-execution-lock';
 
 describe('task-execution-lock', () => {
+  test('normal release preserves continuation but a stop between phases revokes it', () => {
+    const id = 99002;
+    acquireTaskExecutionLock(id);
+    const version = getTaskExecutionCancellationVersion(id);
+    releaseTaskExecutionLock(id, getTaskExecutionLockOwner(id));
+    expect(getTaskExecutionCancellationVersion(id)).toBe(version);
+    releaseTaskExecutionLock(id);
+    expect(getTaskExecutionCancellationVersion(id)).not.toBe(version);
+  });
+  test('a stopped preparation cannot own or release the replacement lease', () => {
+    const id = 99001;
+    acquireTaskExecutionLock(id);
+    const oldOwner = getTaskExecutionLockOwner(id);
+    expect(oldOwner).toBeDefined();
+    releaseTaskExecutionLock(id);
+    expect(getTaskExecutionLockOwner(id)).toBeUndefined();
+    acquireTaskExecutionLock(id);
+    const newOwner = getTaskExecutionLockOwner(id);
+    expect(newOwner).not.toBe(oldOwner);
+    releaseTaskExecutionLock(id, oldOwner);
+    expect(getTaskExecutionLockOwner(id)).toBe(newOwner);
+    releaseTaskExecutionLock(id, newOwner);
+    expect(isTaskExecutionLocked(id)).toBe(false);
+  });
   // Each test uses a unique task id to avoid cross-test lock leakage.
   let nextId = 1000;
   let taskId: number;

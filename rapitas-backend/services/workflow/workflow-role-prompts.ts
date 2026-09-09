@@ -9,6 +9,7 @@ import {
   QUESTION_FORMAT_GUIDANCE_JA,
   QUESTION_FORMAT_GUIDANCE_EN,
 } from './workflow-question-format-guidance';
+import { resolveAcceptanceCriteria } from '../agents/verification/acceptance-self-check';
 
 /** Researcher-role prompt texts. */
 export interface ResearcherTexts {
@@ -82,12 +83,20 @@ export interface RoleContextTexts {
  */
 export function buildRoleTexts(
   taskId: number,
-  task: { title: string; description: string | null },
+  task: { title: string; description: string | null; acceptanceCriteria?: string | null },
   language: 'ja' | 'en',
 ): RoleContextTexts {
+  const criteria = resolveAcceptanceCriteria(task);
+  const acceptanceBlock = criteria.length
+    ? '\n\n' +
+      (language === 'ja'
+        ? '## 明示された受入条件\n以下の各条件を計画・実装・検証に対応づけてください。調査結果や過去の計画を理由に省略しないでください。既存計画との矛盾や欠落は完了扱いせず報告し、正規の再計画経路で解消してください。\n'
+        : '## Explicit acceptance criteria\nMap every criterion to planning, implementation and verification. Do not omit criteria based on prior research or plans. Report contradictions or omissions in an existing plan and resolve them through the supported replanning flow before claiming completion.\n') +
+      criteria.map((criterion, index) => `${index + 1}. ${criterion}`).join('\n')
+    : '';
   const texts = {
     ja: {
-      taskInfo: `# タスク情報\n- **タイトル**: ${task.title}\n- **説明**: ${task.description || '(なし)'}\n- **タスクID**: ${taskId}`,
+      taskInfo: `# タスク情報\n- **タイトル**: ${task.title}\n- **説明**: ${task.description || '(なし)'}\n- **タスクID**: ${taskId}${acceptanceBlock}`,
       questionFormat: QUESTION_FORMAT_GUIDANCE_JA,
       researcher: {
         instruction: '上記のタスクについてコードベースを調査してください。',
@@ -107,7 +116,7 @@ export function buildRoleTexts(
         output:
           '調査結果をresearch.mdとしてMarkdown形式でまとめてください。\n\n' +
           '出力整形: 見出しはテンプレートの形（例: `## 影響範囲分析`）のまま書き、`[...]` のプレースホルダ説明を見出しや本文に残さない（`## 影響範囲: [変更が及ぶファイル一覧]` のような見出しは不可）。類似コードのセクション見出しは「類似機能」を使う（「類似実装」ではなく）。\n\n' +
-          '**重要**: 調査の結果、タスクの要件が既存コードで**既に満たされており修正が不要**だと判断した場合は、research.md の最後に必ずこの見出し行を入れてください: `## 結論: 修正不要`（直後に1〜2行で根拠を記載）。これにより plan/実装フェーズに進まず research 段階で完了でき、不要な再計画ループ（plan_invalid_replan）や重複PRを避けられます。本当に変更が必要な場合はこの行を書かないでください。',
+          '**重要**: 既存コードで修正が不要なら research.md に `## 結論: 修正不要` と根拠を記載してください。これはコード変更の要否の判断であり、タスク完了の証拠ではありません。未実施のテスト・運用確認・受入条件を明記し、通常の検証と必要な完了ゲートを維持してください。不要な実装や重複PRは作らず、既存成果の確認を後続作業として示してください。',
       },
       planner: {
         researchHeader: '# リサーチャーの調査結果 (research.md)',
@@ -193,7 +202,7 @@ export function buildRoleTexts(
       },
     },
     en: {
-      taskInfo: `# Task Information\n- **Title**: ${task.title}\n- **Description**: ${task.description || '(None)'}\n- **Task ID**: ${taskId}`,
+      taskInfo: `# Task Information\n- **Title**: ${task.title}\n- **Description**: ${task.description || '(None)'}\n- **Task ID**: ${taskId}${acceptanceBlock}`,
       questionFormat: QUESTION_FORMAT_GUIDANCE_EN,
       researcher: {
         instruction: 'Please investigate the codebase for the above task.',
@@ -211,7 +220,7 @@ export function buildRoleTexts(
         output:
           'Please summarize the research results as research.md in Markdown format.\n\n' +
           'Formatting: keep headings in their template form (e.g. `## 影響範囲分析`) — never leave `[...]` placeholder notes in headings or body (a heading like `## 影響範囲: [list of affected files]` is invalid). Use 「類似機能」 as the similar-code section heading (not 「類似実装」).\n\n' +
-          '**Important**: If your investigation concludes the task requirement is ALREADY satisfied by existing code and no change is needed, you MUST end research.md with this exact heading line: `## Conclusion: No change needed` (followed by 1-2 lines of justification). This lets the task complete at the research phase instead of proceeding to plan/implementation — avoiding a wasted re-plan loop (plan_invalid_replan) and a duplicate PR. Do NOT write this line if any change is actually required.',
+          '**Important**: If existing code needs no change, include `## Conclusion: No change needed` with justification. This is a code-change assessment, not completion evidence. List outstanding tests, operational verification, and acceptance criteria; preserve normal verification and required completion gates. Avoid unnecessary implementation or duplicate PRs and identify verification of existing work as the next step.',
       },
       planner: {
         researchHeader: '# Research Results (research.md)',

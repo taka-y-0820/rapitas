@@ -51,12 +51,17 @@ const mockSpawn = mock((command: string, args: string[], options: Record<string,
 });
 const mockGetClaudePathAsync = mock(() => Promise.resolve(claudePathImpl()));
 
+// OS containment is exercised with real processes in windows-aux-job.live.test.ts.
+mock.module('./aux-cli-launch', () => ({ prepareAuxCli: async () => null }));
 mock.module('child_process', () => ({
   spawn: mockSpawn,
   // NOTE: agent-process-tracker (imported transitively for process registration)
   // statically imports execSync — must remain a valid named export even though
   // these tests never exercise that path.
   execSync: mock(() => ''),
+  execFile: mock(() => {
+    throw new Error('Unexpected process snapshot in provider unit test');
+  }),
   execFileSync: mock(() => Buffer.from('')),
   spawnSync: mock(() => ({ status: 0, stdout: '', stderr: '' })),
   fork: mock(() => {}),
@@ -146,6 +151,17 @@ afterEach(() => {
 // correctly plumbs the resolved path into the spawn command on Windows.
 
 describe('buildSpawnCommand — Windows', () => {
+  test('preserves an empty tool list and replaces the coding prompt for text calls', async () => {
+    await withPlatform('win32', async () => {
+      const pending = callClaudeCli(undefined, [{ role: 'user', content: 'hi' }], undefined, 100);
+      await flush();
+      expect(fullCommand(0)).toContain('--tools ""');
+      expect(fullCommand(0)).toContain('--effort low');
+      expect(fullCommand(0)).toContain('--system-prompt "You are a text processing assistant.');
+      respondSuccess(spawnedChildren[0]);
+      await pending;
+    });
+  });
   test('embeds the resolved CLI path in the spawn command', async () => {
     claudePathImpl = () => process.execPath;
 

@@ -1,3 +1,4 @@
+import { writeBlockedTask } from '../blocked-task-write';
 /**
  * probe-alert
  *
@@ -43,7 +44,7 @@ export async function alertPermanentProbeFailure(
       source: 'agent',
       dedupKey: `probe-permanent-fail:${taskId}:${targetId}`,
     });
-    await prisma.task.update({ where: { id: taskId }, data: { status: 'blocked' } });
+    await writeBlockedTask(prisma, taskId);
   } catch (err) {
     log.warn(
       { err, taskId, targetId },

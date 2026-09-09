@@ -44,12 +44,17 @@ const mockSpawn = mock((_command: string, _args: string[], _options: Record<stri
   return child as unknown as ChildProcess;
 });
 
+// OS containment is exercised with real processes in windows-aux-job.live.test.ts.
+mock.module('./aux-cli-launch', () => ({ prepareAuxCli: async () => null }));
 mock.module('child_process', () => ({
   spawn: mockSpawn,
   // NOTE: agent-process-tracker (imported transitively for process registration)
   // statically imports execSync — must remain a valid named export even though
   // these tests never exercise that path.
   execSync: mock(() => ''),
+  execFile: mock(() => {
+    throw new Error('Unexpected process snapshot in provider unit test');
+  }),
   execFileSync: mock(() => Buffer.from('')),
   spawnSync: mock(() => ({ status: 0, stdout: '', stderr: '' })),
   fork: mock(() => {}),
@@ -199,6 +204,28 @@ describe('callClaudeCli — malformed output', () => {
 // ── callClaudeCliStream: process-level failures ──────────────────────────────
 
 describe('callClaudeCliStream — process failures', () => {
+  test.each([{ is_error: true }, { subtype: 'error' }, { subtype: 'error_max_turns' }])(
+    'a structured error result cannot become success on exit zero: %j',
+    async (failure) => {
+      const stream = await callClaudeCliStream(
+        undefined,
+        [{ role: 'user', content: 'hi' }],
+        undefined,
+        100,
+      );
+      const child = spawnedChildren[0];
+      const reading = drainSSE(stream);
+      child.stdout.emit(
+        'data',
+        JSON.stringify({ type: 'result', result: 'execution failed', ...failure }) + '\n',
+      );
+      child.emit('close', 0);
+      const raw = await reading;
+      expect(raw).toContain('Claude CLI reported an error');
+      expect(raw).not.toContain('[DONE]');
+      expect(raw).not.toContain('"content":"execution failed"');
+    },
+  );
   test('spawn error event yields a single error frame with no [DONE]', async () => {
     const stream = await callClaudeCliStream(
       undefined,

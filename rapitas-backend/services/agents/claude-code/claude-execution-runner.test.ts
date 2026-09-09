@@ -133,3 +133,24 @@ describe('buildSpawnEnv', () => {
     }
   });
 });
+
+describe('autonomous reasoning effort', () => {
+  test.each([undefined, 'invalid', 'high', ' medium '])(
+    'bounds effort and records the selected value',
+    (configured) => {
+      const previous = process.env.RAPITAS_CLAUDE_EFFORT;
+      try {
+        if (configured === undefined) delete process.env.RAPITAS_CLAUDE_EFFORT;
+        else process.env.RAPITAS_CLAUDE_EFFORT = configured;
+        const agent = new ClaudeCodeAgent('effort', 'test-agent', {});
+        const { args, logExtras } = buildClaudeArgs(agent);
+        const expected = configured === 'high' ? 'high' : 'medium';
+        expect(args[args.indexOf('--effort') + 1]).toBe(expected);
+        expect(logExtras.some((line) => line.endsWith('Effort: ' + expected))).toBe(true);
+      } finally {
+        if (previous === undefined) delete process.env.RAPITAS_CLAUDE_EFFORT;
+        else process.env.RAPITAS_CLAUDE_EFFORT = previous;
+      }
+    },
+  );
+});

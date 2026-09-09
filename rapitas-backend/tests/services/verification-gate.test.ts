@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test';
 const mockPrisma = {
   task: {
     update: mock(() => Promise.resolve({})),
-    findUnique: mock(() => Promise.resolve(null)),
+    findUnique: mock(() => Promise.resolve({ updatedAt: new Date(0) })),
   },
   agentSession: {
     update: mock(() => Promise.resolve({})),
@@ -123,7 +123,7 @@ describe('runVerificationGate', () => {
     resetMockFunctions(mockPrisma);
     mockPrisma.task.update.mockResolvedValue({});
     mockPrisma.agentSession.update.mockResolvedValue({});
-    mockPrisma.task.findUnique.mockResolvedValue(null);
+    mockPrisma.task.findUnique.mockResolvedValue({ updatedAt: new Date(0) });
     mockPrisma.agentExecutionConfig.findUnique.mockResolvedValue(null);
     createNotification.mockReset();
     createNotification.mockResolvedValue({});
@@ -149,7 +149,7 @@ describe('runVerificationGate', () => {
     expect(outcome.ok).toBe(false);
     expect(outcome.result?.summary).toContain('typecheck error');
     expect(mockPrisma.task.update).toHaveBeenCalledWith({
-      where: { id: 1 },
+      where: { id: 1, updatedAt: new Date(0) },
       data: expect.objectContaining({ status: 'blocked' }),
     });
     expect(mockPrisma.agentSession.update).toHaveBeenCalledWith({
@@ -169,7 +169,7 @@ describe('runVerificationGate', () => {
     expect(outcome.ok).toBe(false);
     expect(outcome.result?.unverifiable).toBe(true);
     expect(mockPrisma.task.update).toHaveBeenCalledWith({
-      where: { id: 1 },
+      where: { id: 1, updatedAt: new Date(0) },
       data: expect.objectContaining({ status: 'blocked' }),
     });
     expect(mockPrisma.agentSession.update).toHaveBeenCalledWith({
@@ -256,7 +256,7 @@ describe('runVerificationGate — indeterminate triage (task 659)', () => {
     resetMockFunctions(mockPrisma);
     mockPrisma.task.update.mockResolvedValue({});
     mockPrisma.agentSession.update.mockResolvedValue({});
-    mockPrisma.task.findUnique.mockResolvedValue(null);
+    mockPrisma.task.findUnique.mockResolvedValue({ updatedAt: new Date(0) });
     mockPrisma.agentExecutionConfig.findUnique.mockResolvedValue(null);
     submitConcern.mockReset();
     submitConcern.mockResolvedValue(1);

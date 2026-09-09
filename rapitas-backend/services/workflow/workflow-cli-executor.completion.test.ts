@@ -19,6 +19,7 @@ import {
   installWorkflowCliExecutorMocks,
 } from '../../tests/helpers/workflow-cli-executor-mock-state';
 import type { RoleTransition, WorkflowAdvanceResult } from './workflow-types';
+import { ExecutionCancelledError } from '../agents/execution-cancelled-error';
 
 installWorkflowCliExecutorMocks();
 
@@ -145,6 +146,33 @@ describe('executeCLIAgent — cleanup + AgentExecution completion flip', () => {
 describe('executeCLIAgent — no-outputFile status advance (implementer)', () => {
   beforeEach(() => {
     resetWfMockState();
+  });
+
+  test('a stop before a successful CLI result returns prevents phase advancement', async () => {
+    let stopped = false;
+    wf.executeTaskImpl = async () => {
+      stopped = true;
+      return { success: true, output: 'late successful output' };
+    };
+    const advance = mock(noopAdvance);
+    await expect(
+      executeCLIAgent(
+        1,
+        task,
+        agentConfig,
+        'system',
+        'context',
+        implementerTransition(),
+        'ja',
+        advance,
+        getOrCreateDevConfig,
+        () => {
+          if (stopped) throw new ExecutionCancelledError('ownership revoked');
+        },
+      ),
+    ).rejects.toThrow('ownership revoked');
+    expect(spies.taskUpdate).not.toHaveBeenCalled();
+    expect(advance).not.toHaveBeenCalled();
   });
 
   test('advances workflowStatus + records a phase_completed transition on success', async () => {

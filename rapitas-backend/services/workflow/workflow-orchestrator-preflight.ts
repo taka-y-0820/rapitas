@@ -130,6 +130,21 @@ export async function runPreflight(taskId: number) {
         '[WorkflowOrchestrator] intake gate failed — proceeding to research (fail-open)',
       );
     }
+    // Intake can persist new criteria. Refresh the execution input too, including
+    // when the user pinned the mode and provisional mode selection is skipped.
+    const freshSpec = await prisma.task.findUnique({
+      where: { id: taskId },
+      select: {
+        title: true,
+        description: true,
+        goals: true,
+        constraints: true,
+        acceptanceCriteria: true,
+        complexityScore: true,
+      },
+    });
+    if (!freshSpec) throw new Error('Task specification unavailable after intake');
+    Object.assign(task, freshSpec);
   }
 
   // Pre-research mode selection: pick the workflow mode from a cheap metadata
@@ -142,19 +157,8 @@ export async function runPreflight(taskId: number) {
   // Respects a user-pinned mode (workflowModeOverride). Fail-open.
   if (currentStatus === 'draft' && transition.role === 'researcher' && !task.workflowModeOverride) {
     try {
-      // Re-read the spec: the intake gate above may have just enriched it, and
-      // a richer spec makes the metadata estimate more accurate.
-      const fresh = await prisma.task
-        .findUnique({
-          where: { id: taskId },
-          select: {
-            complexityScore: true,
-            goals: true,
-            constraints: true,
-            acceptanceCriteria: true,
-          },
-        })
-        .catch(() => null);
+      // The post-intake refresh above is also the input for mode selection.
+      const fresh = task;
       // The metadata heuristic is computed IN-MEMORY for this provisional
       // mode pick only — it is not persisted. task.complexityScore holds
       // exclusively the research agent's code-grounded assessment

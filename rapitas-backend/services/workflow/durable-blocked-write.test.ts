@@ -10,9 +10,12 @@
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 
 const updateMock = mock(() => Promise.resolve({}));
+const previousRevision = new Date(Date.now() + 60_000);
+const findUniqueMock = mock(() => Promise.resolve({ updatedAt: previousRevision }));
 const mockPrisma = {
   task: {
     update: updateMock,
+    findUnique: findUniqueMock,
   },
 };
 
@@ -33,6 +36,7 @@ function noopLog() {
 
 describe('writeBlockedStatusDurable', () => {
   beforeEach(() => {
+    findUniqueMock.mockReset().mockResolvedValue({ updatedAt: previousRevision });
     updateMock.mockClear();
     updateMock.mockReset();
     createNotificationMock.mockClear();
@@ -117,7 +121,10 @@ describe('writeBlockedStatusDurable', () => {
     const [callArgs] = updateMock.mock.calls[0] as [
       { where: { id: number }; data: { status: string } },
     ];
-    expect(callArgs.where).toEqual({ id: 999 });
+    expect(callArgs.where).toEqual({ id: 999, updatedAt: previousRevision });
+    expect((callArgs.data as { updatedAt: Date }).updatedAt.getTime()).toBe(
+      previousRevision.getTime() + 1,
+    );
     expect(callArgs.data.status).toBe('blocked');
   });
 });

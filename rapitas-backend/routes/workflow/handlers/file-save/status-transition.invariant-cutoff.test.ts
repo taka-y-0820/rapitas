@@ -29,7 +29,10 @@ mock.module('../../../../config/logger', () => ({
 
 const mockTaskUpdate = mock(() => Promise.resolve({})) as any;
 const mockPrisma = {
-  task: { update: mockTaskUpdate, findUnique: mock(() => Promise.resolve(null)) },
+  task: {
+    update: mockTaskUpdate,
+    findUnique: mock(() => Promise.resolve({ updatedAt: new Date(0) })),
+  },
   workflowTransition: { findFirst: mock(() => Promise.resolve(null)) },
 };
 mock.module('../../../../config', () => ({ prisma: mockPrisma }));
@@ -154,7 +157,7 @@ describe('computeAndApplyStatusTransition — 不変条件カットオフの配�
     expect(mockRecordTransition).not.toHaveBeenCalled();
     expect(mockTaskUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 572 },
+        where: { id: 572, updatedAt: new Date(0) },
         data: expect.objectContaining({ status: 'blocked' }),
       }),
     );

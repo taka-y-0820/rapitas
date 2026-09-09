@@ -203,12 +203,14 @@ export async function updateTask(prisma: PrismaInstance, taskId: number, input: 
 
   const currentTask = await prisma.task.findUnique({
     where: { id: taskId },
-    select: { status: true, parentId: true, workflowStatus: true },
+    select: { status: true, parentId: true, workflowStatus: true, updatedAt: true },
   });
 
   if (!currentTask) {
     throw new Error(`タスク(ID: ${taskId})が見つかりません`);
   }
+
+  const reopening = currentTask.status === 'done' && fields.status === 'todo';
 
   // Record streak
   if (fields.status === 'done') {
@@ -222,13 +224,27 @@ export async function updateTask(prisma: PrismaInstance, taskId: number, input: 
   }
 
   await prisma.task.update({
-    where: { id: taskId },
+    where: {
+      id: taskId,
+      ...((fields.status === 'blocked' || reopening) && { updatedAt: currentTask.updatedAt }),
+    },
     data: {
+      // Make a manual re-block a new revision even within the same millisecond.
+      ...(fields.status === 'blocked' && {
+        updatedAt: new Date(Math.max(Date.now(), currentTask.updatedAt.getTime() + 1)),
+      }),
       ...(fields.title && { title: fields.title }),
       ...(fields.description !== undefined && { description: fields.description }),
       ...(fields.themeId !== undefined && { themeId: fields.themeId }),
       ...(fields.status && { status: fields.status }),
       ...(fields.status === 'done' && { completedAt: new Date() }),
+      // Reopening must not leave a terminal workflow badge/state behind.
+      // Retain artifacts; normal file-save guards validate their reuse.
+      ...(reopening && {
+        completedAt: null,
+        startedAt: null,
+        ...(currentTask.workflowStatus === 'completed' && { workflowStatus: 'draft' }),
+      }),
       // Keep workflowStatus in lock-step when a workflow task is marked done.
       // The card badge reads workflowStatus, so a task completed via the kanban
       // (or any path through updateTask) would otherwise still show "進行中"

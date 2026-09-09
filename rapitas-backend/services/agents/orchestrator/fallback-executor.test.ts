@@ -202,6 +202,26 @@ describe('executeWithFallbackAgent — retryEvidence は成功時に output 全�
     expect(result.fallbackSucceeded).toBe(false);
   });
 
+  test('revoked workflow ownership prevents fallback launch even with a running DB row', async () => {
+    const execute = mock(async () => ({ success: true }));
+    createAgentMock.mockImplementation(() => ({ id: 'revoked-fallback', execute }));
+    const pending = executeWithFallbackAgent(
+      {
+        ...FALLBACK_CTX_RETRY,
+        options: {
+          ...FALLBACK_CTX_RETRY.options,
+          assertExecutionAllowed: () => {
+            throw new Error('workflow ownership revoked');
+          },
+        },
+      },
+      '429 rate limit',
+      ORIGINAL_AGENT_CONFIG,
+    );
+    await expect(pending).rejects.toThrow('workflow ownership revoked');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   test('成功+errorMessage無し+output本文に429を含む場合、classifyAgentErrorは呼ばれずfallbackSucceededはtrue', async () => {
     createAgentMock.mockImplementation(() => ({
       id: 'fb-1',

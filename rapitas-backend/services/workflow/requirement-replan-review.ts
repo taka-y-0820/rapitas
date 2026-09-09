@@ -20,9 +20,9 @@ async function sendReview(options: AIRequestOptions): Promise<AIResponse> {
   const { getDefaultProvider, getAuxAiMode, getDefaultModel, sendAIMessage } =
     await import('../../utils/ai-client');
   const provider = await getDefaultProvider();
-  // Measured Haiku reviews confused historic plan claims in verify with the current plan.
-  // Use the stronger CLI alias for this lifecycle-sensitive review, retaining API config.
-  const model = getAuxAiMode() === 'cli' ? 'sonnet' : await getDefaultModel(provider);
+  // Real original/control reviews showed Sonnet missing the contradiction while Opus
+  // distinguished the current plan from historic verify claims. Retain API-mode config.
+  const model = getAuxAiMode() === 'cli' ? 'opus' : await getDefaultModel(provider);
   return sendAIMessage({ ...options, provider, model });
 }
 

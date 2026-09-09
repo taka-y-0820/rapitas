@@ -7,6 +7,7 @@ import type { QuestionKey } from '../question-detection';
 import type { ExecutionFileLogger } from '../execution-file-logger';
 import type { ExecutionState, OrchestratorEvent, PrismaClientInstance } from './types';
 import { toJsonString } from './execution-helpers-types';
+import { ExecutionCancelledError } from '../execution-cancelled-error';
 
 /**
  * Coerce a possibly-stringified numeric value to a finite number.
@@ -399,13 +400,16 @@ export async function handleExecutionError(
   errorContext: string,
 ): Promise<void> {
   const errorMessage = error instanceof Error ? error.message : String(error);
-  state.status = 'failed';
+  const cancelled = error instanceof ExecutionCancelledError;
+  const status = cancelled ? 'cancelled' : 'failed';
+  state.status = status;
 
-  fileLogger.logError(
-    `${errorContext} failed with uncaught error`,
-    error instanceof Error ? error : new Error(errorMessage),
-  );
-  fileLogger.logExecutionEnd('failed', {
+  if (!cancelled)
+    fileLogger.logError(
+      `${errorContext} failed with uncaught error`,
+      error instanceof Error ? error : new Error(errorMessage),
+    );
+  fileLogger.logExecutionEnd(status, {
     success: false,
     errorMessage,
   });
@@ -435,7 +439,7 @@ export async function handleExecutionError(
   await prisma.agentExecution.update({
     where: { id: executionId },
     data: {
-      status: 'failed',
+      status,
       output: state.output,
       completedAt,
       errorMessage,
@@ -444,7 +448,7 @@ export async function handleExecutionError(
   });
 
   emitEvent({
-    type: 'execution_failed',
+    type: cancelled ? 'execution_cancelled' : 'execution_failed',
     executionId,
     sessionId,
     taskId,

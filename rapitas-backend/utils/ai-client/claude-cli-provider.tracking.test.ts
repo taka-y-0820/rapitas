@@ -40,6 +40,8 @@ const mockSpawn = mock((_command: string, _args: string[], _options: Record<stri
   return child as unknown as ChildProcess;
 });
 
+// OS containment is exercised with real processes in windows-aux-job.live.test.ts.
+mock.module('./aux-cli-launch', () => ({ prepareAuxCli: async () => null }));
 mock.module('child_process', () => ({
   spawn: mockSpawn,
   execFileSync: mock(() => Buffer.from('')),
@@ -142,6 +144,26 @@ describe('aux CLI child tracking — one-shot (callClaudeCli)', () => {
 });
 
 describe('aux CLI child tracking — streaming (callClaudeCliStream)', () => {
+  test('consumer cancellation stops the child and ignores late output and close', async () => {
+    const stream = await callClaudeCliStream(undefined, messages, undefined, 1024);
+    const reader = stream.getReader();
+    const child = spawnedChildren[0];
+    await reader.cancel('consumer disconnected');
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(() => {
+      child.stdout.emit(
+        'data',
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"late"}]}}\n',
+      );
+      child.emit('close', 0);
+      child.emit('error', new Error('late error'));
+    }).not.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(unregisterMock).toHaveBeenCalledTimes(1);
+    expect(await reader.read()).toEqual({ done: true, value: undefined });
+  });
+
   test('close finishes the stream and unregisters exactly once', async () => {
     const stream = await callClaudeCliStream(undefined, messages, undefined, 1024);
     const reader = stream.getReader();

@@ -14,6 +14,7 @@
  * misses (no "設計判断の根拠" in plan.md) without rejecting cosmetic variation.
  */
 import { PLAN_FILES_SECTION_HEADINGS } from './plan-declared-files';
+import { findTestCountContradiction } from './verify-test-counts';
 import { hasNonpassingVerifyVerdict } from './nonpassing-verify-verdict';
 import { isPendingPublicationRow } from './pending-publication-row';
 
@@ -198,6 +199,10 @@ export function validateVerify(content: string): ValidationResult {
   // Contradiction scanning runs on the stripped text so repair-feedback quotes
   // and ```text (deliberate-RED evidence) fences cannot fake a failure signal.
   const scanText = stripNonEvidenceRegions(content);
+  const countContradiction = findTestCountContradiction(scanText);
+  if (countContradiction) {
+    return { ok: false, missingSections: [], severity: 80, summary: countContradiction };
+  }
   const claimsAllPass =
     /全[テt]?\d*\s*テスト[^❌]{0,30}通過|all\s+tests?\s+pass|all\s+\d+\s+tests?\s+passed|✅\s*検証成功|✅\s*pass/i.test(
       scanText,
