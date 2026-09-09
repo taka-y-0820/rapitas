@@ -214,6 +214,7 @@ async function gatherCriticContext(
       where: { id: taskId },
       select: { title: true, description: true, acceptanceCriteria: true },
     });
+    if (!task) return { unavailable: true };
     const taskBrief = task ? `${task.title}\n\n${task.description ?? ''}`.trim() : undefined;
     const acceptanceCriteria = task
       ? resolveAcceptanceCriteria({
@@ -262,7 +263,7 @@ async function gatherCriticContext(
       acceptanceCriteria: acceptanceCriteria.length > 0 ? acceptanceCriteria : undefined,
     };
   } catch {
-    return undefined; // fail-open: critique runs on the artifact alone
+    return { unavailable: true }; // Preserve missing grounding as incomplete evidence.
   }
 }
 

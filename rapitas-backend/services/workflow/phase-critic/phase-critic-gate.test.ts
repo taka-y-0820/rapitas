@@ -119,6 +119,17 @@ describe('applyPhaseCriticGate — priorBounces fails CLOSED on DB error', () =>
     );
   });
 
+  test('marks grounding unavailable when the task query fails', async () => {
+    mockPrisma.task.findUnique.mockRejectedValueOnce(new Error('database unavailable'));
+    await applyPhaseCriticGate({
+      taskId: 1,
+      phase: 'research',
+      content: 'artifact',
+      currentStatus: 'research_done',
+    });
+    expect(critiquePhase).toHaveBeenCalledWith('research', 'artifact', { unavailable: true });
+  });
+
   test('FAIL CLOSED: カウントクエリが reject しても bounce を繰り返さず proceed（fail-open分岐）すること', async () => {
     // Fault injection: a prior `.catch(() => 0)` here would make priorBounces
     // always read as 0 (< MAX_BOUNCES) on every DB hiccup, so this gate would

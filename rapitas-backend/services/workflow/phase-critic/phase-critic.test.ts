@@ -252,6 +252,13 @@ describe('critiquePhase — sendAIMessage integration (task 911)', () => {
     expect(result.evaluationComplete).toBe(true);
   });
 
+  it('does not judge without required grounding after a retrieval failure', async () => {
+    const result = await critiquePhase('research', 'artifact', { unavailable: true });
+    expect(result.verdict).toBe('unknown');
+    expect(result.evaluationComplete).toBe(false);
+    expect(sendAIMessageMock).not.toHaveBeenCalled();
+  });
+
   for (const position of ['head', 'middle', 'tail']) {
     it(`does not claim full validation with an important ${position} correction in a long brief`, async () => {
       const correction = 'IMPORTANT_CORRECTION_DO_NOT_COMPLETE_UNMET_REQUIREMENTS';
