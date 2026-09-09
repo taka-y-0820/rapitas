@@ -4,7 +4,6 @@ import { createLogger } from '../../../config/logger';
 
 const log = createLogger('routes:agent-session');
 import { stopExecutions } from '../../../services/agents/stop-task-agents';
-import { orchestrator } from '../../../services/core/orchestrator-instance';
 import type { AgentExecutionWithExtras } from '../../../types/agent-execution-types';
 import {
   isResumableInterrupted,
