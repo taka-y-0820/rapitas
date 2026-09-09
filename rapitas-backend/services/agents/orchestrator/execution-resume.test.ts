@@ -367,7 +367,7 @@ describe('resumeInterruptedExecution() — 正常系', () => {
     await resumeInterruptedExecution(ctx, 10);
 
     expect(sharedLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('No Claude session ID found'),
+      expect.stringContaining('No agent session ID found'),
     );
     const createdConfig = createAgentMock.mock.calls[0][0];
     expect(createdConfig.resumeSessionId).toBeUndefined();

@@ -137,7 +137,7 @@ export async function resumeInterruptedExecution(
 
     if (!claudeSessionId) {
       logger.warn(
-        `[ExecutionResume] WARNING: No Claude session ID found for execution ${executionId}. Starting as new session.`,
+        `[ExecutionResume] WARNING: No agent session ID found for execution ${executionId}. Starting as new session.`,
       );
     }
 
