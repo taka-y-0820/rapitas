@@ -40,7 +40,7 @@ const recordTransition = mock(() => Promise.resolve());
 mock.module('../../../../services/workflow/transition-recorder', () => ({ recordTransition }));
 
 mock.module('../../../../services/workflow/completion-gate', () => ({
-  researchConcludesNoChange: () => false,
+  researchConcludesNoChange: (content: string) => content.includes('## 結論: 修正不要'),
 }));
 mock.module('../../../../services/workflow/workflow-invariants', () => ({
   checkWorkflowInvariants: () => Promise.resolve([]),
@@ -134,6 +134,18 @@ describe('handleResearchResult — critic-rejection guard', () => {
 
     expect(mockCriticRejectedSince).toHaveBeenCalledWith(539, 'research', expect.any(Date));
     expect(mockWriteWorkflowFile).toHaveBeenCalledWith(539, 'research', REPORT);
+    expect(mockTaskUpdate).toHaveBeenCalledWith({
+      where: { id: 539 },
+      data: { status: 'in-progress', workflowStatus: 'research_done' },
+    });
+  });
+
+  test('no-change research preserves verification and completion gates', async () => {
+    const params = baseParams();
+    params.result.output += '\n\n## 結論: 修正不要\nOperational verification remains outstanding.';
+    await handleResearchResult(params);
+
+    expect(mockTaskUpdate).toHaveBeenCalledTimes(1);
     expect(mockTaskUpdate).toHaveBeenCalledWith({
       where: { id: 539 },
       data: { status: 'in-progress', workflowStatus: 'research_done' },

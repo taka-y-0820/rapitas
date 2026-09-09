@@ -1,9 +1,7 @@
 /**
  * workflow-cli-executor-postprocess.test
  *
- * Guards the auto-run no-change early exit: 27 of 31 no-change tasks in the
- * week to 2026-08-30 ran plan/implement/verify because only the HTTP-save and
- * dev-mode routes honoured the research verdict.
+ * Research findings must preserve acceptance verification and completion gates.
  *
  * Run this file on its own: bun's mock.module is process-global.
  */
@@ -108,16 +106,16 @@ test('owner lookup failure does not start a competing execution', async () => {
   expect(advances).toEqual([]);
 });
 
-describe('runPostProcessing — research no-change early exit (auto-run path)', () => {
-  test('修正不要の結論なら implement へ進まず完了させる', async () => {
+describe('runPostProcessing — research preserves completion gates', () => {
+  test('修正不要の結論だけで完了させない', async () => {
     researchContent = '# 調査\n\n## 結論: 修正不要\n\n既存実装で満たされている。';
     await runPostProcessing({
       ...base,
       transition: RESEARCHER as never,
       phaseStatus: 'research_done' as never,
     });
-    expect(taskUpdates.length).toBe(1);
-    expect(transitions.map((t) => t.cause)).toEqual(['research_no_change_complete']);
+    expect(taskUpdates.length).toBe(0);
+    expect(transitions).toEqual([]);
     expect(advances).toEqual([]);
   });
 
