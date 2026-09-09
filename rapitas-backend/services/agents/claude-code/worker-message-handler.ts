@@ -32,6 +32,9 @@ export interface WorkerResultUsageSnapshot {
 }
 
 const logger = createLogger('claude-code-agent');
+// Records actual incoming activity, never a timer-generated claim of progress.
+const lastThinkingEmission = new WeakMap<WorkerMessageContext, number>();
+const THINKING_ACTIVITY_INTERVAL_MS = 30_000;
 
 /**
  * Mutable state and callbacks the Worker message handler needs to
@@ -107,15 +110,20 @@ export function handleWorkerMessage(ctx: WorkerMessageContext, msg: WorkerOutput
       // carries no text of its own (see lifecycle-patterns.ts) — during a long
       // thinking burst this repeated the SAME line dozens of times into the
       // persisted output/execution log with zero added information. Collapse
-      // consecutive repeats into a single line at the source (not just at
-      // display time) so the raw log, DB record, and live stream all shrink;
-      // the FIRST occurrence of a burst still gets through unchanged.
-      if (
-        msg.subtype === 'thinking_tokens' &&
-        msg.displayOutput &&
-        ctx.outputBuffer.endsWith(msg.displayOutput)
-      ) {
-        break;
+      // consecutive repeats at the source, while retaining one received event
+      // every 30 seconds so observers can distinguish activity from silence.
+      // This is activity evidence, not evidence of successful task progress.
+      if (msg.subtype === 'thinking_tokens' && msg.displayOutput) {
+        const now = Date.now();
+        const lastEmission = lastThinkingEmission.get(ctx);
+        if (
+          ctx.outputBuffer.endsWith(msg.displayOutput) &&
+          lastEmission !== undefined &&
+          now - lastEmission < THINKING_ACTIVITY_INTERVAL_MS
+        ) {
+          break;
+        }
+        lastThinkingEmission.set(ctx, now);
       }
       if (msg.displayOutput) {
         ctx.outputBuffer += msg.displayOutput;
