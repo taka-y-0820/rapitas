@@ -79,6 +79,14 @@ export function buildClaudeArgs(agent: ClaudeCodeAgent): { args: string[]; logEx
     args.push('--permission-mode', 'bypassPermissions');
   }
   if (cfg.model) args.push('--model', cfg.model);
+  // Keep unattended runs responsive instead of inheriting the CLI's changing
+  // effort default. Operators can opt into deeper reasoning for harder work.
+  const configuredEffort = process.env.RAPITAS_CLAUDE_EFFORT?.trim().toLowerCase();
+  const effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(configuredEffort ?? '')
+    ? configuredEffort!
+    : 'medium';
+  args.push('--effort', effort);
+  logExtras.push(`${agent.logPrefix} Effort: ${effort}`);
   if (cfg.maxTokens) args.push('--max-tokens', String(cfg.maxTokens));
 
   // NOTE(security): No --mcp-config is ever passed to this spawn, so without
