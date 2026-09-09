@@ -595,7 +595,8 @@ jobs:
           rpm --checksig --nosignature "${packages[0]}"
           rpm -qp --qf 'RPM payload: %{PAYLOADCOMPRESSOR}, flags %{PAYLOADFLAGS}, installed bytes %{SIZE}\n' "${packages[0]}"
           payload_dir=$(mktemp -d "$RUNNER_TEMP/rpm-payload.XXXXXX")
-          rpm2cpio "${packages[0]}" | (cd "$payload_dir" && cpio -idm --quiet)
+          rpm2cpio "${packages[0]}" > "$payload_dir/payload.cpio"
+          (cd "$payload_dir" && cpio -idm --quiet < payload.cpio)
           cmp "src-tauri/target/${{ matrix.target }}/release/rapitas" "$payload_dir/usr/bin/rapitas"
           mapfile -t backends < <(find "$payload_dir" -type f -name "rapitas-backend-${{ matrix.target }}")
           find "$payload_dir" -name '*rapitas-backend*' -ls
