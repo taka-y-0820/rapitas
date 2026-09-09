@@ -1,3 +1,4 @@
+import { writeBlockedTask } from '../../../../services/workflow/blocked-task-write';
 /**
  * FileSave Verify Adversarial Review
  *
@@ -272,12 +273,7 @@ export async function runAdversarialDiffReview(params: {
             // was, e.g. 'todo') instead of clearly flagged for attention
             // (task 504: workflowStatus stayed 'verify_done' with no PR/commit
             // and status='todo', indistinguishable from a never-started task).
-            await prisma.task
-              .update({
-                where: { id: taskId },
-                data: { status: 'blocked', updatedAt: new Date() },
-              })
-              .catch(() => {});
+            await writeBlockedTask(prisma, taskId).catch(() => {});
             await markLatestExecutionFailed(taskId, reason);
             log.warn(
               { taskId, severity: activeReview.severity },

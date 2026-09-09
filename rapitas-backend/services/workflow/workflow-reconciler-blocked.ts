@@ -27,6 +27,7 @@ import { ACTIVE_EXEC } from './workflow-reconciler-requeue';
 import {
   BLOCKED_RETRY_SETTLE_MS,
   classifyBlockedExclusion,
+  EXPLICIT_RESUME_CAUSES,
   HUMAN_ADVANCED_WORKFLOW_STATUSES,
   resolveVerifyRepairLimit,
   VERIFY_NON_CONVERGENCE_CAUSE,
@@ -208,16 +209,26 @@ export async function healBlockedStatusDesync(nowMs: number): Promise<number> {
         where: {
           taskId: t.id,
           actor: 'user',
-          createdAt: { gt: lastBlocked.createdAt },
+          cause: { in: [...EXPLICIT_RESUME_CAUSES] },
+          toStatus: { not: 'blocked' },
+          // A later task mutation may be an unrecorded re-block. Never let an
+          // older resume record override it; equal timestamps are ambiguous.
+          createdAt: {
+            gt: new Date(Math.max(lastBlocked.createdAt.getTime(), t.updatedAt.getTime())),
+          },
         },
         select: { id: true },
       })
       .catch(() => null);
     if (!userAdvance) continue;
 
-    await prisma.task
-      .update({ where: { id: t.id }, data: { status: 'todo', updatedAt: new Date() } })
-      .catch(() => {});
+    const updated = await prisma.task
+      .updateMany({
+        where: { id: t.id, status: 'blocked', updatedAt: t.updatedAt },
+        data: { status: 'todo', updatedAt: new Date() },
+      })
+      .catch(() => ({ count: 0 }));
+    if (updated.count !== 1) continue;
     await recordTransition({
       taskId: t.id,
       fromStatus: t.workflowStatus,

@@ -121,8 +121,8 @@ describe('advanceTheme — hang backstop', () => {
 
     expect(mockNotifyHangBackstop).toHaveBeenCalledWith(1, 100, expect.any(Number));
     expect(mockTaskUpdate).toHaveBeenCalledWith({
-      where: { id: 100 },
-      data: { status: 'blocked' },
+      where: { id: 100, updatedAt: new Date(0) },
+      data: { status: 'blocked', updatedAt: expect.any(Date) },
     });
     expect(mockOnTaskFailed).toHaveBeenCalledWith(1, expect.stringContaining('100'));
     // Recurses with currentTaskId=null and globalActive decremented by 1.
@@ -180,8 +180,8 @@ describe('advanceTheme — hang backstop', () => {
 
     expect(mockNotifyHangBackstop).toHaveBeenCalled();
     expect(mockTaskUpdate).toHaveBeenCalledWith({
-      where: { id: 100 },
-      data: { status: 'blocked' },
+      where: { id: 100, updatedAt: new Date(0) },
+      data: { status: 'blocked', updatedAt: expect.any(Date) },
     });
   });
 
@@ -214,8 +214,8 @@ describe('advanceTheme — hang backstop', () => {
 
     expect(mockNotifyHangBackstop).toHaveBeenCalled();
     expect(mockTaskUpdate).toHaveBeenCalledWith({
-      where: { id: 100 },
-      data: { status: 'blocked' },
+      where: { id: 100, updatedAt: new Date(0) },
+      data: { status: 'blocked', updatedAt: expect.any(Date) },
     });
   });
 
@@ -435,8 +435,8 @@ describe('advanceTheme — terminal resolution: failed/blocked', () => {
     await internal(scheduler).advanceTheme(1, 100, 'priority', 1, freshLastRunAt());
 
     expect(mockTaskUpdate).toHaveBeenCalledWith({
-      where: { id: 100 },
-      data: { status: 'blocked' },
+      where: { id: 100, updatedAt: new Date(0) },
+      data: { status: 'blocked', updatedAt: expect.any(Date) },
     });
     expect(mockOnTaskFailed).toHaveBeenCalledWith(1, 'boom');
     expect(mockNotifyTaskSkipped).toHaveBeenCalledWith(1, 100, 'boom');
@@ -490,8 +490,8 @@ describe('advanceTheme — terminal resolution: failed/blocked', () => {
     await internal(scheduler).advanceTheme(1, 100, 'priority', 1, freshLastRunAt());
 
     expect(mockTaskUpdate).not.toHaveBeenCalledWith({
-      where: { id: 100 },
-      data: { status: 'blocked' },
+      where: { id: 100, updatedAt: new Date(0) },
+      data: { status: 'blocked', updatedAt: expect.any(Date) },
     });
     expect(mockOnTaskFailed).not.toHaveBeenCalled();
   });
@@ -680,7 +680,10 @@ it('a hang timeout stops execution but preserves uncommitted work for diagnosis 
   await internal(scheduler).advanceTheme(1, 100, 'priority', 1, staleLastRunAt());
   expect(mockStopTaskTreeAgents).toHaveBeenCalledWith(100);
   expect(mockRevertChanges).not.toHaveBeenCalled();
-  expect(mockTaskUpdate).toHaveBeenCalledWith({ where: { id: 100 }, data: { status: 'blocked' } });
+  expect(mockTaskUpdate).toHaveBeenCalledWith({
+    where: { id: 100, updatedAt: new Date(0) },
+    data: { status: 'blocked', updatedAt: expect.any(Date) },
+  });
 });
 
 it('actual scheduler waits for a same-task lifecycle owner before reading the hang budget', async () => {

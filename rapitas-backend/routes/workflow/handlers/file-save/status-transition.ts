@@ -1,3 +1,4 @@
+import { writeBlockedTask } from '../../../../services/workflow/blocked-task-write';
 /**
  * FileSave Status Transition
  *
@@ -216,12 +217,7 @@ export async function computeAndApplyStatusTransition(params: {
             { taskId, summary: verifyValidation.summary },
             '[Workflow] verify.md failed validation and repairs exhausted — blocking task',
           );
-          await prisma.task
-            .update({
-              where: { id: taskId },
-              data: { status: 'blocked', updatedAt: new Date() },
-            })
-            .catch(() => {});
+          await writeBlockedTask(prisma, taskId).catch(() => {});
           // Align the execution/session to failed so the log viewer doesn't show
           // 「完了」 while the task is blocked (the status gap).
           await markLatestExecutionFailed(
@@ -331,9 +327,7 @@ export async function computeAndApplyStatusTransition(params: {
         return false;
       });
       if (invariantCutoffRecorded) {
-        await prisma.task
-          .update({ where: { id: taskId }, data: { status: 'blocked', updatedAt: new Date() } })
-          .catch(() => {});
+        await writeBlockedTask(prisma, taskId).catch(() => {});
         await markLatestExecutionFailed(
           taskId,
           `不変条件違反が複数サイクルで再発したためブロックしました: ${violations.map((v) => v.code).join(', ')}`,

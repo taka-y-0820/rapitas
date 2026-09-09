@@ -203,7 +203,7 @@ export async function updateTask(prisma: PrismaInstance, taskId: number, input: 
 
   const currentTask = await prisma.task.findUnique({
     where: { id: taskId },
-    select: { status: true, parentId: true, workflowStatus: true },
+    select: { status: true, parentId: true, workflowStatus: true, updatedAt: true },
   });
 
   if (!currentTask) {
@@ -222,8 +222,12 @@ export async function updateTask(prisma: PrismaInstance, taskId: number, input: 
   }
 
   await prisma.task.update({
-    where: { id: taskId },
+    where: { id: taskId, ...(fields.status === 'blocked' && { updatedAt: currentTask.updatedAt }) },
     data: {
+      // Make a manual re-block a new revision even within the same millisecond.
+      ...(fields.status === 'blocked' && {
+        updatedAt: new Date(Math.max(Date.now(), currentTask.updatedAt.getTime() + 1)),
+      }),
       ...(fields.title && { title: fields.title }),
       ...(fields.description !== undefined && { description: fields.description }),
       ...(fields.themeId !== undefined && { themeId: fields.themeId }),

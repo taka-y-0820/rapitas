@@ -21,7 +21,9 @@ const mockWorkflowTransitionFindFirst = mock(() => Promise.resolve(null)) as any
 const mockPrisma = {
   task: {
     update: mockTaskUpdate,
-    findUnique: mock(() => Promise.resolve(null as { githubPrId: number } | null)),
+    findUnique: mock(() =>
+      Promise.resolve({ githubPrId: null as number | null, updatedAt: new Date(0) }),
+    ),
   },
   workflowTransition: { findFirst: mockWorkflowTransitionFindFirst },
 };
@@ -147,7 +149,9 @@ describe('computeAndApplyStatusTransition — 非収束カットオフの二重�
     transitionCalls.length = 0;
     mockRecordTransition.mockClear();
     mockTaskUpdate.mockClear();
-    mockPrisma.task.findUnique.mockReset().mockResolvedValue(null);
+    mockPrisma.task.findUnique
+      .mockReset()
+      .mockResolvedValue({ githubPrId: null, updatedAt: new Date(0) });
     mockMarkLatestExecutionFailed.mockClear();
     mockWorkflowTransitionFindFirst.mockReset().mockResolvedValue(null);
     mockAttemptVerifyRepair.mockReset().mockResolvedValue({ bounced: false });
@@ -195,7 +199,7 @@ describe('computeAndApplyStatusTransition — 非収束カットオフの二重�
 
   test('a prior pass and existing PR cannot override the current partial verdict', async () => {
     mockWorkflowTransitionFindFirst.mockResolvedValue({ id: 1 });
-    mockPrisma.task.findUnique.mockResolvedValue({ githubPrId: 100 });
+    mockPrisma.task.findUnique.mockResolvedValue({ githubPrId: 100, updatedAt: new Date(0) });
     mockAttemptVerifyRepair.mockResolvedValue({ bounced: true, newStatus: 'plan_approved' });
     const result = await computeAndApplyStatusTransition({
       ...buildParams(),
@@ -213,7 +217,7 @@ describe('computeAndApplyStatusTransition — 非収束カットオフの二重�
   ] as const) {
     test(`current failure ${severity}: ${JSON.stringify(savedContent)} cannot be rescued by a prior pass and PR`, async () => {
       mockWorkflowTransitionFindFirst.mockResolvedValue({ id: 1 });
-      mockPrisma.task.findUnique.mockResolvedValue({ githubPrId: 100 });
+      mockPrisma.task.findUnique.mockResolvedValue({ githubPrId: 100, updatedAt: new Date(0) });
       mockValidateVerify.mockReturnValue({
         ok: false,
         missingSections: [],
@@ -238,7 +242,7 @@ describe('computeAndApplyStatusTransition — 非収束カットオフの二重�
     // ブロック処理・実行失敗マークは cutoffRecorded の値に関わらず従来どおり実行される。
     expect(mockTaskUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 715 },
+        where: { id: 715, updatedAt: new Date(0) },
         data: expect.objectContaining({ status: 'blocked' }),
       }),
     );
@@ -254,7 +258,7 @@ describe('computeAndApplyStatusTransition — 非収束カットオフの二重�
     expect(transitionCalls.filter((c) => c.cause === 'verify_validation_failed')).toHaveLength(1);
     expect(mockTaskUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 715 },
+        where: { id: 715, updatedAt: new Date(0) },
         data: expect.objectContaining({ status: 'blocked' }),
       }),
     );

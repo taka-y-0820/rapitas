@@ -61,7 +61,10 @@ mock.module('../../../config', () => ({
       count: mockTaskCount,
       findMany: mockTaskFindMany,
       update: mockTaskUpdate,
-      findUnique: mockTaskFindUnique,
+      findUnique: (args: any) =>
+        args.select?.updatedAt && Object.keys(args.select).length === 1
+          ? Promise.resolve({ updatedAt: new Date(0) })
+          : mockTaskFindUnique(),
     },
     themeAutoRun: {
       updateMany: mockThemeAutoRunUpdateMany,

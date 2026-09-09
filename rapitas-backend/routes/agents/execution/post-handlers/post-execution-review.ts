@@ -1,3 +1,4 @@
+import { writeBlockedTask } from '../../../../services/workflow/blocked-task-write';
 /**
  * Post-Execution Review Pipeline
  *
@@ -103,9 +104,9 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
       { taskId, sessionId, workflowStatus: taskState?.workflowStatus ?? null },
       'Agent reported success but produced no diff and no planning artifacts — marking task as blocked',
     );
-    await prisma.task
-      .update({ where: { id: taskId }, data: { status: 'blocked' } })
-      .catch((err) => log.warn({ err, taskId }, 'Failed to update task to blocked'));
+    await writeBlockedTask(prisma, taskId).catch((err) =>
+      log.warn({ err, taskId }, 'Failed to update task to blocked'),
+    );
     await prisma.agentSession
       .update({
         where: { id: sessionId },
@@ -168,9 +169,9 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
         'Failed to revert worktree (proceeding to mark blocked)',
       );
     }
-    await prisma.task
-      .update({ where: { id: taskId }, data: { status: 'blocked' } })
-      .catch((err) => log.warn({ err, taskId }, 'Failed to update task to blocked'));
+    await writeBlockedTask(prisma, taskId).catch((err) =>
+      log.warn({ err, taskId }, 'Failed to update task to blocked'),
+    );
     await prisma.agentSession
       .update({
         where: { id: sessionId },
@@ -193,9 +194,9 @@ export async function reviewAndCommitWorktree(params: ReviewParams): Promise<voi
       { taskId, sessionId, workflowStatus: status },
       'Agent produced code changes but plan.md is not yet approved — blocking commit/PR until user approves the plan',
     );
-    await prisma.task
-      .update({ where: { id: taskId }, data: { status: 'blocked' } })
-      .catch((err) => log.warn({ err, taskId }, 'Failed to update task to blocked'));
+    await writeBlockedTask(prisma, taskId).catch((err) =>
+      log.warn({ err, taskId }, 'Failed to update task to blocked'),
+    );
     await prisma.agentSession
       .update({
         where: { id: sessionId },

@@ -30,7 +30,10 @@ const mockCreate = mock(() => Promise.resolve({}));
 const mockWorkflowTransitionFindFirst = mock(() => Promise.resolve(null));
 const mockPrisma = {
   task: {
-    findUnique: mockFindUnique,
+    findUnique: (args: any) =>
+      args.select?.updatedAt && Object.keys(args.select).length === 1
+        ? Promise.resolve({ updatedAt: new Date(0) })
+        : mockFindUnique(args),
     findMany: mockFindMany,
     update: mockUpdate,
     updateMany: mockUpdateMany,
@@ -874,7 +877,7 @@ describe('handleSaveFile — validateVerify 失敗によるバウンスは冗長
     // Blocking side effects still happen...
     expect(mockUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 1 },
+        where: { id: 1, updatedAt: new Date(0) },
         data: expect.objectContaining({ status: 'blocked' }),
       }),
     );
@@ -1063,7 +1066,7 @@ describe('handleSaveFile — adversarial review FAIL with repairs exhausted', ()
 
     expect(mockUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 1 },
+        where: { id: 1, updatedAt: new Date(0) },
         data: expect.objectContaining({ status: 'blocked' }),
       }),
     );
@@ -1111,7 +1114,7 @@ describe('handleSaveFile — adversarial review FAIL with repairs exhausted', ()
 
     expect(mockUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 1 },
+        where: { id: 1, updatedAt: new Date(0) },
         data: expect.objectContaining({ status: 'blocked' }),
       }),
     );

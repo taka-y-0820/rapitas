@@ -35,7 +35,7 @@ const mockPrisma = {
   task: {
     updateMany: mockUpdateMany,
     update: mock(() => Promise.resolve({})),
-    findUnique: mock(() => Promise.resolve({ githubPrId: null })),
+    findUnique: mock(() => Promise.resolve({ githubPrId: null, updatedAt: new Date(0) })),
   },
   gitHubPullRequest: { findFirst: mock(() => Promise.resolve(null)) },
   agentSession: { findFirst: mock(() => Promise.resolve(null)) },

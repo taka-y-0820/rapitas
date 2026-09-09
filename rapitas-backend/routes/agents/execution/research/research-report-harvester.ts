@@ -1,3 +1,4 @@
+import { writeBlockedTask } from '../../../../services/workflow/blocked-task-write';
 /**
  * execution/research-report-harvester
  *
@@ -110,9 +111,7 @@ export async function harvestResearchReport(
         // intentionally ignore - best-effort cleanup
       }
     }
-    await prisma.task
-      .update({ where: { id: taskIdNum }, data: { status: 'blocked' } })
-      .catch(() => {});
+    await writeBlockedTask(prisma, taskIdNum).catch(() => {});
     await prisma.agentSession
       .update({
         where: { id: sessionId },

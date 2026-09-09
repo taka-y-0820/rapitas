@@ -1,3 +1,4 @@
+import { writeBlockedTask } from '../../../../services/workflow/blocked-task-write';
 /**
  * execution/execute-post-handler
  *
@@ -110,14 +111,9 @@ export async function handleExecuteResult(params: HandleExecuteResultParams): Pr
 
   if (result.waitingForInput) {
     log.info(`[API] Task ${taskIdNum} is waiting for user input, setting status to 'blocked'`);
-    await prisma.task
-      .update({
-        where: { id: taskIdNum },
-        data: { status: 'blocked' },
-      })
-      .catch((e: unknown) => {
-        log.error({ err: e }, `[API] Failed to update task ${taskIdNum} status to in_progress`);
-      });
+    await writeBlockedTask(prisma, taskIdNum).catch((e: unknown) => {
+      log.error({ err: e }, `[API] Failed to update task ${taskIdNum} status to in_progress`);
+    });
 
     await prisma.agentSession
       .update({

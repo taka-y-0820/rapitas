@@ -24,7 +24,9 @@ mock.module('../../../../config/logger', () => ({
   }),
 }));
 
-const mockFindUnique = mock(() => Promise.resolve({ workflowStatus: 'verify_done' })) as any;
+const mockFindUnique = mock(() =>
+  Promise.resolve({ workflowStatus: 'verify_done', updatedAt: new Date(0) }),
+) as any;
 const mockTaskUpdate = mock(() => Promise.resolve({})) as any;
 const mockUpdateMany = mock(() => Promise.resolve({ count: 1 })) as any;
 const mockPrisma = {
@@ -92,7 +94,9 @@ describe('runAdversarialDiffReview — 非収束カットオフの二重記録�
     mockRecordTransition.mockClear();
     mockTaskUpdate.mockClear();
     mockMarkLatestExecutionFailed.mockClear();
-    mockFindUnique.mockReset().mockResolvedValue({ workflowStatus: 'verify_done' });
+    mockFindUnique
+      .mockReset()
+      .mockResolvedValue({ workflowStatus: 'verify_done', updatedAt: new Date(0) });
     mockAttemptVerifyRepair.mockReset().mockResolvedValue({ bounced: false });
   });
 
@@ -105,7 +109,7 @@ describe('runAdversarialDiffReview — 非収束カットオフの二重記録�
     // ブロック処理・実行失敗マークは cutoffRecorded の値に関わらず従来どおり実行される。
     expect(mockTaskUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 715 },
+        where: { id: 715, updatedAt: new Date(0) },
         data: expect.objectContaining({ status: 'blocked' }),
       }),
     );
@@ -121,7 +125,7 @@ describe('runAdversarialDiffReview — 非収束カットオフの二重記録�
     expect(transitionCalls.filter((c) => c.cause === 'adversarial_review_failed')).toHaveLength(1);
     expect(mockTaskUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 715 },
+        where: { id: 715, updatedAt: new Date(0) },
         data: expect.objectContaining({ status: 'blocked' }),
       }),
     );
@@ -135,7 +139,9 @@ describe('runAdversarialDiffReview — stale-verdict compare-and-swap (task 783)
     mockRecordTransition.mockClear();
     mockTaskUpdate.mockClear();
     mockMarkLatestExecutionFailed.mockClear();
-    mockFindUnique.mockReset().mockResolvedValue({ workflowStatus: 'verify_done' });
+    mockFindUnique
+      .mockReset()
+      .mockResolvedValue({ workflowStatus: 'verify_done', updatedAt: new Date(0) });
     mockAttemptVerifyRepair.mockReset().mockResolvedValue({ bounced: false });
   });
 

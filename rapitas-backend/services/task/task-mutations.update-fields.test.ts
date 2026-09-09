@@ -320,3 +320,24 @@ describe('updateTask — フィールドマッピング', () => {
     expect(call.data.isProtected).toBe(false);
   });
 });
+
+describe('manual hold revision', () => {
+  test('a re-block advances the revision and conditions the write on the observed version', async () => {
+    const revision = new Date(Date.now() + 60_000);
+    setupFindUnique({ status: 'blocked', updatedAt: revision }, { id: 1, status: 'blocked' });
+    await updateTask(mockPrisma as never, 1, { status: 'blocked' });
+    const call = mockPrisma.task.update.mock.calls[0][0];
+    expect(call.where).toEqual({ id: 1, updatedAt: revision });
+    expect(call.data.updatedAt.getTime()).toBe(revision.getTime() + 1);
+    expect(call.data.status).toBe('blocked');
+  });
+
+  test('a conflicting manual hold write reports failure instead of claiming success', async () => {
+    setupFindUnique({ status: 'blocked', updatedAt: new Date() }, null);
+    mockPrisma.task.update.mockRejectedValueOnce(new Error('revision conflict'));
+    await expect(updateTask(mockPrisma as never, 1, { status: 'blocked' })).rejects.toThrow(
+      'revision conflict',
+    );
+    expect(mockPrisma.activityLog.create).not.toHaveBeenCalled();
+  });
+});

@@ -20,6 +20,7 @@ const mockPrisma = {
       Promise.resolve({
         id: 1,
         title: 'Test task',
+        updatedAt: new Date(0),
         description: null,
         // 'plan_approved' + role 'implementer' is the ONLY transition that runs
         // the plan-validity/replan guard under test.

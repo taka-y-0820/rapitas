@@ -1,3 +1,4 @@
+import { writeBlockedTask } from '../../../../services/workflow/blocked-task-write';
 import type { CompletionReviewReceipt } from '../../../../services/workflow/requirement-replan-commit';
 /**
  * FileSave Verify Commit/PR Completion
@@ -108,9 +109,7 @@ export async function runVerifyCommitPrCompletion(params: {
           { taskId, prNumber },
           '[Workflow] Conflict-resolution PR still DIRTY on GitHub and repairs exhausted — blocking task',
         );
-        await prisma.task
-          .update({ where: { id: taskId }, data: { status: 'blocked', updatedAt: new Date() } })
-          .catch(() => {});
+        await writeBlockedTask(prisma, taskId).catch(() => {});
         await recordTransition({
           taskId,
           fromStatus: 'verify_done',

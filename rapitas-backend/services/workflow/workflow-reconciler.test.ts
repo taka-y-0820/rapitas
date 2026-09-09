@@ -104,7 +104,22 @@ const workflowTransitionFindFirst = mock(
 );
 
 const mockPrisma = {
-  task: { findMany: taskFindMany, findUnique: taskFindUnique, update: taskUpdate },
+  task: {
+    findMany: taskFindMany,
+    findUnique: taskFindUnique,
+    update: taskUpdate,
+    updateMany: mock(async (args: any) => {
+      const row = tasks.find(
+        (t) =>
+          t.id === args.where.id &&
+          t.status === args.where.status &&
+          t.updatedAt.getTime() === args.where.updatedAt.getTime(),
+      );
+      if (!row) return { count: 0 };
+      Object.assign(row, args.data);
+      return { count: 1 };
+    }),
+  },
   agentSession: { findMany: mock(() => Promise.resolve([] as unknown[])) },
   agentExecution: { findFirst: mock(() => Promise.resolve(null as unknown)) },
   notification: { findFirst: mock(() => Promise.resolve(null as unknown)) },

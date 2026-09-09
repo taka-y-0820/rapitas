@@ -11,9 +11,12 @@ mock.module('../../memory/concern-backlog-service', () => ({
   submitConcern: mockSubmitConcern,
 }));
 
+const revision = new Date(0);
 const mockTaskUpdate = mock(async (_args: unknown) => ({}));
 mock.module('../../../config/database', () => ({
-  prisma: { task: { update: mockTaskUpdate } },
+  prisma: {
+    task: { update: mockTaskUpdate, findUnique: mock(async () => ({ updatedAt: revision })) },
+  },
 }));
 
 const noopLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
@@ -44,8 +47,8 @@ describe('alertPermanentProbeFailure', () => {
       dedupKey: 'probe-permanent-fail:673:db',
     });
     expect(mockTaskUpdate).toHaveBeenCalledWith({
-      where: { id: 673 },
-      data: { status: 'blocked' },
+      where: { id: 673, updatedAt: revision },
+      data: { status: 'blocked', updatedAt: expect.any(Date) },
     });
   });
 

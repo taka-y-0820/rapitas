@@ -21,6 +21,7 @@ function makeTask(overrides: Record<string, unknown> = {}) {
   return {
     id: 1,
     title: 'Test task',
+    updatedAt: new Date(0),
     description: null,
     workflowStatus: 'plan_approved',
     workflowMode: 'standard',

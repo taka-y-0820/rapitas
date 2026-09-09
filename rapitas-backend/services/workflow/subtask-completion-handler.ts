@@ -1,3 +1,4 @@
+import { writeBlockedTask } from './blocked-task-write';
 /**
  * SubtaskCompletionHandler
  *
@@ -197,12 +198,14 @@ export async function onSubtaskCompleted(completedSubtaskId: number): Promise<vo
 
     // Finalize parent status. allPassed → done/completed; otherwise leave the
     // task blocked for the user to inspect the failed subtask(s).
-    await prisma.task.update({
-      where: { id: parentTask.id },
-      data: allPassed
-        ? { status: 'done', workflowStatus: 'completed', completedAt: new Date() }
-        : { status: 'blocked', workflowStatus: 'verify_done' },
-    });
+    if (allPassed) {
+      await prisma.task.update({
+        where: { id: parentTask.id },
+        data: { status: 'done', workflowStatus: 'completed', completedAt: new Date() },
+      });
+    } else {
+      await writeBlockedTask(prisma, parentTask.id, { workflowStatus: 'verify_done' });
+    }
 
     await recordTransition({
       taskId: parentTask.id,

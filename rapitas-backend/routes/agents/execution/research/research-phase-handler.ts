@@ -1,3 +1,4 @@
+import { writeBlockedTask } from '../../../../services/workflow/blocked-task-write';
 /**
  * execution/research-phase-handler
  *
@@ -208,9 +209,9 @@ export async function handleResearchResult(params: HandleResearchResultParams): 
       '[API] Research harvest skipped due to critic rejection — session closed without advancing',
     );
   } else {
-    await prisma.task
-      .update({ where: { id: taskIdNum }, data: { status: 'blocked' } })
-      .catch((e) => log.warn({ err: e, taskId: taskIdNum }, '[API] Failed to set blocked'));
+    await writeBlockedTask(prisma, taskIdNum).catch((e) =>
+      log.warn({ err: e, taskId: taskIdNum }, '[API] Failed to set blocked'),
+    );
     await prisma.agentSession
       .update({
         where: { id: sessionId },
