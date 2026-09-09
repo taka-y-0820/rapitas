@@ -151,6 +151,7 @@ describe('buildSpawnCommand — Windows', () => {
       const pending = callClaudeCli(undefined, [{ role: 'user', content: 'hi' }], undefined, 100);
       await flush();
       expect(fullCommand(0)).toContain('--tools ""');
+      expect(fullCommand(0)).toContain('--effort low');
       expect(fullCommand(0)).toContain('--system-prompt "You are a text processing assistant.');
       respondSuccess(spawnedChildren[0]);
       await pending;

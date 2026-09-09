@@ -154,6 +154,8 @@ const DISALLOWED_TOOLS =
 
 /** Auxiliary calls generate text; they do not need the default coding-agent prompt or tools. */
 const TEXT_ONLY_ARGS = [
+  '--effort',
+  'low',
   '--tools',
   '',
   '--system-prompt',
