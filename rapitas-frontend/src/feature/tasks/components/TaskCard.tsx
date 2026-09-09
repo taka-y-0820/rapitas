@@ -18,6 +18,7 @@ import { useTaskCard } from './task-card/useTaskCard';
 import TaskCardContextMenu from './task-card/TaskCardContextMenu';
 import TaskCardSubtaskPanel from './task-card/TaskCardSubtaskPanel';
 import TaskCardSubtaskProgress from './task-card/TaskCardSubtaskProgress';
+import styles from './TaskCard.module.css';
 
 interface TaskCardProps {
   task: Task;
@@ -70,30 +71,16 @@ const TaskCard = memo(function TaskCard({
     }
   };
 
-  // NOTE: cardSize is kept local because it only drives the perimeter calculation
-  // which is currently unused (_perimeter). Kept for future progress-ring feature.
-  const [_cardSize, setCardSize] = useState({ w: 0, h: 0 });
-
-  React.useEffect(() => {
-    if (!tc.cardRef.current) return;
-    const { width, height } = tc.cardRef.current.getBoundingClientRect();
-    setCardSize({ w: width, h: height });
-  }, [tc.cardRef]);
-
   return (
     <div
       ref={tc.cardRef}
       data-task-card
       onMouseEnter={tc.handleMouseEnter}
-      className={`group relative z-0 w-full min-w-0 rounded-lg border-l-4 border-t border-r border-b transition-all duration-300 ease-out hover:duration-200 ${
+      className={`${styles.card} group relative z-0 w-full min-w-0 rounded-lg border-l-4 border-t border-r border-b ${
         isSelected
           ? 'bg-indigo-50 dark:bg-indigo-900/20 border-indigo-400 dark:border-indigo-600 ring-1 ring-indigo-500/40 dark:ring-indigo-400/40'
           : `${tc.cardBorderColor} border-zinc-200 dark:border-zinc-800 ${tc.currentStatus.bgColor} dark:bg-indigo-dark-900 shadow-[0_2px_0_0_#e4e4e7] dark:shadow-[0_2px_0_0_#27272a]`
-      } ${
-        !isSelected
-          ? 'hover:shadow-md hover:scale-[1.02] hover:-translate-y-0.5 hover:border-opacity-80 dark:hover:shadow-lg dark:hover:shadow-black/30'
-          : ''
-      } ${
+      } ${!isSelected ? styles.interactive : ''} ${
         tc.executionClasses?.borderColor === 'blue'
           ? 'ai-glow-blue'
           : tc.executionClasses?.borderColor === 'amber'
@@ -103,7 +90,7 @@ const TaskCard = memo(function TaskCard({
     >
       {/* Main row */}
       <div
-        className="relative z-10 flex items-center gap-3 px-3 py-2.5 min-w-0 cursor-pointer transition-all duration-300 ease-out hover:bg-zinc-50/50 dark:hover:bg-zinc-800/20 rounded-t-lg"
+        className="relative z-10 flex items-center gap-3 px-3 py-2.5 min-w-0 cursor-pointer hover:bg-zinc-50/50 dark:hover:bg-zinc-800/20 rounded-t-lg"
         onClick={() => {
           if (isSelectionMode && onToggleSelect) {
             // Auto-executing tasks are excluded from bulk selection — an
