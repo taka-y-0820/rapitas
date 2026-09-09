@@ -1,5 +1,17 @@
-import { test, expect } from 'bun:test';
+import { test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawnPlaywrightWorker } from './playwright-worker-client';
+
+// Match production: one browser serves all checked paths in a smoke pass.
+const worker = spawnPlaywrightWorker();
+beforeAll(async () => {
+  await worker.launch({
+    channels: process.platform === 'win32' ? ['msedge'] : ['chrome'],
+    timeoutMs: 20000,
+  });
+}, 30000);
+afterAll(async () => {
+  await worker.close();
+});
 
 test('a permanent loading screen is not a successful runtime check', async () => {
   const server = Bun.serve({
@@ -10,9 +22,7 @@ test('a permanent loading screen is not a successful runtime check', async () =>
         headers: { 'Content-Type': 'text/html' },
       }),
   });
-  const worker = spawnPlaywrightWorker();
   try {
-    await worker.launch({ channels: ['msedge', 'chrome'], timeoutMs: 20000 });
     const options = {
       url: `http://127.0.0.1:${server.port}`,
       timeoutMs: 3000,
@@ -24,7 +34,6 @@ test('a permanent loading screen is not a successful runtime check', async () =>
     expect(finding.httpStatus).toBe(200);
     expect(finding.navigationError).not.toBeNull();
   } finally {
-    await worker.close();
     await server.stop(true);
   }
 }, 30000);
@@ -49,9 +58,7 @@ test.each(['ready', 'cors', 'pending'])(
           ? new Promise<Response>(() => {})
           : new Response(html, { headers: { 'Content-Type': 'text/html' } }),
     });
-    const worker = spawnPlaywrightWorker();
     try {
-      await worker.launch({ channels: ['msedge', 'chrome'], timeoutMs: 20000 });
       const result = await worker.checkPath({
         url: `http://127.0.0.1:${server.port}`,
         timeoutMs: 3000,
@@ -70,7 +77,6 @@ test.each(['ready', 'cors', 'pending'])(
         } else expect(result.pendingRequests?.join(' ')).toContain('/pending');
       }
     } finally {
-      await worker.close();
       await server.stop(true);
       await api.stop(true);
     }
