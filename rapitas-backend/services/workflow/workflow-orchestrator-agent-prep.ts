@@ -2,9 +2,8 @@
  * Workflow Orchestrator — Agent Preparation
  *
  * Second stage of runAdvanceWorkflow: role config lookup, agent resolution
- * fallback chain, system prompt resolution, plan-mode directive injection and
- * the artifact-reuse regeneration skip. Moved verbatim from
- * workflow-orchestrator.ts (file-size ratchet, task 627); behavior is unchanged.
+ * fallback chain, system prompt resolution and plan-mode directive injection.
+ * Artifact reuse is decided by preflight, before this stage.
  * Not responsible for plan validation, context building or execution.
  */
 import { prisma } from '../../config';
@@ -12,7 +11,6 @@ import { createLogger } from '../../config/logger';
 import { resolveWorkflowDir, readWorkflowFile } from './workflow-file-utils';
 import { applyPlanModeDirective } from './workflow-context-builder';
 import type { WorkflowAdvanceResult } from './workflow-agent-executor';
-import { isReusableArtifact } from './phase-output-validator';
 import type { RoleTransition, WorkflowStatus } from './workflow-types';
 // NOTE: imported from the prompt sub-module, never from './workflow-orchestrator'
 // (that would form a circular import with the orchestrator that calls us).
@@ -22,7 +20,7 @@ const log = createLogger('workflow-orchestrator');
 
 /**
  * Resolves role config, agent config and system prompt for the transition, or
- * returns an early result (role disabled / no agent / path failure / reuse skip).
+ * returns an early result (role disabled / no agent / path failure).
  *
  * @param taskId - The task whose workflow should advance. / ワークフローを進めるタスクID
  * @param transition - Transition selected by preflight. / プリフライトで決まった遷移
@@ -151,32 +149,7 @@ export async function prepareAgentAndPrompt(
     );
   }
 
-  // Reuse an already-saved phase artifact (skip regeneration) when it exists
-  // AND is acceptable. Two deliberate carve-outs:
-  //   - verify.md is NEVER reused: a re-run must re-verify the CURRENT state
-  //     and overwrite verify.md with fresh results. Reusing a stale verify
-  //     would let the completion gate pass/fail on an outdated report.
-  //   - research.md / plan.md are reused only when they still pass their
-  //     validator (no serious problem); a thin/broken artifact is regenerated.
-  if (transition.outputFile && transition.outputFile !== 'verify') {
-    const existingContent = await readWorkflowFile(taskId, transition.outputFile);
-    if (existingContent && isReusableArtifact(transition.outputFile, existingContent)) {
-      log.info(
-        `[WorkflowOrchestrator] ${transition.outputFile}.md already exists and is valid for task ${taskId}, skipping regeneration`,
-      );
-      await prisma.task.update({
-        where: { id: taskId },
-        data: { workflowStatus: transition.nextStatus },
-      });
-      const result: WorkflowAdvanceResult = {
-        success: true,
-        role: transition.role,
-        status: transition.nextStatus,
-        output: `${transition.outputFile}.md は既存かつ内容に問題がないため、再生成をスキップしました`,
-      };
-      return { done: true as const, result };
-    }
-  }
-
+  // Artifact reuse belongs to preflight. Rechecking here would override its
+  // decision to regenerate a rejected plan or a pending human revision.
   return { done: false as const, roleConfig, agentConfig, systemPromptContent };
 }
