@@ -47,11 +47,14 @@ describe('renderPlanRevision', () => {
     expect(renderPlanRevision('   ', '# 実装計画', 'ja')).toBe('');
   });
 
-  test('truncates an oversized plan instead of unbounded prompt growth', () => {
-    const huge = 'x'.repeat(30000);
+  test('retains requirements and completion gates beyond the former plan cap', () => {
+    const huge =
+      '# Plan\n' +
+      'x'.repeat(30000) +
+      '\n## Required gates\nReal child-process verification and CI merge remain mandatory.';
     const out = renderPlanRevision('直して', huge, 'ja');
-    expect(out.length).toBeLessThan(huge.length);
-    expect(out).toContain('長さ上限により省略');
+    expect(out).toContain(huge);
+    expect(out).not.toContain('長さ上限により省略');
   });
 });
 
