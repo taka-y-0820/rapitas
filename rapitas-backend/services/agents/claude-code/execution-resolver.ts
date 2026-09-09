@@ -124,6 +124,25 @@ export function buildResolveAfterParse(
       ? { failureType: 'wall_clock_timeout' }
       : {};
 
+    // A wall-clock kill interrupts unfinished work. Partial files, output, or
+    // an earlier question cannot prove completion or authorize publication.
+    if (ctx.wallClockTimeoutForceKilled) {
+      ctx.status = 'failed';
+      resolve({
+        success: false,
+        output: ctx.outputBuffer,
+        artifacts,
+        commits,
+        executionTimeMs,
+        waitingForInput: false,
+        claudeSessionId: ctx.claudeSessionId || undefined,
+        errorMessage: 'Execution exceeded its wall-clock timeout; partial work was preserved.',
+        ...usageFields,
+        ...forceKillFields,
+      });
+      return;
+    }
+
     logger.info(`${ctx.logPrefix} Running question detection...`);
     logger.info(
       { detectedQuestion: ctx.detectedQuestion },
