@@ -1,3 +1,6 @@
+import { generatedSyncCheck } from './generated-sync-check';
+export { generatedSyncCheck } from './generated-sync-check';
+import { buildFileCommands } from './command-batches';
 /**
  * automated-verifier
  *
@@ -389,7 +392,7 @@ function unverifiableCheck(
 }
 
 /** Lints a project's changed files; gates on error (not warning) count. */
-async function lintProject(
+export async function lintProject(
   projectRoot: string,
   workdir: string,
   relFiles: string[],
@@ -408,11 +411,22 @@ async function lintProject(
       : null;
   }
   // Pass files relative to the project root.
-  const args = relFiles
-    .map((f) => `"${relative(projectRoot, join(workdir, f)).replace(/\\/g, '/')}"`)
-    .join(' ');
-  const res = await runCmd(`"${bin}" --format json ${args}`, projectRoot);
-  const parsed = parseEslintErrorCount(res.stdout);
+  const files = relFiles.map(
+    (f) => `"${relative(projectRoot, join(workdir, f)).replace(/\\/g, '/')}"`,
+  );
+  const results = [];
+  for (const command of buildFileCommands(`"${bin}" --format json`, files)) {
+    results.push(await runCmd(command, projectRoot));
+  }
+  const counts = results.map((result) => parseEslintErrorCount(result.stdout));
+  const parsed = {
+    ok: counts.every((count) => count.ok),
+    errorCount: counts.reduce((total, count) => total + count.errorCount, 0),
+  };
+  const res = {
+    stdout: results.map((result) => result.stdout).join('\n'),
+    stderr: results.map((result) => result.stderr).join('\n'),
+  };
   if (!parsed.ok) {
     // eslint is present but produced no parseable JSON (config error / crash).
     // It tried and failed — that is unverifiable, not "not applicable".
@@ -424,7 +438,7 @@ async function lintProject(
   return {
     name: 'lint',
     ran: true,
-    ok: parsed.errorCount === 0,
+    ok: parsed.errorCount === 0 && results.every((result) => result.code === 0),
     errorCount: parsed.errorCount,
     details:
       parsed.errorCount === 0
@@ -443,7 +457,7 @@ const FORMAT_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.css', '.md'])
  * Skips silently when the project has no prettier binary (not every repo
  * formats with prettier); prettier itself respects .prettierignore.
  */
-async function formatProject(
+export async function formatProject(
   projectRoot: string,
   workdir: string,
   relFiles: string[],
@@ -452,11 +466,16 @@ async function formatProject(
   if (files.length === 0) return null;
   const bin = resolveBin(projectRoot, workdir, 'prettier');
   if (!bin) return null;
-  const args = files
-    .map((f) => `"${relative(projectRoot, join(workdir, f)).replace(/\\/g, '/')}"`)
-    .join(' ');
-  const res = await runCmd(`"${bin}" --check --ignore-unknown ${args}`, projectRoot);
-  const ok = res.code === 0;
+  const args = files.map((f) => `"${relative(projectRoot, join(workdir, f)).replace(/\\/g, '/')}"`);
+  const results = [];
+  for (const command of buildFileCommands(`"${bin}" --check --ignore-unknown`, args)) {
+    results.push(await runCmd(command, projectRoot));
+  }
+  const ok = results.every((result) => result.code === 0);
+  const res = {
+    stdout: results.map((result) => result.stdout).join('\n'),
+    stderr: results.map((result) => result.stderr).join('\n'),
+  };
   return {
     name: 'format',
     ran: true,
@@ -465,38 +484,6 @@ async function formatProject(
     details: ok
       ? 'prettier: all changed files formatted'
       : `prettier --check に失敗（CI の formatting チェックで落ちます）。\`prettier --write\` で整形してください:\n${(res.stderr || res.stdout).slice(0, MAX_DETAIL_CHARS)}`,
-  };
-}
-
-/**
- * Prisma generated-artifact parity check (rapitas repo only). CI hard-fails
- * when `prisma/schema/*.prisma` changes without the regenerated
- * `prisma/schema.desktop/` + `src/generated/sqlite-init-sql.ts` committed —
- * the single biggest "local verify green → CI Lint Code red" cause. Pure
- * file-list logic: it checks that the generated artifacts changed ALONGSIDE
- * the schema, not that their content matches (CI still does that), so it
- * needs no prisma invocation in the worktree.
- *
- * @param allChanged - Every changed path in the worktree diff. / 全変更パス
- * @returns A 'generated-sync' check, or null when no schema changed. / チェック結果
- */
-export function generatedSyncCheck(allChanged: string[]): VerificationCheck | null {
-  const norm = allChanged.map((f) => f.replace(/\\/g, '/'));
-  const schemaChanged = norm.filter((f) => /(^|\/)prisma\/schema\/[^/]+\.prisma$/.test(f));
-  if (schemaChanged.length === 0) return null;
-  const desktopChanged = norm.some((f) => f.includes('prisma/schema.desktop/'));
-  const initSqlChanged = norm.some((f) => f.endsWith('src/generated/sqlite-init-sql.ts'));
-  const ok = desktopChanged && initSqlChanged;
-  return {
-    name: 'generated-sync',
-    ran: true,
-    ok,
-    errorCount: ok ? 0 : 1,
-    details: ok
-      ? 'generated-sync: schema change ships with regenerated sqlite artifacts'
-      : `Prisma スキーマ変更 (${schemaChanged.join(', ')}) に SQLite 生成物の再生成が伴っていません。` +
-        ` rapitas-backend で \`bun run db:prepare:sqlite\` を実行し、` +
-        `prisma/schema.desktop/ と src/generated/sqlite-init-sql.ts を同じコミットに含めてください（CI がこの同期を hard-fail します）。`,
   };
 }
 
