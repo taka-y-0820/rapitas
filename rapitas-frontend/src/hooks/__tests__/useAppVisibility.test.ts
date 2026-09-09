@@ -3,11 +3,17 @@ import { useAppVisibility } from '../common/useAppVisibility';
 import { setAppHidden } from '../common/app-visibility-store';
 
 describe('useAppVisibility', () => {
+  beforeEach(() => {
+    vi.doMock('@tauri-apps/api/window', () => ({
+      getCurrentWindow: () => ({ isMinimized: vi.fn().mockResolvedValue(false) }),
+    }));
+  });
   afterEach(() => {
     setAppHidden(false);
     // @ts-expect-error test cleanup of injected Tauri marker
     delete window.__TAURI_INTERNALS__;
     vi.doUnmock('@tauri-apps/api/event');
+    vi.doUnmock('@tauri-apps/api/window');
   });
 
   it('非Tauri環境ではlistenを呼ばずfalseを返すこと', () => {
