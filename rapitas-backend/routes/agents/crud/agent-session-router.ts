@@ -5,6 +5,11 @@ import { createLogger } from '../../../config/logger';
 const log = createLogger('routes:agent-session');
 import { orchestrator } from '../../../services/core/orchestrator-instance';
 import type { AgentExecutionWithExtras } from '../../../types/agent-execution-types';
+import {
+  isResumableInterrupted,
+  getCurrentActiveExecutionIds,
+  getLiveTaskIdsForActiveExecutions,
+} from '../../../services/agents/resumable-execution';
 
 /**
  * Agent Session Management Router
@@ -98,31 +103,12 @@ export const agentSessionRouter = new Elysia({ prefix: '/agents' })
 
   // Get resumable executions (interrupted or stale running)
   // This handles both intentionally interrupted executions and ones left in "running" state after server restart
-  .get('/resumable-executions', async () => {
+  .get('/resumable-executions', async ({ set }) => {
     try {
       // Stale execution recovery is handled at startup by orchestrator.recoverStaleExecutions()
       // This endpoint only reads data — no recovery logic here to avoid race conditions
       // with newly created executions that haven't been added to activeExecutions yet.
-
-      // NOTE: orchestrator.getActiveExecutions() (sync) always returns empty due to worker process isolation.
-      // Use the async version to retrieve actual active execution IDs from the worker.
-      const workerManager = orchestrator as unknown as {
-        getActiveExecutionIdsAsync?: () => Promise<number[]>;
-      };
-      const workerActiveIds = workerManager.getActiveExecutionIdsAsync
-        ? await workerManager.getActiveExecutionIdsAsync()
-        : orchestrator.getActiveExecutions().map((e: { executionId: number }) => e.executionId);
-
-      // Workflow / auto-run agents run in the MAIN-process AgentOrchestrator
-      // (workflow-cli-executor calls AgentOrchestrator.getInstance directly),
-      // NOT the worker — so the worker's active-id list above misses them and
-      // the running banner never appeared during auto-execution. Union both so
-      // every live execution (manual via worker + auto-run via main) is shown.
-      const { AgentOrchestrator } = await import('../../../services/agents/agent-orchestrator');
-      const mainActiveIds = AgentOrchestrator.getInstance(prisma)
-        .getActiveAgentInfos()
-        .map((i) => i.executionId);
-      const currentActiveIds = Array.from(new Set([...workerActiveIds, ...mainActiveIds]));
+      const currentActiveIds = await getCurrentActiveExecutionIds();
 
       const resumableExecutions = await prisma.agentExecution.findMany({
         where: {
@@ -171,23 +157,20 @@ export const agentSessionRouter = new Elysia({ prefix: '/agents' })
       // appear TWICE in the "in-progress work" modal — one 実行中 and one 中断, which
       // is exactly what the user reported for task 284. Keep the live one; drop the
       // task's interrupted rows when a live execution exists.
-      const liveTaskIds = new Set(
-        resumableExecutions
-          .filter((e) => e.status === 'running' || e.status === 'waiting_for_input')
-          .map((e) => e.session.config?.task?.id)
-          .filter((id): id is number => id != null),
-      );
-      // A done/completed/cancelled task's `interrupted` row is NOT resumable work —
-      // it is a stale leftover that lingered in the "中断作業" modal after the task
-      // finished (task 284 completed via a fresh execution but its earlier
-      // interrupted row stayed). Drop those too.
-      const TERMINAL_TASK_STATUS = new Set(['done', 'completed', 'cancelled']);
+      //
+      // Resolved from `currentActiveIds` directly (no `take` limit) rather than
+      // from this query's own `take: 50` result set, so a live execution outside
+      // the top 50 rows still suppresses its task's stale `interrupted` row (task 913).
+      const liveTaskIds = await getLiveTaskIdsForActiveExecutions(currentActiveIds);
+      // A terminal task's (done/completed/cancelled/failed/archived, or
+      // workflowStatus=completed — see resumable-execution-policy.ts)
+      // `interrupted` row is NOT resumable work — it is a stale leftover that
+      // lingered in the "中断作業" modal after the task finished (task 284
+      // completed via a fresh execution but its earlier interrupted row
+      // stayed; task 658/execution 2806 is the same pattern via `status=done`).
       const dedupedExecutions = resumableExecutions.filter((e) => {
         if (e.status !== 'interrupted') return true;
-        const task = e.session.config?.task;
-        if (liveTaskIds.has(task?.id ?? -1)) return false;
-        if (task?.status && TERMINAL_TASK_STATUS.has(task.status)) return false;
-        return true;
+        return isResumableInterrupted({ status: e.status }, e.session.config?.task, liveTaskIds);
       });
 
       return dedupedExecutions.map((exec: (typeof resumableExecutions)[number]) => {
@@ -217,13 +200,20 @@ export const agentSessionRouter = new Elysia({ prefix: '/agents' })
       } else {
         log.error({ err: error }, '[resumable-executions] Error');
       }
+      // 503 (not 200 []) — an empty list must not read as "no interrupted
+      // work", it must read as "we couldn't check" (task 913 acceptance
+      // criterion: don't report a DB query failure as healthy/normal).
+      set.status = 503;
       return [];
     }
   })
 
   // Legacy endpoint for backwards compatibility
-  .get('/interrupted-executions', async () => {
+  .get('/interrupted-executions', async ({ set }) => {
     try {
+      const currentActiveIds = await getCurrentActiveExecutionIds();
+      const liveTaskIds = await getLiveTaskIdsForActiveExecutions(currentActiveIds);
+
       const interruptedExecutions = await prisma.agentExecution.findMany({
         where: {
           status: 'interrupted',
@@ -237,6 +227,8 @@ export const agentSessionRouter = new Elysia({ prefix: '/agents' })
                     select: {
                       id: true,
                       title: true,
+                      status: true,
+                      workflowStatus: true,
                     },
                   },
                 },
@@ -250,10 +242,11 @@ export const agentSessionRouter = new Elysia({ prefix: '/agents' })
 
       return interruptedExecutions.map((exec: (typeof interruptedExecutions)[number]) => {
         const execWithExtras = exec as typeof exec & AgentExecutionWithExtras;
+        const task = exec.session.config?.task;
         return {
           id: exec.id,
-          taskId: exec.session.config?.task?.id,
-          taskTitle: exec.session.config?.task?.title,
+          taskId: task?.id,
+          taskTitle: task?.title,
           sessionId: exec.sessionId,
           status: exec.status,
           claudeSessionId: execWithExtras.claudeSessionId,
@@ -262,11 +255,18 @@ export const agentSessionRouter = new Elysia({ prefix: '/agents' })
           startedAt: exec.startedAt,
           completedAt: exec.completedAt,
           createdAt: exec.createdAt,
-          canResume: !!execWithExtras.claudeSessionId, // Resumable if Claude Session ID exists
+          canResume: !!execWithExtras.claudeSessionId, // Resumable if Claude Session ID exists (legacy definition — unchanged)
+          // Whether this row agrees with `/resumable-executions`'s definition of
+          // a real resume candidate (task terminal / has a live execution
+          // elsewhere). Kept separate from `canResume` since no known consumer
+          // of this legacy endpoint reads `canResume` today (grep: 0 hits) and
+          // changing its meaning is not worth the risk.
+          isResumableCandidate: isResumableInterrupted({ status: exec.status }, task, liveTaskIds),
         };
       });
     } catch (error) {
       log.error({ err: error }, '[interrupted-executions] Error');
+      set.status = 503;
       return [];
     }
   });
