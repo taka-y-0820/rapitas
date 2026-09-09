@@ -20,7 +20,7 @@ export async function settleStoppedSessions(
     await prisma.agentSession.updateMany({
       where: {
         id: { in: [sessionId] },
-        status: { in: ['active', 'running', 'failed'] },
+        status: { in: ['pending', 'active', 'running', 'failed'] },
         // Recover a stop whose first DB writes failed, without rewriting a newer outcome.
         agentExecutions: {
           none: {
