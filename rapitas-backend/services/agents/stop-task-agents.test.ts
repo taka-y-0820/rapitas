@@ -162,7 +162,7 @@ describe('stopThemeAgents', () => {
     expect(mockPrisma.agentSession.updateMany).toHaveBeenCalledWith({
       where: {
         id: { in: [7] },
-        status: { in: ['active', 'running', 'failed'] },
+        status: { in: ['pending', 'active', 'running', 'failed'] },
         agentExecutions: {
           none: {
             OR: [

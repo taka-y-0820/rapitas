@@ -224,3 +224,19 @@ test.each([null, 'running', 'failed', 'completed'])(
     expect(session?.status).toBe(newer ? 'failed' : 'cancelled');
   },
 );
+
+test('manual execution pending session settles only after its execution is cancelled', async () => {
+  await cancelledExecution();
+  await db.$executeRawUnsafe("ALTER TABLE AgentSession ADD COLUMN status TEXT DEFAULT 'pending'");
+  await db.$executeRawUnsafe('ALTER TABLE AgentSession ADD COLUMN updatedAt DATETIME');
+  await db.$executeRawUnsafe("UPDATE AgentExecution SET status = 'running' WHERE id = 1");
+  await settleStoppedSessions(db as unknown as PostgresClient, [1]);
+  expect(await db.agentSession.findUnique({ where: { id: 1 }, select: { status: true } })).toEqual({
+    status: 'pending',
+  });
+  await db.$executeRawUnsafe("UPDATE AgentExecution SET status = 'cancelled' WHERE id = 1");
+  await settleStoppedSessions(db as unknown as PostgresClient, [1]);
+  expect(await db.agentSession.findUnique({ where: { id: 1 }, select: { status: true } })).toEqual({
+    status: 'cancelled',
+  });
+});
