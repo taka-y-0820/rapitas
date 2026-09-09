@@ -9,6 +9,14 @@
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 
 const noopLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
+let dbProvider = 'sqlite';
+mock.module('../../config/db-provider', () => ({ getDbProvider: () => dbProvider }));
+mock.module('../self-learning/prompt-evolution-worker', () => ({
+  getApprovedRoleAddendum: async () => '',
+}));
+mock.module('../self-learning/experiment-loop/experiment-store', () => ({
+  getActiveExperimentAddendum: async () => '',
+}));
 
 const taskUpdate = mock(() => Promise.resolve({}));
 const taskUpdateMany = mock(() => Promise.resolve({ count: 1 }));
@@ -33,7 +41,27 @@ mock.module('./role-route-inputs', () => ({
   shouldAutoSelectModel: mock(() => true),
 }));
 
-const { reconcileTaskStatusBeforeRun } = await import('./workflow-orchestrator-context');
+const { reconcileTaskStatusBeforeRun, buildExecutionContext } =
+  await import('./workflow-orchestrator-context');
+
+test('execution context identifies the active database without assuming the target project uses it', async () => {
+  for (const provider of ['sqlite', 'postgresql']) {
+    dbProvider = provider;
+    for (const language of ['ja', 'en'] as const) {
+      const context = await buildExecutionContext(
+        1,
+        { role: 'planner', outputFile: 'plan', nextStatus: 'plan_created' },
+        {} as never,
+        language,
+        'standard',
+      );
+      expect(context).toContain(provider);
+      expect(context).toContain(
+        language === 'ja' ? '別の対象プロジェクト' : 'different target project',
+      );
+    }
+  }
+});
 
 describe('reconcileTaskStatusBeforeRun', () => {
   beforeEach(() => {
