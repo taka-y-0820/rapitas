@@ -12,15 +12,33 @@ const noopLogger = { info: () => {}, warn: mock(() => {}), error: () => {}, debu
 const mockPrisma = {
   workflowTransition: {
     count: mock(() => Promise.resolve(0)),
+    findFirst: mock(() => Promise.resolve(null as { metadata: string } | null)),
   },
   task: {
     update: mock(() => Promise.resolve({})),
     updateMany: mock(() => Promise.resolve({ count: 1 })),
+    findUnique: mock(() =>
+      Promise.resolve(
+        null as {
+          title: string;
+          description: string | null;
+          acceptanceCriteria: string | null;
+        } | null,
+      ),
+    ),
+  },
+  workflowFile: {
+    findFirst: mock(() => Promise.resolve(null as { content: string } | null)),
   },
 };
 const recordTransition = mock(() => Promise.resolve());
 const critiquePhase = mock(() =>
-  Promise.resolve({ verdict: 'fail' as const, severity: 'high' as const, reasons: ['issue A'] }),
+  Promise.resolve({
+    verdict: 'fail' as 'fail' | 'pass' | 'unknown',
+    severity: 'high' as const,
+    reasons: ['issue A'],
+    inputTruncated: false,
+  }),
 );
 const isPhaseCriticEnabled = mock(() => true);
 const archiveWorkflowFile = mock(() => Promise.resolve(true));
@@ -44,12 +62,18 @@ const { applyPhaseCriticGate } = await import('./phase-critic-gate');
 describe('applyPhaseCriticGate — priorBounces fails CLOSED on DB error', () => {
   beforeEach(() => {
     mockPrisma.workflowTransition.count.mockReset().mockResolvedValue(0);
+    mockPrisma.workflowTransition.findFirst.mockReset().mockResolvedValue(null);
     mockPrisma.task.update.mockReset().mockResolvedValue({});
     mockPrisma.task.updateMany.mockReset().mockResolvedValue({ count: 1 });
+    mockPrisma.task.findUnique.mockReset().mockResolvedValue(null);
+    mockPrisma.workflowFile.findFirst.mockReset().mockResolvedValue(null);
     recordTransition.mockReset().mockResolvedValue(undefined);
-    critiquePhase
-      .mockReset()
-      .mockResolvedValue({ verdict: 'fail', severity: 'high', reasons: ['issue A'] });
+    critiquePhase.mockReset().mockResolvedValue({
+      verdict: 'fail',
+      severity: 'high',
+      reasons: ['issue A'],
+      inputTruncated: false,
+    });
     isPhaseCriticEnabled.mockReset().mockReturnValue(true);
     scheduleWorkflowRedispatch.mockClear();
   });
@@ -67,6 +91,32 @@ describe('applyPhaseCriticGate — priorBounces fails CLOSED on DB error', () =>
     // bounce後は再生成の再ディスパッチが予約されること（task 547）。
     expect(scheduleWorkflowRedispatch).toHaveBeenCalledTimes(1);
     expect(scheduleWorkflowRedispatch).toHaveBeenCalledWith(1, 'research_critic_failed', 'ja');
+    // task 911: bounceのrecordTransitionメタデータにinputTruncatedが記録されること。
+    const rt = recordTransition.mock.calls[0]?.[0] as { metadata: { inputTruncated: boolean } };
+    expect(rt.metadata.inputTruncated).toBe(false);
+  });
+
+  test('records truncated unknown evaluation without changing workflow status', async () => {
+    critiquePhase.mockResolvedValueOnce({
+      verdict: 'unknown',
+      severity: 'high',
+      reasons: [],
+      inputTruncated: true,
+    });
+    const result = await applyPhaseCriticGate({
+      taskId: 1,
+      phase: 'research',
+      content: 'long research',
+      currentStatus: 'research_done',
+    });
+    expect(result.bounced).toBe(false);
+    expect(mockPrisma.task.updateMany).not.toHaveBeenCalled();
+    expect(recordTransition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cause: 'research_critic_incomplete',
+        metadata: expect.objectContaining({ verdict: 'unknown', inputTruncated: true }),
+      }),
+    );
   });
 
   test('FAIL CLOSED: カウントクエリが reject しても bounce を繰り返さず proceed（fail-open分岐）すること', async () => {
@@ -86,8 +136,14 @@ describe('applyPhaseCriticGate — priorBounces fails CLOSED on DB error', () =>
     // Took the budget-exhausted proceed branch, NOT another bounce.
     expect(result.bounced).toBe(false);
     expect(result.newStatus).toBeUndefined();
-    const rt = recordTransition.mock.calls[0]?.[0] as { cause: string } | undefined;
+    const rt = recordTransition.mock.calls[0]?.[0] as
+      | {
+          cause: string;
+          metadata: { inputTruncated: boolean };
+        }
+      | undefined;
     expect(rt?.cause).toBe('research_critic_exhausted');
+    expect(rt?.metadata.inputTruncated).toBe(false);
     // 予算枯渇(proceed)分岐では再ディスパッチしない。
     expect(scheduleWorkflowRedispatch).not.toHaveBeenCalled();
   });
@@ -96,12 +152,18 @@ describe('applyPhaseCriticGate — priorBounces fails CLOSED on DB error', () =>
 describe('applyPhaseCriticGate — 遅延verdictのCASガード', () => {
   beforeEach(() => {
     mockPrisma.workflowTransition.count.mockReset().mockResolvedValue(0);
+    mockPrisma.workflowTransition.findFirst.mockReset().mockResolvedValue(null);
     mockPrisma.task.updateMany.mockReset().mockResolvedValue({ count: 1 });
+    mockPrisma.task.findUnique.mockReset().mockResolvedValue(null);
+    mockPrisma.workflowFile.findFirst.mockReset().mockResolvedValue(null);
     recordTransition.mockReset().mockResolvedValue(undefined);
     archiveWorkflowFile.mockReset().mockResolvedValue(true);
-    critiquePhase
-      .mockReset()
-      .mockResolvedValue({ verdict: 'fail', severity: 'high', reasons: ['issue A'] });
+    critiquePhase.mockReset().mockResolvedValue({
+      verdict: 'fail',
+      severity: 'high',
+      reasons: ['issue A'],
+      inputTruncated: false,
+    });
     isPhaseCriticEnabled.mockReset().mockReturnValue(true);
     scheduleWorkflowRedispatch.mockClear();
   });
@@ -149,5 +211,58 @@ describe('applyPhaseCriticGate — 遅延verdictのCASガード', () => {
     expect(call.where).toEqual({ id: 494, workflowStatus: 'plan_created' });
     // bounce成立時は再ディスパッチが予約されること（task 547）。
     expect(scheduleWorkflowRedispatch).toHaveBeenCalledWith(494, 'plan_critic_failed', 'ja');
+  });
+});
+
+describe('gatherCriticContext — acceptanceCriteriaがcritiquePhase呼び出し引数まで伝搬する（task911）', () => {
+  beforeEach(() => {
+    mockPrisma.workflowTransition.count.mockReset().mockResolvedValue(0);
+    mockPrisma.workflowTransition.findFirst.mockReset().mockResolvedValue(null);
+    mockPrisma.task.updateMany.mockReset().mockResolvedValue({ count: 1 });
+    mockPrisma.task.findUnique.mockReset().mockResolvedValue(null);
+    mockPrisma.workflowFile.findFirst.mockReset().mockResolvedValue(null);
+    recordTransition.mockReset().mockResolvedValue(undefined);
+    archiveWorkflowFile.mockReset().mockResolvedValue(true);
+    critiquePhase
+      .mockReset()
+      .mockResolvedValue({ verdict: 'pass', severity: 0, reasons: [], inputTruncated: false });
+    isPhaseCriticEnabled.mockReset().mockReturnValue(true);
+    scheduleWorkflowRedispatch.mockClear();
+  });
+
+  test('Task.acceptanceCriteria列を解決し、critiquePhaseのcontext引数へ含める', async () => {
+    mockPrisma.task.findUnique.mockResolvedValue({
+      title: 'タイトル',
+      description: '説明文',
+      acceptanceCriteria: JSON.stringify(['AC1: 満たすこと', 'AC2: 満たすこと']),
+    });
+
+    await applyPhaseCriticGate({
+      taskId: 909,
+      phase: 'research',
+      content: 'research body',
+      currentStatus: 'research_done',
+    });
+
+    const call = critiquePhase.mock.calls[0] as [string, string, { acceptanceCriteria?: string[] }];
+    expect(call[2]?.acceptanceCriteria).toEqual(['AC1: 満たすこと', 'AC2: 満たすこと']);
+  });
+
+  test('acceptanceCriteria列・description両方が空なら context.acceptanceCriteria は undefined', async () => {
+    mockPrisma.task.findUnique.mockResolvedValue({
+      title: 'タイトル',
+      description: null,
+      acceptanceCriteria: null,
+    });
+
+    await applyPhaseCriticGate({
+      taskId: 910,
+      phase: 'research',
+      content: 'research body',
+      currentStatus: 'research_done',
+    });
+
+    const call = critiquePhase.mock.calls[0] as [string, string, { acceptanceCriteria?: string[] }];
+    expect(call[2]?.acceptanceCriteria).toBeUndefined();
   });
 });

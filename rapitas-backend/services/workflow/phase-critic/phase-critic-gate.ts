@@ -17,6 +17,7 @@ import { registerCritique } from './critic-inflight';
 import { scheduleWorkflowRedispatch } from '../workflow-redispatch';
 import type { CriticPhase } from './phase-critic-types';
 import { countWithFailClosed } from '../../../utils/database/fail-closed-count';
+import { resolveAcceptanceCriteria } from '../../agents/verification/acceptance-self-check';
 
 const log = createLogger('workflow:phase-critic-gate');
 
@@ -84,6 +85,22 @@ async function runPhaseCriticGate(args: {
     // and from moving the goalposts on re-review (task 551). Best-effort.
     const context = await gatherCriticContext(taskId, phase);
     const result = await critiquePhase(phase, content, context);
+    if (result.verdict === 'unknown' || result.evaluationComplete === false) {
+      await recordTransition({
+        taskId,
+        fromStatus: currentStatus,
+        toStatus: currentStatus,
+        actor: 'system',
+        cause: `${phase}_critic_incomplete`,
+        phase,
+        metadata: {
+          verdict: result.verdict,
+          inputTruncated: result.inputTruncated ?? false,
+          evaluationComplete: result.evaluationComplete ?? false,
+          reasons: result.reasons,
+        },
+      });
+    }
     if (result.verdict !== 'fail') return { bounced: false };
 
     // FAIL CLOSED: a count error must not read as "0 prior bounces" — that
@@ -108,7 +125,11 @@ async function runPhaseCriticGate(args: {
         actor: 'system',
         cause: `${phase}_critic_exhausted`,
         phase,
-        metadata: { severity: result.severity, reasons: result.reasons },
+        metadata: {
+          severity: result.severity,
+          reasons: result.reasons,
+          inputTruncated: result.inputTruncated ?? false,
+        },
       });
       log.warn(
         { taskId, phase, severity: result.severity },
@@ -147,7 +168,11 @@ async function runPhaseCriticGate(args: {
       actor: 'system',
       cause: `${phase}_critic_failed`,
       phase,
-      metadata: { severity: result.severity, reasons: result.reasons },
+      metadata: {
+        severity: result.severity,
+        reasons: result.reasons,
+        inputTruncated: result.inputTruncated ?? false,
+      },
       invariantViolation: true,
       invariantMessage: `${phase}.md は批評ゲート不合格のため再生成します`,
     });
@@ -170,9 +195,11 @@ async function runPhaseCriticGate(args: {
 
 /**
  * Collect best-effort grounding for the critic: the task's title/description,
- * the prior-phase document (research.md when critiquing a plan), and the
- * reasons of this phase's previous critic rejection. Every lookup fails open —
- * a DB hiccup degrades to the old artifact-only critique instead of blocking.
+ * its acceptance criteria (task 911 — previously never sent, so the gate had
+ * no way to see requirements the artifact failed to address), the prior-phase
+ * document (research.md when critiquing a plan), and the reasons of this
+ * phase's previous critic rejection. Every lookup fails open — a DB hiccup
+ * degrades to the old artifact-only critique instead of blocking.
  *
  * @param taskId - Task being critiqued. / 対象タスク
  * @param phase - 'research' | 'plan'. / フェーズ
@@ -185,9 +212,15 @@ async function gatherCriticContext(
   try {
     const task = await prisma.task.findUnique({
       where: { id: taskId },
-      select: { title: true, description: true },
+      select: { title: true, description: true, acceptanceCriteria: true },
     });
     const taskBrief = task ? `${task.title}\n\n${task.description ?? ''}`.trim() : undefined;
+    const acceptanceCriteria = task
+      ? resolveAcceptanceCriteria({
+          acceptanceCriteria: task.acceptanceCriteria,
+          description: task.description,
+        })
+      : [];
 
     let referenceArtifact: string | undefined;
     if (phase === 'plan') {
@@ -215,8 +248,19 @@ async function gatherCriticContext(
       }
     }
 
-    if (!taskBrief && !referenceArtifact && !priorReasons?.length) return undefined;
-    return { taskBrief, referenceArtifact, priorReasons };
+    if (
+      !taskBrief &&
+      !referenceArtifact &&
+      !priorReasons?.length &&
+      acceptanceCriteria.length === 0
+    )
+      return undefined;
+    return {
+      taskBrief,
+      referenceArtifact,
+      priorReasons,
+      acceptanceCriteria: acceptanceCriteria.length > 0 ? acceptanceCriteria : undefined,
+    };
   } catch {
     return undefined; // fail-open: critique runs on the artifact alone
   }
