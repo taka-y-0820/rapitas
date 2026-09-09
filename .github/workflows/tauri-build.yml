@@ -588,7 +588,7 @@ jobs:
         working-directory: rapitas-desktop
         shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           bundle_dir="src-tauri/target/${{ matrix.target }}/release/bundle/rpm"
           packages=("$bundle_dir"/*.rpm)
           test "${#packages[@]}" -eq 1
@@ -598,6 +598,8 @@ jobs:
           rpm2cpio "${packages[0]}" | (cd "$payload_dir" && cpio -idm --quiet)
           cmp "src-tauri/target/${{ matrix.target }}/release/rapitas" "$payload_dir/usr/bin/rapitas"
           mapfile -t backends < <(find "$payload_dir" -type f -name "rapitas-backend-${{ matrix.target }}")
+          find "$payload_dir" -name '*rapitas-backend*' -ls
+          printf 'Backend matches: %s\n' "${#backends[@]}"
           test "${#backends[@]}" -eq 1
           cmp "src-tauri/binaries/rapitas-backend-${{ matrix.target }}" "${backends[0]}"
 
@@ -637,7 +639,7 @@ jobs:
             rapitas-desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/
 
       - name: Upload artifacts (Linux)
-        if: matrix.platform == 'ubuntu-latest'
+        if: always() && matrix.platform == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: rapitas-linux-${{ matrix.target }}

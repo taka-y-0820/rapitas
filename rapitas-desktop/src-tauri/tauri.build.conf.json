@@ -11,7 +11,7 @@
   "bundle": {
     "active": true,
     "linux": {
-      "rpm": { "compression": { "type": "gzip", "level": 1 } }
+      "rpm": { "compression": { "type": "zstd", "level": 3 } }
     },
     "targets": ["deb", "rpm", "nsis", "msi", "dmg", "app"],
     "externalBin": [],
