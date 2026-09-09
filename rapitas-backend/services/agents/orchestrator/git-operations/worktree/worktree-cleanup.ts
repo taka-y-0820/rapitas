@@ -15,7 +15,6 @@ import { createLogger } from '../../../../../config/logger';
 import { WORKTREE_DIR, normalizePath, isPathSafeForWorktreeOperation } from '../core/safety';
 import { prisma } from '../../../../../config/database';
 import { removeWorktree } from './worktree-remove';
-import { rmDirWithRetry } from './dir-remove-retry';
 
 // NOTE: execFile (array-args, no shell) instead of exec (shell string) — branch
 // names, paths, and other caller-controlled values are passed as literal argv
@@ -109,12 +108,12 @@ export async function cleanupStaleWorktrees(
  * Removes worktrees for completed/failed/cancelled sessions and updates the database.
  *
  * @param baseDir - The main repository root / メインリポジトリのルート
- * @param rmOpts - Options forwarded to rmDirWithRetry (inject sleepFn/maxAttempts in tests to avoid real waits) / テスト時にsleepFnを注入してリアル待機を回避できる
+ * @param _rmOpts - Legacy retry options retained for caller compatibility; orphan removal is nonrecursive.
  * @returns Number of worktrees cleaned up / クリーンアップしたworktreeの数
  */
 export async function cleanupOrphanedWorktrees(
   baseDir: string,
-  rmOpts?: { maxAttempts?: number; sleepFn?: (ms: number) => Promise<void> },
+  _rmOpts?: { maxAttempts?: number; sleepFn?: (ms: number) => Promise<void> },
 ): Promise<number> {
   let cleanedCount = 0;
 
@@ -273,17 +272,18 @@ export async function cleanupOrphanedWorktrees(
           // directory outright, with no DB check at all.
           if (!gitTrackedPaths.has(normalizedDirPath) && !keepSet.has(normalizedDirPath)) {
             if (isPathSafeForWorktreeOperation(dirPath, baseDir)) {
-              const removed = await rmDirWithRetry(dirPath, rmOpts);
-              if (removed) {
+              // Missing Git metadata is not proof that the directory has no work.
+              // Non-recursive rmdir atomically refuses any nonempty directory.
+              try {
+                await fsPromises.rmdir(dirPath);
                 cleanedCount++;
                 logger.info(
-                  `[cleanupOrphanedWorktrees] Removed orphaned filesystem directory: ${dirPath}`,
+                  `[cleanupOrphanedWorktrees] Removed empty orphan directory: ${dirPath}`,
                 );
-              } else {
-                // NOTE: Do NOT throw — one orphan failing must not abort the entire cleanup cycle.
+              } catch (error) {
                 logger.warn(
-                  { dirPath },
-                  `[cleanupOrphanedWorktrees] Failed to remove orphaned directory after retries: ${dirPath}`,
+                  { err: error, dirPath },
+                  '[cleanupOrphanedWorktrees] Preserved nonempty or inaccessible orphan directory',
                 );
               }
             } else {

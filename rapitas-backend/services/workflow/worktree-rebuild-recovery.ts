@@ -251,7 +251,7 @@ export async function attemptWorktreeRebuildRecovery(params: {
   // deleteBranch=false is the load-bearing argument: the default (true) would
   // delete the other task's branch (制約4).
   try {
-    await removeWorktree(baseDir, worktreePath, false);
+    await removeWorktree(baseDir, worktreePath, false, snapshotTag);
   } catch (err) {
     log.warn({ err, taskId }, '[worktree-rebuild] removeWorktree threw — aborting');
     return { recovered: false, reason: 'git_operation_failed' };
