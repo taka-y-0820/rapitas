@@ -62,7 +62,7 @@ function resetMocks() {
   workerStopMock.mockClear();
   mainStopMock.mockClear();
   stopAllForTasksMock.mockReset().mockResolvedValue([]);
-  mockPrisma.agentExecution.findMany.mockReset();
+  mockPrisma.agentExecution.findMany.mockReset().mockResolvedValue([]);
   mockPrisma.agentExecution.update.mockReset();
   mockPrisma.agentExecutionLog.deleteMany.mockReset();
   mockPrisma.task.findMany.mockReset();
@@ -167,7 +167,7 @@ describe('stopThemeAgents', () => {
       },
       data: { status: 'cancelled' },
     });
-    expect(mainStopMock).not.toHaveBeenCalled();
+    expect(mainStopMock).toHaveBeenCalledWith(91);
   });
 
   test('includes grandchildren without repeating cyclic task references', async () => {
@@ -258,4 +258,16 @@ test('timeout scopes queue and agent cancellation to the complete descendant tre
     select: { id: true },
   });
   expect(mockPrisma.agentExecutionLog.deleteMany).not.toHaveBeenCalled();
+});
+
+test('known stop targets are persisted even if the memory sweep left them failed', async () => {
+  resetMocks();
+  mockPrisma.task.findMany.mockResolvedValueOnce([{ id: 200 }]);
+  mockPrisma.agentExecution.findMany.mockResolvedValueOnce([{ id: 91 }]).mockResolvedValue([]);
+  stopAllForTasksMock.mockResolvedValueOnce([91]);
+  await stopThemeAgents(42, null);
+  expect(mockPrisma.agentExecution.update).toHaveBeenCalledWith({
+    where: { id: 91 },
+    data: { status: 'cancelled', completedAt: expect.any(Date), errorMessage: 'Auto-run stopped' },
+  });
 });

@@ -45,8 +45,18 @@ async function finalizeAgentSession(
   cancelled = false,
 ): Promise<void> {
   try {
-    await prisma.agentSession.update({
-      where: { id: sessionId },
+    await prisma.agentSession.updateMany({
+      where: {
+        id: sessionId,
+        status: { in: ['active', 'running'] },
+        ...(cancelled
+          ? {}
+          : {
+              agentExecutions: {
+                none: { status: { in: ['canceling', 'cancelling', 'cancelled', 'canceled'] } },
+              },
+            }),
+      },
       data: {
         status: cancelled ? 'cancelled' : success ? 'completed' : 'failed',
         lastActivityAt: new Date(),

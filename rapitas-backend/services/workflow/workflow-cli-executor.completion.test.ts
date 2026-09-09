@@ -299,7 +299,13 @@ describe('executeCLIAgent — AgentSession の終端化', () => {
     const [call] = spies.agentSessionUpdate.mock.calls[0] as [
       { where: { id: number }; data: { status: string; lastActivityAt: Date } },
     ];
-    expect(call.where).toEqual({ id: 100 });
+    expect(call.where).toEqual({
+      id: 100,
+      status: { in: ['active', 'running'] },
+      agentExecutions: {
+        none: { status: { in: ['canceling', 'cancelling', 'cancelled', 'canceled'] } },
+      },
+    });
     expect(call.data.status).toBe('completed');
     expect(call.data.lastActivityAt).toBeInstanceOf(Date);
   });

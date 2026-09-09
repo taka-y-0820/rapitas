@@ -1,3 +1,4 @@
+import { stopOwnedExecution } from './orchestrator/execution-stop';
 /**
  * AgentOrchestrator (Facade)
  *
@@ -19,7 +20,6 @@ import type { AgentConfigInput } from './agent-factory';
 import { narrowAgentType } from './agent-factory';
 import { resolveStoredSecret } from '../../utils/common/secret-store';
 import type { QuestionKey } from './question-detection';
-import { agentFactory } from './agent-factory';
 import { createLogger } from '../../config/logger';
 import { GitOperations } from './orchestrator/git-operations';
 import { QuestionTimeoutManager } from './orchestrator/question-timeout-manager';
@@ -305,63 +305,7 @@ export class AgentOrchestrator {
   // ==================== Execution Stop ====================
 
   async stopExecution(executionId: number): Promise<boolean> {
-    this.cancelQuestionTimeout(executionId);
-    this.releaseContinuationLock(executionId);
-
-    const state = this.activeExecutions.get(executionId);
-    if (!state) {
-      logger.info(`[Orchestrator] stopExecution: No active execution found for ${executionId}`);
-      return false;
-    }
-
-    const agent = agentFactory.getAgent(state.agentId);
-    if (!agent) {
-      logger.info(`[Orchestrator] stopExecution: No agent found for ${state.agentId}`);
-      this.activeExecutions.delete(executionId);
-      this.activeAgents.delete(executionId);
-      return false;
-    }
-
-    try {
-      await agent.stop();
-    } catch (error) {
-      logger.error({ err: error }, `[Orchestrator] Error stopping agent`);
-    }
-
-    try {
-      await this.prisma.agentExecution.update({
-        where: { id: executionId },
-        data: {
-          status: 'cancelled',
-          output: state.output,
-          completedAt: new Date(),
-          errorMessage: 'Cancelled by user',
-        },
-      });
-    } catch (error) {
-      // NOTE: The agent process is already stopped above; a DB write failure
-      // here must not abort the rest of this method, or the in-memory
-      // activeExecutions/activeAgents maps are left with a permanently
-      // stale entry for an execution whose agent no longer exists — the
-      // caller (e.g. stopAllForTasks) already treats stopExecution as
-      // best-effort via `.catch(() => {})`, so this mirrors that contract.
-      logger.error({ err: error }, `[Orchestrator] Failed to persist cancellation for execution`);
-    }
-
-    this.activeExecutions.delete(executionId);
-    this.activeAgents.delete(executionId);
-    await agentFactory.removeAgent(state.agentId);
-
-    this.eventManager.emitEvent({
-      type: 'execution_cancelled',
-      executionId,
-      sessionId: state.sessionId,
-      taskId: state.taskId,
-      timestamp: new Date(),
-    });
-
-    logger.info(`[Orchestrator] Execution ${executionId} stopped and cleaned up`);
-    return true;
+    return stopOwnedExecution(this.getContext(), executionId);
   }
 
   /**

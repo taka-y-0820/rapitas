@@ -562,3 +562,13 @@ describe('saveExecutionResult()', () => {
     expect(updateArg.data.peakRssKb).toBe(40000);
   });
 });
+
+test('stop intent wins over successful or waiting results before persistence', () => {
+  for (const waitingForInput of [true, false]) {
+    const state = makeState({ status: 'cancelled' });
+    const result = { success: true, waitingForInput };
+    expect(determineExecutionStatus(result, makeFileLogger(), state)).toBe('cancelled');
+    expect(result.success).toBe(false);
+    expect(result.waitingForInput).toBe(false);
+  }
+});

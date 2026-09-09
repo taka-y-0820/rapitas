@@ -3,6 +3,7 @@
  *
  * Handles the execution logic for new tasks.
  */
+import { ExecutionCancelledError } from '../execution-cancelled-error';
 import { agentFactory } from '../agent-factory';
 import { resolveAgentConfig } from './task-agent-config';
 import type { AgentConfigInput } from '../agent-factory';
@@ -596,6 +597,8 @@ export async function executeTask(
       (event) => ctx.emitEvent(event),
       'Execution',
     );
+    if (state.status === 'cancelled')
+      throw new ExecutionCancelledError('Execution cancelled; result persistence did not complete');
     throw error;
   } finally {
     stopExecutionHeartbeat(execution.id);

@@ -209,7 +209,9 @@ describe('stopExecution', () => {
     const state = makeExecutionState({ executionId: 2, agentId: 'agent-2' });
     internals(orchestrator).activeExecutions.set(2, state);
     internals(orchestrator).activeAgents.set(2, makeActiveAgentInfo({ executionId: 2 }));
-    const agentStop = mock(() => Promise.resolve());
+    const agentStop = mock(async () => {
+      expect(state.status).toBe('cancelled');
+    });
     getAgentMock.mockReturnValue({ stop: agentStop });
 
     const events: OrchestratorEvent[] = [];
@@ -264,7 +266,9 @@ describe('stopExecution', () => {
     const state = makeExecutionState({ executionId: 6, agentId: 'agent-6' });
     internals(orchestrator).activeExecutions.set(6, state);
     internals(orchestrator).activeAgents.set(6, makeActiveAgentInfo({ executionId: 6 }));
-    const agentStop = mock(() => Promise.resolve());
+    const agentStop = mock(async () => {
+      expect(state.status).toBe('cancelled');
+    });
     getAgentMock.mockReturnValue({ stop: agentStop });
     mockPrisma.agentExecution.update.mockImplementationOnce(() =>
       Promise.reject(new Error('db down')),

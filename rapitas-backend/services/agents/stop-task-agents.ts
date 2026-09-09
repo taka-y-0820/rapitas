@@ -245,7 +245,10 @@ export async function stopThemeAgents(
     ...new Set([
       ...priorTargets,
       ...memoryIds,
-      ...(await stopExecutions(ids, reason).finally(() => {
+      ...(await stopExecutions(
+        [...new Set([...priorTargets, ...beforeStopIds, ...memoryIds, ...ids])],
+        reason,
+      ).finally(() => {
         for (const id of taskIds) releaseTaskExecutionLock(id);
       })),
     ]),
