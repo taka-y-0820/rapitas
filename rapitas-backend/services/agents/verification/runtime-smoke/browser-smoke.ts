@@ -21,6 +21,8 @@ const BROWSER_LAUNCH_TIMEOUT_MS = 20_000;
 
 /** Findings for one checked path. */
 export interface PathFinding {
+  failedRequests?: string[];
+  pendingRequests?: string[];
   path: string;
   /** Main-document HTTP status (0 when navigation itself failed). */
   httpStatus: number;
@@ -56,6 +58,7 @@ export async function runBrowserSmoke(
   baseUrl: string,
   paths: string[],
   label: string,
+  readiness: { readySelector?: string; readinessTimeoutMs?: number } = {},
 ): Promise<SmokeRunResult> {
   const worker = spawnPlaywrightWorker();
 
@@ -89,6 +92,7 @@ export async function runBrowserSmoke(
           url: `${baseUrl}${path}`,
           timeoutMs: NAV_TIMEOUT_MS,
           settleMs: SETTLE_MS,
+          ...readiness,
           screenshotPath,
         });
         findings.push({ path, ...result });

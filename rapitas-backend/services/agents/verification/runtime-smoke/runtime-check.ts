@@ -89,12 +89,16 @@ export function evaluateSmokeFindings(smoke: SmokeRunResult): {
   const lines: string[] = [];
   let errorCount = 0;
   for (const f of smoke.findings) {
+    for (const request of f.failedRequests ?? []) lines.push(`    failed API request: ${request}`);
+    for (const request of f.pendingRequests ?? [])
+      lines.push(`    pending API request: ${request}`);
+    if (f.screenshotPath) lines.push(`    screenshot: ${f.screenshotPath}`);
     if (f.navigationError) {
       errorCount++;
       lines.push(`✗ ${f.path}: ページを開けない — ${f.navigationError}`);
       continue;
     }
-    const hard = f.pageErrors.length + f.serverErrors.length;
+    const hard = f.pageErrors.length + f.serverErrors.length + (f.failedRequests?.length ?? 0);
     if (hard > 0) {
       errorCount += hard;
       lines.push(`✗ ${f.path}: HTTP ${f.httpStatus}`);
@@ -106,7 +110,6 @@ export function evaluateSmokeFindings(smoke: SmokeRunResult): {
     if (f.consoleErrors.length > 0) {
       lines.push(`    (console.error ×${f.consoleErrors.length} — 参考情報、ブロックしません)`);
     }
-    if (f.screenshotPath) lines.push(`    screenshot: ${f.screenshotPath}`);
   }
   return { ok: errorCount === 0, errorCount, lines };
 }
@@ -221,7 +224,10 @@ export async function runRuntimeSmokeCheck(
 
   const baseUrl = normalizeLocalHost(acquired.baseUrl);
   try {
-    const smoke = await runBrowserSmoke(baseUrl, cfg.checkPaths, label);
+    const smoke = await runBrowserSmoke(baseUrl, cfg.checkPaths, label, {
+      readySelector: cfg.readySelector,
+      readinessTimeoutMs: cfg.readinessTimeoutMs,
+    });
     if (!smoke.browserAvailable) {
       // HTTP readiness alone does not prove the configured browser checks.
       return {
@@ -235,6 +241,16 @@ export async function runRuntimeSmokeCheck(
     }
 
     const verdict = evaluateSmokeFindings(smoke);
+    if (verdict.ok && !cfg.readySelector) {
+      return {
+        name: 'runtime',
+        ran: true,
+        ok: false,
+        unverifiable: true,
+        errorCount: 0,
+        details: `${verdict.lines.join('\n')}\nApplication readiness is unverified: configure readySelector for the application. HTTP responses alone do not prove that loading finished.`,
+      };
+    }
     return {
       name: 'runtime',
       ran: true,

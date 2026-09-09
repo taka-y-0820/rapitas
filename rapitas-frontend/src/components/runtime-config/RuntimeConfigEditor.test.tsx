@@ -14,6 +14,27 @@ vi.mock('next-intl', () => ({
 }));
 
 describe('RuntimeConfigEditor', () => {
+  it('preserves the readiness contract when another setting changes', () => {
+    const onChange = vi.fn();
+    render(
+      <RuntimeConfigEditor
+        value={JSON.stringify({
+          start: 'app',
+          url: 'http://localhost:{port}',
+          readySelector: '[data-ready]',
+          readinessTimeoutMs: 12000,
+        })}
+        onChange={onChange}
+      />,
+    );
+    expect(screen.getByLabelText('readySelector')).toHaveValue('[data-ready]');
+    expect(screen.getByLabelText('readinessTimeoutMs')).toHaveValue(12);
+    fireEvent.change(screen.getByLabelText('start'), { target: { value: 'app dev' } });
+    expect(JSON.parse(onChange.mock.calls.at(-1)![0])).toMatchObject({
+      readySelector: '[data-ready]',
+      readinessTimeoutMs: 12000,
+    });
+  });
   it('renders defaults when the value is empty', () => {
     render(<RuntimeConfigEditor value="" onChange={vi.fn()} />);
     expect(screen.getByLabelText('start')).toHaveValue('');

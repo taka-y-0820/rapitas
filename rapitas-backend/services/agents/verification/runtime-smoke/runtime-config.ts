@@ -32,6 +32,10 @@ export interface RuntimeConfig {
   readyTimeoutMs: number;
   /** Paths driven in the browser smoke pass (default ["/"], max 10). */
   checkPaths: string[];
+  /** Visible element proving that the application has finished loading. */
+  readySelector?: string;
+  /** Browser readiness deadline, separate from server startup. */
+  readinessTimeoutMs?: number;
 }
 
 const DEFAULT_READY_TIMEOUT_MS = 90_000;
@@ -73,6 +77,23 @@ export function parseRuntimeConfig(raw: string): { config?: RuntimeConfig; error
   }
 
   const healthPath = typeof o.healthPath === 'string' && o.healthPath ? o.healthPath : '/';
+  if (
+    o.readySelector !== undefined &&
+    (typeof o.readySelector !== 'string' ||
+      !o.readySelector.trim() ||
+      o.readySelector.length > 1000)
+  ) {
+    return { error: '"readySelector" must be a non-empty selector (max 1000 characters)' };
+  }
+  if (
+    o.readinessTimeoutMs !== undefined &&
+    (typeof o.readinessTimeoutMs !== 'number' ||
+      !Number.isFinite(o.readinessTimeoutMs) ||
+      o.readinessTimeoutMs < 500 ||
+      o.readinessTimeoutMs > 60000)
+  ) {
+    return { error: '"readinessTimeoutMs" must be between 500 and 60000' };
+  }
   const rawTimeout = typeof o.readyTimeoutMs === 'number' ? o.readyTimeoutMs : NaN;
   const readyTimeoutMs = Number.isFinite(rawTimeout)
     ? Math.min(MAX_READY_TIMEOUT_MS, Math.max(5_000, rawTimeout))
@@ -90,6 +111,13 @@ export function parseRuntimeConfig(raw: string): { config?: RuntimeConfig; error
       healthPath,
       readyTimeoutMs,
       checkPaths: checkPaths.length > 0 ? checkPaths : ['/'],
+      ...(typeof o.readySelector === 'string'
+        ? {
+            readySelector: o.readySelector.trim(),
+            readinessTimeoutMs:
+              typeof o.readinessTimeoutMs === 'number' ? o.readinessTimeoutMs : 25000,
+          }
+        : {}),
     },
   };
 }

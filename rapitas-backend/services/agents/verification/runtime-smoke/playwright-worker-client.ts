@@ -20,6 +20,8 @@ const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 
 /** Result of a checkPath call — mirrors browser-smoke.ts's PathFinding minus the `path` field (the caller already knows it). */
 export interface WorkerCheckPathResult {
+  failedRequests?: string[];
+  pendingRequests?: string[];
   httpStatus: number;
   navigationError: string | null;
   pageErrors: string[];
@@ -73,6 +75,8 @@ export interface PlaywrightWorker {
     url: string;
     timeoutMs?: number;
     settleMs?: number;
+    readySelector?: string;
+    readinessTimeoutMs?: number;
     screenshotPath?: string;
   }): Promise<WorkerCheckPathResult>;
   /** Close the browser and terminate the worker process. Idempotent. */
@@ -229,9 +233,14 @@ export function spawnPlaywrightWorker(): PlaywrightWorker {
           url: opts.url,
           timeoutMs: opts.timeoutMs,
           settleMs: opts.settleMs,
+          readySelector: opts.readySelector,
+          readinessTimeoutMs: opts.readinessTimeoutMs,
           screenshotPath: opts.screenshotPath,
         },
-        (opts.timeoutMs ?? 25_000) + (opts.settleMs ?? 2_000) + 5_000,
+        (opts.timeoutMs ?? 25_000) +
+          (opts.settleMs ?? 2_000) +
+          (opts.readySelector ? (opts.readinessTimeoutMs ?? 25_000) : 0) +
+          5_000,
       );
     },
     async close() {
