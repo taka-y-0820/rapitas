@@ -3,7 +3,7 @@
  *
  * Lists a theme's OPEN auto-created PRs (GitHubPullRequest state='open' with a
  * linkedTaskId belonging to the theme) and fetches each PR's changed files via
- * `gh pr view <n> --json files`, memoized per PR number with a TTL so the
+ * `gh pr view <n> --json files,state`, memoized per repository and PR with a TTL so the
  * 12-second scheduler tick never stampedes the GitHub API. gh failures are
  * fail-open (empty file list → no deferral) — a broken gh must not stop task
  * selection.
@@ -30,12 +30,13 @@ export interface OpenAutoPr {
 
 interface CacheEntry {
   files: string[];
+  state: string | null;
   expiresAt: number;
 }
 
-// prNumber-keyed memo. Failures are cached too (as []) so a persistently
+// Repository/PR-keyed memo. Failures are cached too (as []) so a persistently
 // broken gh is retried at most once per TTL window instead of every tick.
-const cache = new Map<number, CacheEntry>();
+const cache = new Map<string, CacheEntry>();
 
 /** Clear the memo (test isolation helper). */
 export function clearPrFilesCache(): void {
@@ -78,6 +79,7 @@ const defaultDeps: PrFilesDeps = {
 export async function getOpenAutoPrsForTheme(
   prisma: PrismaClient,
   themeId: number,
+  deps: PrFilesDeps = defaultDeps,
 ): Promise<OpenAutoPr[]> {
   try {
     const tasks = await prisma.task.findMany({
@@ -89,7 +91,18 @@ export async function getOpenAutoPrsForTheme(
       where: { state: 'open', linkedTaskId: { in: tasks.map((t) => t.id) } },
       select: { prNumber: true, linkedTaskId: true, createdAt: true },
     });
-    return rows;
+    if (rows.length === 0) return rows;
+    const theme = await prisma.theme.findUnique({
+      where: { id: themeId },
+      select: { workingDirectory: true },
+    });
+    const cwd = theme?.workingDirectory;
+    if (!cwd) return rows;
+    const snapshots = await Promise.all(rows.map((row) => getPrSnapshot(cwd, row.prNumber, deps)));
+    // DB synchronization is bounded and can miss old closed/merged PRs.
+    // Unknown remote state retains the DB candidate; only confirmed terminal
+    // PRs stop contributing to both merge barriers and scope-overlap holds.
+    return rows.filter((_, index) => !['CLOSED', 'MERGED'].includes(snapshots[index].state ?? ''));
   } catch (err) {
     log.warn({ err, themeId }, '[pr-files] open auto-PR lookup failed — treating as none');
     return [];
@@ -97,7 +110,7 @@ export async function getOpenAutoPrsForTheme(
 }
 
 /**
- * Changed files of one PR via `gh pr view <n> --json files`, memoized for
+ * Changed files of one nonterminal PR via `gh pr view <n> --json files,state`, memoized for
  * {@link PR_FILES_CACHE_TTL_MS}. gh errors resolve to [] (fail-open) and are
  * cached for the same TTL to bound retry rate.
  *
@@ -111,18 +124,31 @@ export async function getPrChangedFiles(
   prNumber: number,
   deps: PrFilesDeps = defaultDeps,
 ): Promise<string[]> {
+  const snapshot = await getPrSnapshot(cwd, prNumber, deps);
+  return ['CLOSED', 'MERGED'].includes(snapshot.state ?? '') ? [] : snapshot.files;
+}
+
+async function getPrSnapshot(
+  cwd: string,
+  prNumber: number,
+  deps: PrFilesDeps,
+): Promise<CacheEntry> {
   const now = deps.now();
-  const hit = cache.get(prNumber);
-  if (hit && hit.expiresAt > now) return hit.files;
+  const key = JSON.stringify([cwd, prNumber]);
+  const hit = cache.get(key);
+  if (hit && hit.expiresAt > now) return hit;
 
   let files: string[] = [];
+  let state: string | null = null;
   try {
-    const stdout = await deps.execGh(`${ghPath()} pr view ${prNumber} --json files`, cwd);
-    const parsed = JSON.parse(stdout) as { files?: Array<{ path?: string }> };
+    const stdout = await deps.execGh(`${ghPath()} pr view ${prNumber} --json files,state`, cwd);
+    const parsed = JSON.parse(stdout) as { files?: Array<{ path?: string }>; state?: string };
+    state = typeof parsed.state === 'string' ? parsed.state.toUpperCase() : null;
     files = (parsed.files ?? []).map((f) => (f.path ?? '').trim()).filter((p) => p.length > 0);
   } catch (err) {
     log.warn({ err, prNumber }, '[pr-files] gh pr view --json files failed — treating as empty');
   }
-  cache.set(prNumber, { files, expiresAt: now + PR_FILES_CACHE_TTL_MS });
-  return files;
+  const entry = { files, state, expiresAt: now + PR_FILES_CACHE_TTL_MS };
+  cache.set(key, entry);
+  return entry;
 }
