@@ -207,3 +207,20 @@ test('a later stop attempt recovers durable targets after settlement failed', as
   expect(await settleStoppedTasks(client, pending)).toEqual([1]);
   expect(await readPendingThemeStopTargets(client, 10)).toEqual([]);
 });
+
+test.each([null, 'running', 'failed', 'completed'])(
+  'failed session recovery preserves newer %s execution',
+  async (newer) => {
+    await cancelledExecution();
+    await db.$executeRawUnsafe("ALTER TABLE AgentSession ADD COLUMN status TEXT DEFAULT 'failed'");
+    await db.$executeRawUnsafe('ALTER TABLE AgentSession ADD COLUMN updatedAt DATETIME');
+    if (newer)
+      await db.$executeRawUnsafe('INSERT INTO AgentExecution VALUES (2,1,?,?)', newer, now);
+    await settleStoppedSessions(db as unknown as PostgresClient, [1]);
+    const session = await db.agentSession.findUnique({
+      where: { id: 1 },
+      select: { status: true },
+    });
+    expect(session?.status).toBe(newer ? 'failed' : 'cancelled');
+  },
+);

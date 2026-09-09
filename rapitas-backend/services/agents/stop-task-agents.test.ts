@@ -157,13 +157,20 @@ describe('stopThemeAgents', () => {
     mockPrisma.agentExecution.findMany
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ sessionId: 7 }]);
+      .mockResolvedValueOnce([{ id: 91, sessionId: 7 }]);
     expect(await stopThemeAgents(42, null)).toEqual({ stoppedCount: 1, executionIds: [91] });
     expect(mockPrisma.agentSession.updateMany).toHaveBeenCalledWith({
       where: {
         id: { in: [7] },
-        status: { in: ['active', 'running'] },
-        agentExecutions: { none: { status: { in: ['running', 'pending', 'waiting_for_input'] } } },
+        status: { in: ['active', 'running', 'failed'] },
+        agentExecutions: {
+          none: {
+            OR: [
+              { status: { in: ['running', 'pending', 'waiting_for_input'] } },
+              { id: { gt: 91 }, status: { notIn: ['cancelled', 'canceled'] } },
+            ],
+          },
+        },
       },
       data: { status: 'cancelled' },
     });
@@ -269,5 +276,16 @@ test('known stop targets are persisted even if the memory sweep left them failed
   expect(mockPrisma.agentExecution.update).toHaveBeenCalledWith({
     where: { id: 91 },
     data: { status: 'cancelled', completedAt: expect.any(Date), errorMessage: 'Auto-run stopped' },
+  });
+});
+
+test('timeout settles memory-owned execution after its status leaves the active query', async () => {
+  resetMocks();
+  stopAllForTasksMock.mockResolvedValueOnce([91]);
+  await stopTaskTreeAgents(1);
+  expect(mainStopMock).toHaveBeenCalledWith(91);
+  expect(mockPrisma.agentExecution.update).toHaveBeenCalledWith({
+    where: { id: 91 },
+    data: { status: 'cancelled', completedAt: expect.any(Date), errorMessage: 'Task timed out' },
   });
 });
