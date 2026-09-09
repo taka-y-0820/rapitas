@@ -7,8 +7,8 @@
  * the worktree-or-hard-fail invariant: a mutating role NEVER runs in any
  * repo's PRIMARY checkout — worktree creation failure is fatal, and the
  * repo-agnostic isPrimaryWorkTree pre-spawn guard refuses the leftovers.
- * Non-mutating roles (researcher / planner) must never touch any
- * of this machinery.
+ * Researchers use the theme checkout; planners may reuse existing work but
+ * never create a replacement worktree.
  *
  * Uses `role: 'verifier'` with `outputFile: null` as a synthetic "mutating
  * role" fixture so worktree assertions stay isolated from the (separately
@@ -70,6 +70,29 @@ function lastExecuteTaskCall(): [AgentTaskLike, ExecutionOptionsLike] {
 }
 
 describe('executeCLIAgent — worktree resolution', () => {
+  test('planner does not recreate a missing worktree', async () => {
+    wf.latestSessionWorktree = {
+      worktreePath: '/fake/worktree/missing',
+      branchName: 'feature/existing',
+    };
+    wf.canReuseWorktree = false;
+    await run({ ...nonMutatingTransition(), role: 'planner' });
+    expect(lastExecuteTaskCall()[1].workingDirectory).toBe('/fake/project');
+    expect(spies.createWorktree).not.toHaveBeenCalled();
+  });
+
+  test('planner inherits existing implementation work without creating a replacement', async () => {
+    resetWfMockState();
+    wf.latestSessionWorktree = {
+      worktreePath: '/fake/worktree/existing',
+      branchName: 'feature/existing',
+    };
+    wf.canReuseWorktree = true;
+    await run({ ...nonMutatingTransition(), role: 'planner' });
+    expect(lastExecuteTaskCall()[1].workingDirectory).toBe('/fake/worktree/existing');
+    expect(spies.createWorktree).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     resetWfMockState();
   });
