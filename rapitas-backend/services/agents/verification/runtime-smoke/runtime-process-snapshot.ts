@@ -24,6 +24,10 @@ export function ownsRuntimePort(
 
 const windowsScript = `
 $ErrorActionPreference = 'Stop'
+# execFile decodes UTF-8. CP932 bytes for characters such as ソ contain 0x5c,
+# which otherwise becomes an invalid JSON escape and blocks verified cleanup.
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = [Console]::OutputEncoding
 $rows = @(Get-CimInstance Win32_Process | ForEach-Object {
   [pscustomobject]@{pid=[int]$_.ProcessId; parentPid=[int]$_.ParentProcessId; birth=([string]$_.CreationDate.ToUniversalTime().Ticks); command=[string]$_.CommandLine}
 })

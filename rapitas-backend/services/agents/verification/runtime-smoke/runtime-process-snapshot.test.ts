@@ -4,7 +4,27 @@ import {
   parseWindowsRuntimeSnapshot,
   parseLinuxRuntimeStat,
   parseLinuxRuntimeListeners,
+  readRuntimeProcessSnapshot,
 } from './runtime-process-snapshot';
+
+test.skipIf(process.platform !== 'win32')(
+  'native Windows snapshot preserves Japanese command arguments',
+  async () => {
+    const marker = '監督ソフト検証ソ';
+    const child = Bun.spawn([process.execPath, '-e', 'setInterval(() => {}, 1000)', marker], {
+      stdout: 'ignore',
+      stderr: 'ignore',
+    });
+    try {
+      const snapshot = await readRuntimeProcessSnapshot();
+      expect(snapshot.processes.find((row) => row.pid === child.pid)?.command).toContain(marker);
+    } finally {
+      child.kill();
+      await child.exited;
+    }
+  },
+  20000,
+);
 
 test('Windows snapshot preserves exact creation ticks and listener protection', () => {
   const snapshot = parseWindowsRuntimeSnapshot(

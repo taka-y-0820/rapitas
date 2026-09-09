@@ -135,9 +135,11 @@ import type { OrchestratorContext } from './types';
 // ── ヘルパー ──────────────────────────────────────────────────────────────────
 
 type MockPrisma = {
+  $transaction: <T>(fn: (tx: MockPrisma) => Promise<T>) => Promise<T>;
+  task: { updateMany: ReturnType<typeof mock> };
   agentExecution: {
     findUnique: ReturnType<typeof mock>;
-    update: ReturnType<typeof mock>;
+    updateMany: ReturnType<typeof mock>;
   };
   agentExecutionLog: {
     findMany: ReturnType<typeof mock>;
@@ -183,9 +185,11 @@ function makeCtx(
   overrides: Partial<OrchestratorContext> = {},
 ): { ctx: OrchestratorContext; prisma: MockPrisma } {
   const prisma: MockPrisma = {
+    $transaction: async (fn) => fn(prisma),
+    task: { updateMany: mock(async () => ({ count: 1 })) },
     agentExecution: {
       findUnique: mock(async () => execution),
-      update: mock(async () => ({})),
+      updateMany: mock(async () => ({ count: 1 })),
     },
     agentExecutionLog: {
       findMany: mock(async () => []),
@@ -264,7 +268,7 @@ describe('resumeInterruptedExecution() — task-execution-lock', () => {
 
     await expect(resumeInterruptedExecution(ctx, 10)).rejects.toThrow();
 
-    expect(prisma.agentExecution.update).not.toHaveBeenCalled();
+    expect(prisma.agentExecution.updateMany).not.toHaveBeenCalled();
   });
 
   test('正常系の resume 完了後、ロックは解放される', async () => {
