@@ -9,6 +9,7 @@ import type { QuestionHandlerContext, OutputHandlerContext } from './execution-h
 import { toJsonString } from './execution-helpers-types';
 import type { LogChunkManager } from './log-chunk-manager';
 import { extractIdeaMarkers } from './idea-extractor';
+import { getOutputWriter } from './output-persistence';
 import { createLogger } from '../../../config/logger';
 
 const logger = createLogger('execution-handlers');
@@ -76,9 +77,7 @@ export function setupOutputHandler(
   ctx: OutputHandlerContext,
   logManager: LogChunkManager,
 ): void {
-  let lastDbUpdate = Date.now();
-  const DB_UPDATE_INTERVAL = 200;
-  let pendingDbUpdate = false;
+  const persistOutput = getOutputWriter(ctx, logManager);
 
   agent.setOutputHandler(async (output, isError) => {
     try {
@@ -90,22 +89,6 @@ export function setupOutputHandler(
       ctx.agentInfo.lastSavedAt = new Date();
 
       logManager.addChunk(output, isError ?? false);
-
-      // NOTE: Error output is saved to DB immediately for visibility
-      if (isError && output.trim()) {
-        try {
-          await ctx.prisma.agentExecution.update({
-            where: { id: ctx.executionId },
-            data: {
-              output: ctx.state.output,
-              errorMessage: output.slice(-500),
-            },
-          });
-          lastDbUpdate = Date.now();
-        } catch (e) {
-          logger.error({ err: e }, 'Failed to save error output immediately');
-        }
-      }
 
       if (ctx.onOutput) {
         try {
@@ -133,21 +116,7 @@ export function setupOutputHandler(
         extractIdeaMarkers(output, ctx.taskId);
       }
 
-      const now = Date.now();
-      if (now - lastDbUpdate > DB_UPDATE_INTERVAL && !pendingDbUpdate) {
-        pendingDbUpdate = true;
-        lastDbUpdate = now;
-        try {
-          await ctx.prisma.agentExecution.update({
-            where: { id: ctx.executionId },
-            data: { output: ctx.state.output },
-          });
-        } catch (e) {
-          logger.error({ err: e }, 'Failed to update execution output');
-        } finally {
-          pendingDbUpdate = false;
-        }
-      }
+      await persistOutput(isError && output.trim() ? output.slice(-500) : undefined);
     } catch (e) {
       logger.error({ err: e }, 'Critical error in output handler');
     }
