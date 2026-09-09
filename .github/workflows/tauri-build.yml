@@ -523,6 +523,7 @@ jobs:
       - name: Prepare backend binary configuration
         working-directory: rapitas-desktop
         run: |
+          node --test scripts/backend-resource-dedup.test.js
           # Run the script to prepare backend binary configuration
           node scripts/prepare-backend-binary.js ${{ matrix.target }}
 
