@@ -13,6 +13,7 @@ import { createLogger } from '../../../../config/logger';
 import { recordTransition } from '../../../../services/workflow/transition-recorder';
 import { checkWorkflowInvariants } from '../../../../services/workflow/workflow-invariants';
 import { readPromptLanguage } from '../../../../services/system/prompt-language-store';
+import { getTaskExecutionCancellationVersion } from '../../../../services/agents/task-execution-lock';
 
 const log = createLogger('routes:agent-execution:research-workflow-advance');
 
@@ -34,6 +35,8 @@ export async function advanceAfterResearchSave(
   params: AdvanceAfterResearchSaveParams,
 ): Promise<void> {
   const { taskIdNum, sessionId, researchMarkdown, revertedDiff } = params;
+  const cancellationVersion = getTaskExecutionCancellationVersion(taskIdNum);
+  const current = () => getTaskExecutionCancellationVersion(taskIdNum) === cancellationVersion;
 
   // Transition workflowStatus from 'draft' → 'research_done' so the next
   // phase (planner) is reachable. Without this, role-resolver still picks
@@ -42,21 +45,28 @@ export async function advanceAfterResearchSave(
   const taskBefore = await prisma.task
     .findUnique({
       where: { id: taskIdNum },
-      select: { workflowStatus: true, workflowMode: true },
+      select: { workflowStatus: true, workflowMode: true, updatedAt: true },
     })
     .catch(() => null);
+  if (!current() || !taskBefore) return;
   const currentWf = taskBefore?.workflowStatus ?? 'draft';
   const nextWfStatus = currentWf === 'draft' ? 'research_done' : currentWf;
 
-  await prisma.task
+  const updated = await prisma.task
     .update({
-      where: { id: taskIdNum },
+      where: { id: taskIdNum, updatedAt: taskBefore.updatedAt },
       // task.status is hyphenated; workflowStatus uses the underscore form.
       data: { status: 'in-progress', workflowStatus: nextWfStatus },
     })
-    .catch((e) => log.warn({ err: e, taskId: taskIdNum }, '[API] Failed to update task'));
+    .then(() => true)
+    .catch((e) => {
+      log.warn({ err: e, taskId: taskIdNum }, '[API] Failed to update task');
+      return false;
+    });
+  if (!updated || !current()) return;
   if (currentWf !== nextWfStatus) {
     const violations = await checkWorkflowInvariants(taskIdNum);
+    if (!current()) return;
     await recordTransition({
       taskId: taskIdNum,
       fromStatus: currentWf,
@@ -80,15 +90,17 @@ export async function advanceAfterResearchSave(
     const missingFileViolation = violations.find((v) => v.code === 'missing_file');
     if (missingFileViolation) {
       const { repairMissingFile } = await import('../../../../services/workflow/invariant-repair');
+      if (!current()) return;
       await repairMissingFile(taskIdNum, missingFileViolation).catch((err) => {
         log.warn({ err, taskId: taskIdNum }, '[API] repairMissingFile threw — failing open');
         return { repaired: false as const };
       });
     }
   }
+  if (!current()) return;
   await prisma.agentSession
     .update({
-      where: { id: sessionId },
+      where: { id: sessionId, status: { notIn: ['cancelled', 'canceled', 'canceling'] } },
       data: {
         status: 'completed',
         completedAt: new Date(),
@@ -106,6 +118,7 @@ export async function advanceAfterResearchSave(
   // emitting it BEFORE this point caused the user-reported "途中で完了"
   // symptom because the badge appeared while the post-handler was still
   // running.
+  if (!current()) return;
   await prisma.agentExecution
     .updateMany({
       where: { sessionId, status: 'post_processing' },
@@ -123,6 +136,7 @@ export async function advanceAfterResearchSave(
   // after research.md is on disk and the workflow has been queued for
   // the next phase.
   try {
+    if (!current()) return;
     const { appendEvent } = await import('../../../../services/memory/timeline');
     const latestExec = await prisma.agentExecution
       .findFirst({
@@ -132,6 +146,7 @@ export async function advanceAfterResearchSave(
       })
       .catch(() => null);
     if (latestExec) {
+      if (!current()) return;
       await appendEvent({
         eventType: 'agent_execution_completed',
         actorType: 'agent',
@@ -175,6 +190,7 @@ export async function advanceAfterResearchSave(
     plan_approved: 'implementer',
     in_progress: 'verifier',
   };
+  if (!current()) return;
   if (isManagedMode && advanceableStatuses.has(nextWfStatus)) {
     const nextPhase = nextPhaseLabel[nextWfStatus] ?? 'unknown';
     log.info(
@@ -192,6 +208,8 @@ export async function advanceAfterResearchSave(
       try {
         const { WorkflowOrchestrator } =
           await import('../../../../services/workflow/workflow-orchestrator');
+        // Normal owner-scoped release keeps this version; an explicit stop increments it.
+        if (getTaskExecutionCancellationVersion(taskIdNum) !== cancellationVersion) return;
         await WorkflowOrchestrator.getInstance().advanceWorkflow(taskIdNum, readPromptLanguage());
         log.info({ taskId: taskIdNum, nextPhase }, '[API] Auto-advanced workflow after research');
       } catch (advanceErr) {

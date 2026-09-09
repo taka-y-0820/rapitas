@@ -5,7 +5,12 @@
  * critic-rejection guard (task 539 resurrection bug) and the normal
  * save-and-advance path.
  */
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, spyOn } from 'bun:test';
+import {
+  acquireTaskExecutionLock,
+  getTaskExecutionLockOwner,
+  releaseTaskExecutionLock,
+} from '../../../../services/agents/task-execution-lock';
 
 const noopLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
 
@@ -18,9 +23,10 @@ const mockSessionFindUnique = mock(() =>
 const mockSessionUpdate = mock(() => Promise.resolve({}));
 const mockTaskUpdate = mock(() => Promise.resolve({}));
 const mockTaskFindUnique = mock(() =>
-  Promise.resolve<{ workflowStatus: string; workflowMode: string } | null>({
+  Promise.resolve<{ workflowStatus: string; workflowMode: string; updatedAt: Date } | null>({
     workflowStatus: 'draft',
     workflowMode: 'standard',
+    updatedAt: new Date('2026-09-09T18:00:00Z'),
   }),
 );
 const mockExecUpdateMany = mock(() => Promise.resolve({ count: 1 }));
@@ -82,6 +88,10 @@ mock.module('../../../../services/memory/timeline', () => ({
   appendEvent: () => Promise.resolve(),
 }));
 
+const advance = mock(async () => ({ success: true }));
+mock.module('../../../../services/workflow/workflow-orchestrator', () => ({
+  WorkflowOrchestrator: { getInstance: () => ({ advanceWorkflow: advance }) },
+}));
 const { handleResearchResult } = await import('./research-phase-handler');
 
 const REPORT = '# 調査レポート\n\n## 前提監査\n本文';
@@ -106,6 +116,53 @@ describe('handleResearchResult — critic-rejection guard', () => {
     mockReadWorkflowFile.mockReset().mockResolvedValue(null);
     mockCriticRejectedSince.mockReset().mockResolvedValue(false);
   });
+
+  test('stop during the final task read does not complete or advance the research run', async () => {
+    mockTaskFindUnique.mockImplementationOnce(async () => {
+      releaseTaskExecutionLock(539);
+      return { workflowStatus: 'draft', workflowMode: 'standard', updatedAt: new Date() };
+    });
+    await handleResearchResult(baseParams());
+    expect(mockTaskUpdate).not.toHaveBeenCalled();
+    expect(mockSessionUpdate).not.toHaveBeenCalled();
+    expect(mockExecUpdateMany).not.toHaveBeenCalled();
+  });
+
+  test('a concurrent task update prevents session completion after a failed conditional write', async () => {
+    mockTaskUpdate.mockRejectedValueOnce(new Error('record changed'));
+    await handleResearchResult(baseParams());
+    expect(mockTaskUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 539, updatedAt: new Date('2026-09-09T18:00:00Z') },
+      }),
+    );
+    expect(mockSessionUpdate).not.toHaveBeenCalled();
+    expect(mockExecUpdateMany).not.toHaveBeenCalled();
+  });
+
+  for (const stopped of [false, true]) {
+    test(`deferred advance ${stopped ? 'is revoked by stop' : 'survives normal lease release'}`, async () => {
+      advance.mockClear();
+      acquireTaskExecutionLock(539);
+      const owner = getTaskExecutionLockOwner(539)!;
+      let queued!: () => Promise<void>;
+      const timer = spyOn(globalThis, 'setTimeout').mockImplementation(((
+        callback: () => Promise<void>,
+      ) => {
+        queued = callback;
+        return 0;
+      }) as typeof setTimeout);
+      try {
+        await handleResearchResult(baseParams());
+        releaseTaskExecutionLock(539, stopped ? undefined : owner);
+        await queued();
+        expect(advance).toHaveBeenCalledTimes(stopped ? 0 : 1);
+      } finally {
+        timer.mockRestore();
+        releaseTaskExecutionLock(539, owner);
+      }
+    });
+  }
 
   test('critic 差し戻し後は research.md を再保存せず、ワークフローも前進させない', async () => {
     mockCriticRejectedSince.mockResolvedValue(true);
@@ -135,7 +192,7 @@ describe('handleResearchResult — critic-rejection guard', () => {
     expect(mockCriticRejectedSince).toHaveBeenCalledWith(539, 'research', expect.any(Date));
     expect(mockWriteWorkflowFile).toHaveBeenCalledWith(539, 'research', REPORT);
     expect(mockTaskUpdate).toHaveBeenCalledWith({
-      where: { id: 539 },
+      where: { id: 539, updatedAt: new Date('2026-09-09T18:00:00Z') },
       data: { status: 'in-progress', workflowStatus: 'research_done' },
     });
   });
@@ -147,7 +204,7 @@ describe('handleResearchResult — critic-rejection guard', () => {
 
     expect(mockTaskUpdate).toHaveBeenCalledTimes(1);
     expect(mockTaskUpdate).toHaveBeenCalledWith({
-      where: { id: 539 },
+      where: { id: 539, updatedAt: new Date('2026-09-09T18:00:00Z') },
       data: { status: 'in-progress', workflowStatus: 'research_done' },
     });
   });
@@ -161,7 +218,7 @@ describe('handleResearchResult — critic-rejection guard', () => {
     // saves and the workflow advances exactly like the no-rejection path.
     expect(mockWriteWorkflowFile).toHaveBeenCalledWith(539, 'research', REPORT);
     expect(mockTaskUpdate).toHaveBeenCalledWith({
-      where: { id: 539 },
+      where: { id: 539, updatedAt: new Date('2026-09-09T18:00:00Z') },
       data: { status: 'in-progress', workflowStatus: 'research_done' },
     });
   });
