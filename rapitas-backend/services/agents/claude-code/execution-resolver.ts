@@ -11,40 +11,14 @@
  * outer Promise. All status mutations go through `ctx.status = ...`.
  */
 import { tolegacyQuestionType } from '../question-detection';
-import type { QuestionWaitingState } from '../question-detection';
 import type { AgentArtifact, AgentExecutionResult, GitCommitInfo } from '../base-agent';
 import { checkGitDiff } from './git-diff-checker';
 import { createLogger } from '../../../config/logger';
 import { notifyAuthenticationFailure } from '../../communication/notification-service';
-import type { WorkerResultUsageSnapshot } from './worker-message-handler';
+import type { ResolverContext } from './execution-resolver-context';
+export type { ResolverContext } from './execution-resolver-context';
 
 const logger = createLogger('claude-code-agent');
-
-/** Read/write state the resolver needs from the host agent. */
-export interface ResolverContext {
-  readonly logPrefix: string;
-  readonly resumeSessionId: string | undefined;
-  readonly continueConversation: boolean | undefined;
-
-  // Buffers and accumulated state
-  outputBuffer: string;
-  /** Clean FINAL assistant message from the stream-json `result` event. */
-  finalResultText: string;
-  errorBuffer: string;
-  lineBuffer: string;
-  detectedQuestion: QuestionWaitingState;
-  claudeSessionId: string | null;
-  hasFileModifyingToolCalls: boolean;
-  idleTimeoutForceKilled: boolean;
-  wallClockTimeoutForceKilled: boolean;
-  workerResultUsage: WorkerResultUsageSnapshot | null;
-
-  // Mutated by the resolver
-  status: string;
-
-  // BaseAgent emit proxy
-  emitOutputInternal(output: string, isError?: boolean): void;
-}
 
 /**
  * Build the resolution callback used after the Worker finishes parsing.
