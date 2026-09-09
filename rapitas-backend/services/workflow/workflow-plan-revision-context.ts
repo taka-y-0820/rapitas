@@ -22,9 +22,6 @@ const log = createLogger('workflow:plan-revision-context');
 /** Transition cause recorded when a human asks for a plan revision. */
 export const PLAN_REVISION_CAUSE = 'plan_revision_requested';
 
-/** Hard cap on the injected plan body — bounds prompt growth on huge plans. */
-const MAX_PLAN_CHARS = 20000;
-
 const TEXT = {
   ja: {
     header: '# 計画の修正指示（人間からの依頼 — 最優先）',
@@ -62,13 +59,19 @@ export function renderPlanRevision(
   const trimmed = instruction.trim();
   if (!trimmed) return '';
   const t = TEXT[language];
-  const plan =
-    currentPlan.length > MAX_PLAN_CHARS
-      ? `${currentPlan.slice(0, MAX_PLAN_CHARS)}\n\n…(以降は長さ上限により省略)`
-      : currentPlan;
-  return [t.header, '', t.lead, '', t.instructionHeader, trimmed, '', t.planHeader, plan].join(
-    '\n',
-  );
+  // The revision must preserve untouched requirements, including gates at the
+  // end of long plans. Truncation makes that instruction impossible to satisfy.
+  return [
+    t.header,
+    '',
+    t.lead,
+    '',
+    t.instructionHeader,
+    trimmed,
+    '',
+    t.planHeader,
+    currentPlan,
+  ].join('\n');
 }
 
 /**
