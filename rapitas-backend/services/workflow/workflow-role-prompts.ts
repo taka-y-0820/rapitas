@@ -9,6 +9,7 @@ import {
   QUESTION_FORMAT_GUIDANCE_JA,
   QUESTION_FORMAT_GUIDANCE_EN,
 } from './workflow-question-format-guidance';
+import { resolveAcceptanceCriteria } from '../agents/verification/acceptance-self-check';
 
 /** Researcher-role prompt texts. */
 export interface ResearcherTexts {
@@ -82,12 +83,20 @@ export interface RoleContextTexts {
  */
 export function buildRoleTexts(
   taskId: number,
-  task: { title: string; description: string | null },
+  task: { title: string; description: string | null; acceptanceCriteria?: string | null },
   language: 'ja' | 'en',
 ): RoleContextTexts {
+  const criteria = resolveAcceptanceCriteria(task);
+  const acceptanceBlock = criteria.length
+    ? '\n\n' +
+      (language === 'ja'
+        ? '## 明示された受入条件\n以下の各条件を計画・実装・検証に対応づけてください。調査結果や過去の計画を理由に省略しないでください。既存計画との矛盾や欠落は完了扱いせず報告し、正規の再計画経路で解消してください。\n'
+        : '## Explicit acceptance criteria\nMap every criterion to planning, implementation and verification. Do not omit criteria based on prior research or plans. Report contradictions or omissions in an existing plan and resolve them through the supported replanning flow before claiming completion.\n') +
+      criteria.map((criterion, index) => `${index + 1}. ${criterion}`).join('\n')
+    : '';
   const texts = {
     ja: {
-      taskInfo: `# タスク情報\n- **タイトル**: ${task.title}\n- **説明**: ${task.description || '(なし)'}\n- **タスクID**: ${taskId}`,
+      taskInfo: `# タスク情報\n- **タイトル**: ${task.title}\n- **説明**: ${task.description || '(なし)'}\n- **タスクID**: ${taskId}${acceptanceBlock}`,
       questionFormat: QUESTION_FORMAT_GUIDANCE_JA,
       researcher: {
         instruction: '上記のタスクについてコードベースを調査してください。',
@@ -193,7 +202,7 @@ export function buildRoleTexts(
       },
     },
     en: {
-      taskInfo: `# Task Information\n- **Title**: ${task.title}\n- **Description**: ${task.description || '(None)'}\n- **Task ID**: ${taskId}`,
+      taskInfo: `# Task Information\n- **Title**: ${task.title}\n- **Description**: ${task.description || '(None)'}\n- **Task ID**: ${taskId}${acceptanceBlock}`,
       questionFormat: QUESTION_FORMAT_GUIDANCE_EN,
       researcher: {
         instruction: 'Please investigate the codebase for the above task.',
