@@ -245,7 +245,10 @@ export async function stopThemeAgents(
     ...new Set([
       ...priorTargets,
       ...memoryIds,
-      ...(await stopExecutions(ids, reason).finally(() => {
+      ...(await stopExecutions(
+        [...new Set([...priorTargets, ...beforeStopIds, ...memoryIds, ...ids])],
+        reason,
+      ).finally(() => {
         for (const id of taskIds) releaseTaskExecutionLock(id);
       })),
     ]),
@@ -286,7 +289,7 @@ export async function stopTaskTreeAgents(taskId: number): Promise<StopTaskAgents
   await abortRunnerLoops(ids);
   const memoryIds = await AgentOrchestrator.getInstance(prisma).stopAllForTasks(taskIds);
   const executionIds = await stopExecutions(
-    await findActiveExecutionIds(ids),
+    [...new Set([...memoryIds, ...(await findActiveExecutionIds(ids))])],
     'Task timed out',
   ).finally(() => {
     for (const id of ids) releaseTaskExecutionLock(id);

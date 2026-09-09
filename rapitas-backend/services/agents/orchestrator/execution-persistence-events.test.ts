@@ -43,7 +43,7 @@ function makeFileLogger() {
 function makePrisma(overrides: Record<string, unknown> = {}) {
   return {
     agentExecution: {
-      update: mock(async () => ({})),
+      updateMany: mock(async () => ({ count: 1 })),
       findUnique: mock(async () => ({ startedAt: null, executionTimeMs: null })),
     },
     ...overrides,
@@ -69,7 +69,7 @@ test('revoked execution admission is persisted and emitted as cancellation', asy
     'Execution',
   );
   expect(state.status).toBe('cancelled');
-  expect(prisma.agentExecution.update).toHaveBeenCalledWith(
+  expect(prisma.agentExecution.updateMany).toHaveBeenCalledWith(
     expect.objectContaining({
       data: expect.objectContaining({ status: 'cancelled' }),
     }),
@@ -163,8 +163,11 @@ describe('handleExecutionError()', () => {
       'Continuation failed with uncaught error',
       error,
     );
-    expect(prisma.agentExecution.update).toHaveBeenCalledWith({
-      where: { id: 1 },
+    expect(prisma.agentExecution.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 1,
+        status: { notIn: ['canceling', 'cancelling', 'cancelled', 'canceled', 'completed'] },
+      },
       data: expect.objectContaining({
         status: 'failed',
         output: 'partial output',
@@ -204,8 +207,11 @@ describe('handleExecutionError()', () => {
     const loggedError = fileLogger.logError.mock.calls[0][1] as Error;
     expect(loggedError).toBeInstanceOf(Error);
     expect(loggedError.message).toBe('raw string failure');
-    expect(prisma.agentExecution.update).toHaveBeenCalledWith({
-      where: { id: 1 },
+    expect(prisma.agentExecution.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 1,
+        status: { notIn: ['canceling', 'cancelling', 'cancelled', 'canceled', 'completed'] },
+      },
       data: expect.objectContaining({ errorMessage: 'raw string failure' }),
     });
   });
@@ -214,7 +220,7 @@ describe('handleExecutionError()', () => {
     const startedAt = new Date(Date.now() - 120_000); // 2分前に開始した実行
     const prisma = makePrisma({
       agentExecution: {
-        update: mock(async () => ({})),
+        updateMany: mock(async () => ({ count: 1 })),
         findUnique: mock(async () => ({ startedAt, executionTimeMs: null })),
       },
     });
@@ -234,7 +240,7 @@ describe('handleExecutionError()', () => {
       'Task',
     );
 
-    const updateArg = prisma.agentExecution.update.mock.calls[0][0] as {
+    const updateArg = prisma.agentExecution.updateMany.mock.calls[0][0] as {
       data: { executionTimeMs?: number; completedAt: Date };
     };
     expect(typeof updateArg.data.executionTimeMs).toBe('number');
@@ -248,7 +254,7 @@ describe('handleExecutionError()', () => {
     const startedAt = new Date(Date.now() - 120_000);
     const prisma = makePrisma({
       agentExecution: {
-        update: mock(async () => ({})),
+        updateMany: mock(async () => ({ count: 1 })),
         // 質問待ち→継続で既に 45s のセグメントが記録済みのケース
         findUnique: mock(async () => ({ startedAt, executionTimeMs: 45_000 })),
       },
@@ -269,7 +275,7 @@ describe('handleExecutionError()', () => {
       'Task',
     );
 
-    const updateArg = prisma.agentExecution.update.mock.calls[0][0] as {
+    const updateArg = prisma.agentExecution.updateMany.mock.calls[0][0] as {
       data: Record<string, unknown>;
     };
     expect(updateArg.data.executionTimeMs).toBeUndefined();
@@ -278,7 +284,7 @@ describe('handleExecutionError()', () => {
   test('エラー終端: startedAt 不明・findUnique 失敗でも executionTimeMs なしで永続化は成功する', async () => {
     const prisma = makePrisma({
       agentExecution: {
-        update: mock(async () => ({})),
+        updateMany: mock(async () => ({ count: 1 })),
         findUnique: mock(async () => {
           throw new Error('DB down');
         }),
@@ -302,10 +308,80 @@ describe('handleExecutionError()', () => {
       ),
     ).resolves.toBeUndefined();
 
-    const updateArg = prisma.agentExecution.update.mock.calls[0][0] as {
+    const updateArg = prisma.agentExecution.updateMany.mock.calls[0][0] as {
       data: Record<string, unknown>;
     };
     expect(updateArg.data.executionTimeMs).toBeUndefined();
     expect(updateArg.data.status).toBe('failed');
   });
+});
+
+test('a persistence timeout after stop stays cancelled', async () => {
+  const prisma = makePrisma();
+  const state = makeState({ status: 'cancelled' });
+  const emit = mock(() => {});
+  await handleExecutionError(
+    prisma as never,
+    1,
+    2,
+    3,
+    state,
+    new Error('P1008'),
+    makeFileLogger(),
+    emit,
+    'Execution',
+  );
+  expect(state.status).toBe('cancelled');
+  expect(prisma.agentExecution.updateMany).toHaveBeenCalledWith(
+    expect.objectContaining({ data: expect.objectContaining({ status: 'cancelled' }) }),
+  );
+  expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'execution_cancelled' }));
+});
+
+test('stop during the timing lookup wins over a late error', async () => {
+  const state = makeState();
+  const prisma = makePrisma();
+  prisma.agentExecution.findUnique.mockImplementationOnce(async () => {
+    state.status = 'cancelled';
+    return { startedAt: null, executionTimeMs: null };
+  });
+  await handleExecutionError(
+    prisma as never,
+    1,
+    2,
+    3,
+    state,
+    new Error('late error'),
+    makeFileLogger(),
+    mock(() => {}),
+    'Execution',
+  );
+  expect(state.status).toBe('cancelled');
+  expect(prisma.agentExecution.updateMany).toHaveBeenCalledWith(
+    expect.objectContaining({ data: expect.objectContaining({ status: 'cancelled' }) }),
+  );
+});
+
+test('a persisted cancellation cannot be overwritten by an error from another owner', async () => {
+  const prisma = makePrisma({
+    agentExecution: {
+      updateMany: mock(async () => ({ count: 0 })),
+      findUnique: mock(async () => ({ status: 'cancelled' })),
+    },
+  });
+  const state = makeState();
+  const emit = mock(() => {});
+  await handleExecutionError(
+    prisma as never,
+    1,
+    2,
+    3,
+    state,
+    new Error('late error'),
+    makeFileLogger(),
+    emit,
+    'Execution',
+  );
+  expect(state.status).toBe('cancelled');
+  expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'execution_cancelled' }));
 });
