@@ -6,6 +6,8 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Elysia } from 'elysia';
 
+const realChildProcess = await import('node:child_process');
+
 const mockPrisma = {
   aIAgentConfig: {
     findFirst: mock(() => Promise.resolve(null)),
@@ -85,6 +87,7 @@ mock.module('../../../config/logger', () => ({
 
 // Mock child_process for diagnose endpoint
 mock.module('child_process', () => ({
+  ...realChildProcess,
   spawn: mock(() => ({
     stdout: { on: mock(() => {}) },
     stderr: { on: mock(() => {}) },
@@ -96,6 +99,7 @@ mock.module('child_process', () => ({
   execSync: mock(() => Buffer.from('')),
 }));
 mock.module('node:child_process', () => ({
+  ...realChildProcess,
   spawn: mock(() => ({
     stdout: { on: mock(() => {}) },
     stderr: { on: mock(() => {}) },

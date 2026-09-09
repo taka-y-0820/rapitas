@@ -61,14 +61,39 @@ describe('runAutomatedVerification — schema-only change bypasses the zero-code
   );
 
   test(
-    'result.ok is true when the schema file is declared in plan.md',
+    'planned schema still fails when required generated artifacts are missing',
     async () => {
       const result = await runAutomatedVerification(repoDir, {
         planContent: '## 変更予定ファイル\n- `prisma/schema/x.prisma`',
       });
-      expect(result.ok).toBe(true);
+      expect(result.ok).toBe(false);
       const schemaCheck = result.checks.find((c) => c.name === 'schema-change');
       expect(schemaCheck?.ok).toBe(true);
+      expect(result.checks.find((c) => c.name === 'generated-sync')?.ok).toBe(false);
+    },
+    GIT_TEST_TIMEOUT_MS,
+  );
+
+  test(
+    'planned schema with both generated artifacts passes the file-list gates',
+    async () => {
+      mkdirSync(join(repoDir, 'prisma', 'schema.desktop'), { recursive: true });
+      mkdirSync(join(repoDir, 'src', 'generated'), { recursive: true });
+      writeFileSync(
+        join(repoDir, 'prisma', 'schema.desktop', 'x.prisma'),
+        'model X { id Int @id }\n',
+      );
+      writeFileSync(
+        join(repoDir, 'src', 'generated', 'sqlite-init-sql.ts'),
+        'export const sql = "";\n',
+      );
+      const result = await runAutomatedVerification(repoDir, {
+        planContent:
+          '## Files\n- `prisma/schema/x.prisma`\n- `prisma/schema.desktop/x.prisma`\n- `src/generated/sqlite-init-sql.ts`',
+      });
+      expect(result.checks.find((c) => c.name === 'schema-change')?.ok).toBe(true);
+      expect(result.checks.find((c) => c.name === 'generated-sync')?.ok).toBe(true);
+      expect(result.ok).toBe(true);
     },
     GIT_TEST_TIMEOUT_MS,
   );
