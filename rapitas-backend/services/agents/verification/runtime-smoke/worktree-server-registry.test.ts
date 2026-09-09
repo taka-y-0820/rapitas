@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 let rows: any[] = [];
 let storeFailed = false;
@@ -13,6 +16,7 @@ let allocate: () => Promise<number> = async () => 45678;
 let healthUrl: string | undefined;
 let extraProcesses: Array<{ pid: number; parentPid: number; birth: string; command: string }> = [];
 const originalFetch = globalThis.fetch;
+const temporaryWorkdirs: string[] = [];
 mock.module('./runtime-process-stop', () => ({
   stopRuntimeProcesses: async (identities: unknown[]) => {
     stopCount++;
@@ -88,9 +92,31 @@ beforeEach(() => {
   healthUrl = undefined;
   globalThis.fetch = (async () => new Response('ok')) as typeof fetch;
 });
-afterEach(() => {
+afterEach(async () => {
   _resetForTests();
   globalThis.fetch = originalFetch;
+  for (const dir of temporaryWorkdirs.splice(0)) await rm(dir, { recursive: true, force: true });
+});
+
+test('different workdirs acquire independently on distinct ports and retain separate leases', async () => {
+  const aDir = await mkdtemp(join(tmpdir(), 'runtime-workdir-a-'));
+  const bDir = await mkdtemp(join(tmpdir(), 'runtime-workdir-b-'));
+  temporaryWorkdirs.push(aDir, bDir);
+  let port = 45678;
+  allocate = async () => port++;
+  const [a, b] = await Promise.all([
+    acquireRuntimeServer(aDir, cfg),
+    acquireRuntimeServer(bDir, cfg),
+  ]);
+  expect(a.ok && b.ok).toBe(true);
+  if (!a.ok || !b.ok) throw new Error('acquisition failed');
+  expect(a.port).not.toBe(b.port);
+  expect(spawnCount).toBe(2);
+  releaseRuntimeServer(a.lease);
+  const bState = _debugSnapshotForTests().find((entry) => entry.key === normalizeWorkdirKey(bDir));
+  expect(bState?.leases).toBe(1);
+  expect(bState?.state).toBe('active');
+  expect(stopCount).toBe(0);
 });
 
 function persistedServer() {
