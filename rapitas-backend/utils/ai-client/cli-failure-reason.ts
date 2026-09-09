@@ -14,8 +14,15 @@
 export function extractLastJsonObject(text: string): string | null {
   let depth = 0;
   let end = -1;
+  let inString = false;
   for (let i = text.length - 1; i >= 0; i--) {
     const ch = text[i];
+    if (ch === '"') {
+      let backslashes = 0;
+      for (let j = i - 1; j >= 0 && text[j] === '\\'; j--) backslashes++;
+      if (backslashes % 2 === 0) inString = !inString;
+    }
+    if (inString) continue;
     if (ch === '}') {
       if (depth === 0) end = i;
       depth++;
