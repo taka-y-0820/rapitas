@@ -10,35 +10,36 @@ export async function recordThemeStopIntent(
 ): Promise<string> {
   const requestId = randomUUID();
   const ids = [...new Set(executionIds)];
-  await db.$transaction(
-    async (tx) => {
-      for (const executionId of ids) {
-        const execution = await tx.agentExecution.findUnique({
-          where: { id: executionId },
-          select: { session: { select: { config: { select: { taskId: true } } } } },
-        });
-        if (!execution) throw new Error('Stop target execution missing');
-        const taskId = execution.session.config.taskId;
-        const task = await tx.task.findUnique({
-          where: { id: taskId },
-          select: { workflowStatus: true },
-        });
-        if (!task) throw new Error('Stop target task missing');
-        await tx.workflowTransition.create({
-          data: {
-            taskId,
-            executionId,
-            actor: 'system',
-            cause: THEME_STOP_INTENT,
-            fromStatus: task.workflowStatus,
-            toStatus: task.workflowStatus ?? 'draft',
-            metadata: JSON.stringify({ requestId, themeId }),
-          },
-        });
-      }
+  if (!ids.length) return requestId;
+  // Resolve targets before the write. Holding an interactive transaction open
+  // across per-target reads made a stop expire while the event loop was busy.
+  const targets = await db.agentExecution.findMany({
+    where: { id: { in: ids } },
+    select: {
+      id: true,
+      session: {
+        select: { config: { select: { task: { select: { id: true, workflowStatus: true } } } } },
+      },
     },
-    { isolationLevel: 'Serializable' },
-  );
+  });
+  if (targets.length !== ids.length) throw new Error('Stop target execution missing');
+  // createMany keeps the audit batch atomic without a JS-held transaction.
+  // This records observed workflow states; it does not mutate those states.
+  await db.workflowTransition.createMany({
+    data: targets.map((target) => {
+      const task = target.session.config.task;
+      if (!task) throw new Error('Stop target task missing');
+      return {
+        taskId: task.id,
+        executionId: target.id,
+        actor: 'system',
+        cause: THEME_STOP_INTENT,
+        fromStatus: task.workflowStatus,
+        toStatus: task.workflowStatus ?? 'draft',
+        metadata: JSON.stringify({ requestId, themeId }),
+      };
+    }),
+  });
   return requestId;
 }
 

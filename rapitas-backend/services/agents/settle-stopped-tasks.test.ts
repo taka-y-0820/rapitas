@@ -240,3 +240,13 @@ test('manual execution pending session settles only after its execution is cance
     status: 'cancelled',
   });
 });
+
+test('stop intent batch remains atomic when a later audit row fails', async () => {
+  await cancelledExecution();
+  await db.$executeRawUnsafe("INSERT INTO AgentExecution VALUES (2,1,'running',?)", now);
+  await db.$executeRawUnsafe(
+    "CREATE TRIGGER reject_second_intent BEFORE INSERT ON WorkflowTransition WHEN NEW.executionId = 2 BEGIN SELECT RAISE(ABORT, 'second audit rejected'); END",
+  );
+  await expect(recordThemeStopIntent(db as unknown as PostgresClient, 1, [1, 2])).rejects.toThrow();
+  expect(await db.workflowTransition.count()).toBe(0);
+});
