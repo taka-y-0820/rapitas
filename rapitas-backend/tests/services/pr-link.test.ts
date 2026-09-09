@@ -23,6 +23,7 @@ mock.module('../../services/workflow/auto-merge-notify', () => ({
 const { linkAutoCreatedPr } = await import('../../services/github/pr-link');
 
 type AnyMock = ReturnType<typeof mock>;
+const taskRevision = new Date('2026-09-01T00:00:00Z');
 
 function makePrisma(overrides?: {
   integrations?: Array<{ id: number; ownerName: string; repositoryName: string }>;
@@ -37,7 +38,7 @@ function makePrisma(overrides?: {
   const upsert: AnyMock = overrides?.upsertThrows
     ? mock(() => Promise.reject(new Error('db down')))
     : mock(() => Promise.resolve({ id: overrides?.upsertId ?? 42 }));
-  const taskUpdate: AnyMock = mock(() => Promise.resolve({}));
+  const taskUpdate: AnyMock = mock(() => Promise.resolve({ count: 1 }));
   const prFindUnique: AnyMock = mock(() => Promise.resolve(overrides?.existingPr ?? null));
   return {
     prisma: {
@@ -48,7 +49,10 @@ function makePrisma(overrides?: {
         ),
       },
       gitHubPullRequest: { upsert, findUnique: prFindUnique },
-      task: { update: taskUpdate },
+      task: {
+        findUnique: mock(() => Promise.resolve({ updatedAt: taskRevision })),
+        updateMany: taskUpdate,
+      },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
     upsert,
@@ -87,6 +91,10 @@ describe('linkAutoCreatedPr', () => {
     expect(taskUpdate).toHaveBeenCalledTimes(1);
     const taskArg = taskUpdate.mock.calls[0][0] as { data: { githubPrId: number } };
     expect(taskArg.data.githubPrId).toBe(5);
+    expect(taskUpdate).toHaveBeenCalledWith({
+      where: { id: 99, updatedAt: taskRevision },
+      data: { githubPrId: 5, updatedAt: taskRevision },
+    });
   });
 
   test('returns null and does not upsert when no integrations exist', async () => {
