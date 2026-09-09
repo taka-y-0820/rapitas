@@ -6,6 +6,12 @@
  * per-flag gating, and the reason it records for the transition/activity log.
  */
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { releaseTaskExecutionLock } from '../agents/task-execution-lock';
+
+const advanceWorkflow = mock(async () => ({ success: true }));
+mock.module('./workflow-orchestrator', () => ({
+  WorkflowOrchestrator: { getInstance: () => ({ advanceWorkflow }) },
+}));
 
 mock.module('../../config/logger', () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
@@ -55,6 +61,7 @@ const { resolveEffectiveAutoApprovePlan, maybeAutoApprovePlan } =
   await import('./plan-auto-approve');
 
 beforeEach(() => {
+  advanceWorkflow.mockClear();
   userSettings = null;
   taskRow = null;
   taskUpdates.length = 0;
@@ -93,6 +100,23 @@ describe('resolveEffectiveAutoApprovePlan', () => {
     taskRow = { autoApprovePlan: false, parentId: null };
     userSettings = { autoApprovePlan: false, autoApproveSubtaskPlan: false };
     expect(await resolveEffectiveAutoApprovePlan(1)).toBe(false);
+  });
+});
+
+describe('plan auto-approval continuation', () => {
+  test('stop after approval revokes the delayed next phase', async () => {
+    taskRow = { autoApprovePlan: true, workflowStatus: 'plan_created' };
+    await maybeAutoApprovePlan(99121);
+    releaseTaskExecutionLock(99121);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    expect(advanceWorkflow).not.toHaveBeenCalled();
+  });
+
+  test('an unstopped approval still advances normally', async () => {
+    taskRow = { autoApprovePlan: true, workflowStatus: 'plan_created' };
+    await maybeAutoApprovePlan(99122);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    expect(advanceWorkflow).toHaveBeenCalledWith(99122, 'ja');
   });
 });
 

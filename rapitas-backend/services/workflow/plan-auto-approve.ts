@@ -14,6 +14,7 @@
 import { prisma } from '../../config/database';
 import { createLogger } from '../../config/logger';
 import { recordTransition } from './transition-recorder';
+import { getTaskExecutionCancellationVersion } from '../agents/task-execution-lock';
 
 const log = createLogger('plan-auto-approve');
 
@@ -75,6 +76,7 @@ export async function maybeAutoApprovePlan(
   language: 'ja' | 'en' = 'ja',
   opts: { autoAdvance?: boolean } = {},
 ): Promise<PlanAutoApproveResult> {
+  const cancellationVersion = getTaskExecutionCancellationVersion(taskId);
   const userSettings = await prisma.userSettings.findFirst().catch(() => null);
   const task = await prisma.task
     .findUnique({
@@ -179,6 +181,10 @@ export async function maybeAutoApprovePlan(
     setTimeout(async () => {
       try {
         const { WorkflowOrchestrator } = await import('./workflow-orchestrator');
+        if (getTaskExecutionCancellationVersion(taskId) !== cancellationVersion) {
+          log.info({ taskId }, '[plan-auto-approve] Stop revoked the scheduled next phase');
+          return;
+        }
         const result = await WorkflowOrchestrator.getInstance().advanceWorkflow(taskId, language);
         log.info(
           { taskId, success: result.success, error: result.error },
