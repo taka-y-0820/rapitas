@@ -140,9 +140,8 @@ mock.module('./workflow-mode-config', () => ({
   })),
   selectProvisionalMode: mock(() => Promise.resolve('standard')),
 }));
-mock.module('../intake', () => ({
-  ensureIntakeReady: mock(() => Promise.resolve({ status: 'ready' })),
-}));
+const intakeReadyMock = mock(() => Promise.resolve({ status: 'ready' }));
+mock.module('../intake', () => ({ ensureIntakeReady: intakeReadyMock }));
 mock.module('./role-provider-resolver', () => ({
   inferProviderFromModelId: mock(() => 'claude'),
   resolveRoleProviderPreferences: mock(() => Promise.resolve({})),
@@ -183,6 +182,7 @@ function resetSingleton() {
 
 describe('WorkflowOrchestrator — preflight probe integration', () => {
   beforeEach(() => {
+    intakeReadyMock.mockReset().mockResolvedValue({ status: 'ready' });
     lockOwner = Symbol();
     releaseMock.mockClear();
     contextMock.mockReset().mockResolvedValue('context');
@@ -206,6 +206,24 @@ describe('WorkflowOrchestrator — preflight probe integration', () => {
     expect(alertPermanentProbeFailureMock).not.toHaveBeenCalled();
   });
 
+  test('research context receives the intake-enriched spec even with a pinned workflow mode', async () => {
+    intakeReadyMock.mockImplementation(async () => {
+      taskFindUniqueMock.mockResolvedValue(
+        makeTask({
+          acceptanceCriteria: '["original", "added during intake"]',
+          goals: '["fresh goal"]',
+        }),
+      );
+      return { status: 'ready' };
+    });
+    await WorkflowOrchestrator.getInstance().advanceWorkflow(1);
+    const args = contextMock.mock.calls[0] as unknown as unknown[];
+    expect(args[2]).toMatchObject({
+      acceptanceCriteria: '["original", "added during intake"]',
+      goals: '["fresh goal"]',
+    });
+  });
+
   test('a deferred next phase is revoked by a stop after normal completion', async () => {
     await WorkflowOrchestrator.getInstance().advanceWorkflow(1);
     const args = executeCLIAgentMock.mock.calls[0] as unknown as unknown[];
@@ -214,6 +232,18 @@ describe('WorkflowOrchestrator — preflight probe integration', () => {
     releaseMock(1);
     await expect(continuePhase(1, 'ja')).rejects.toThrow('continuation cancelled');
     expect(executeCLIAgentMock).toHaveBeenCalledTimes(1);
+  });
+
+  test('a failed post-intake refresh cannot launch with the old specification', async () => {
+    intakeReadyMock.mockImplementation(async () => {
+      taskFindUniqueMock.mockRejectedValue(new Error('spec read failed'));
+      return { status: 'ready' };
+    });
+    await expect(WorkflowOrchestrator.getInstance().advanceWorkflow(1)).rejects.toThrow(
+      'spec read failed',
+    );
+    expect(contextMock).not.toHaveBeenCalled();
+    expect(executeCLIAgentMock).not.toHaveBeenCalled();
   });
 
   test('stop and restart during preflight preparation cannot dispatch the stale phase or unlock its successor', async () => {
