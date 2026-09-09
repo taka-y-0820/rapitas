@@ -18,6 +18,7 @@ import { createLogger } from '../../../../config/logger';
 import { harvestResearchReport } from './research-report-harvester';
 import { revertResearchDiffIfDirty } from './research-diff-revert';
 import { advanceAfterResearchSave } from './research-workflow-advance';
+import { getTaskExecutionCancellationVersion } from '../../../../services/agents/task-execution-lock';
 
 const log = createLogger('routes:agent-execution:research-phase-handler');
 
@@ -52,11 +53,14 @@ export interface HandleResearchResultParams {
  */
 export async function handleResearchResult(params: HandleResearchResultParams): Promise<void> {
   const { result, taskIdNum, sessionId, executionDir, researchTempOutputFile } = params;
+  const version = getTaskExecutionCancellationVersion(taskIdNum);
+  const current = () => getTaskExecutionCancellationVersion(taskIdNum) === version;
 
   // 1. Harvest + validate the report from stdout. A `null` return means the
   // report was rejected as inadequate and the harvester already marked the
   // task blocked / session failed — nothing more to do here.
   const harvested = await harvestResearchReport({ result, taskIdNum, sessionId, executionDir });
+  if (!current()) return;
   if (harvested === null) return;
   const researchMarkdown: string = harvested;
   // The researchTempOutputFile arg is now unused — silence TS by referring
@@ -103,11 +107,13 @@ export async function handleResearchResult(params: HandleResearchResultParams): 
       }
     }
   }
+  if (!current()) return;
   if (savedOk && !criticRejected) {
     try {
       const { writeWorkflowFile, resolveWorkflowDir } =
         await import('../../../../services/workflow/workflow-file-utils');
       const resolved = await resolveWorkflowDir(taskIdNum);
+      if (!current()) return;
       if (resolved) {
         await writeWorkflowFile(taskIdNum, 'research', researchMarkdown);
         log.info({ taskId: taskIdNum }, '[API] research.md saved via workflow API');
@@ -118,6 +124,7 @@ export async function handleResearchResult(params: HandleResearchResultParams): 
         try {
           const { applyResearchAssessedComplexity } =
             await import('../../../../services/workflow/research-complexity');
+          if (!current()) return;
           await applyResearchAssessedComplexity(taskIdNum, researchMarkdown);
         } catch (cErr) {
           log.warn(
@@ -137,7 +144,9 @@ export async function handleResearchResult(params: HandleResearchResultParams): 
 
   // 3. Hard rule: research must not modify code. Detect and revert any diff
   // or untracked files (isolated worktrees only — never the main checkout).
+  if (!current()) return;
   const revertedDiff = await revertResearchDiffIfDirty(executionDir, taskIdNum);
+  if (!current()) return;
 
   // A no-change research verdict still proceeds through verification and completion gates.
   // 4. Update task / session status AND advance workflow.
@@ -149,7 +158,7 @@ export async function handleResearchResult(params: HandleResearchResultParams): 
     // artifact. Close this session cleanly — do NOT advance, do NOT block.
     await prisma.agentSession
       .update({
-        where: { id: sessionId },
+        where: { id: sessionId, status: { notIn: ['cancelled', 'canceled', 'canceling'] } },
         data: {
           status: 'completed',
           completedAt: new Date(),
@@ -179,9 +188,10 @@ export async function handleResearchResult(params: HandleResearchResultParams): 
     await writeBlockedTask(prisma, taskIdNum).catch((e) =>
       log.warn({ err: e, taskId: taskIdNum }, '[API] Failed to set blocked'),
     );
+    if (!current()) return;
     await prisma.agentSession
       .update({
-        where: { id: sessionId },
+        where: { id: sessionId, status: { notIn: ['cancelled', 'canceled', 'canceling'] } },
         data: {
           status: 'failed',
           completedAt: new Date(),

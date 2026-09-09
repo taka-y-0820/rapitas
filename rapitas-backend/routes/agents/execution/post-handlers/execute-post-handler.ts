@@ -34,6 +34,8 @@ export interface ExecuteTaskResult {
 
 /** Parameters passed to handleExecuteResult. */
 export interface HandleExecuteResultParams {
+  /** The original manual run still owns the task; a stop invalidates it. */
+  isExecutionCurrent?: () => boolean;
   result: ExecuteTaskResult;
   taskIdNum: number;
   sessionId: number;
@@ -61,6 +63,7 @@ export { reconcileHardFailure } from './hard-failure-reconciler';
  * @param params - Execution context and result / 実行コンテキストと結果
  */
 export async function handleExecuteResult(params: HandleExecuteResultParams): Promise<void> {
+  if (params.isExecutionCurrent?.() === false) return;
   const {
     result,
     taskIdNum,
@@ -85,6 +88,7 @@ export async function handleExecuteResult(params: HandleExecuteResultParams): Pr
   const terminalCheck = await prisma.task
     .findUnique({ where: { id: taskIdNum }, select: { status: true, workflowStatus: true } })
     .catch(() => null);
+  if (params.isExecutionCurrent?.() === false) return;
   if (terminalCheck?.workflowStatus === 'completed' || terminalCheck?.status === 'done') {
     log.info(
       { taskId: taskIdNum, mode },
@@ -147,6 +151,7 @@ export async function handleExecuteResult(params: HandleExecuteResultParams): Pr
       sessionId,
       errorMessage: result.errorMessage || 'Execution failed',
       logPrefix: '[API]',
+      isExecutionCurrent: params.isExecutionCurrent,
     });
   }
 }

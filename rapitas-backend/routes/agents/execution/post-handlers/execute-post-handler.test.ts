@@ -102,6 +102,19 @@ describe('reconcileHardFailure — workflow-progress guard (task 544)', () => {
     mockApplyTaskStatusFromWorkflow.mockClear();
   });
 
+  test('stop during the workflow progress read prevents all failure writes', async () => {
+    let current = true;
+    mockWorkflowFileFindFirst.mockImplementationOnce(async () => {
+      current = false;
+      return null;
+    });
+    await reconcileHardFailure({ ...baseParams(), isExecutionCurrent: () => current });
+    expect(mockTaskUpdate).not.toHaveBeenCalled();
+    expect(mockSessionUpdate).not.toHaveBeenCalled();
+    expect(mockExecUpdateMany).not.toHaveBeenCalled();
+    expect(mockApplyTaskStatusFromWorkflow).not.toHaveBeenCalled();
+  });
+
   test('前進あり: task は todo にされず、session は interrupted になる', async () => {
     mockWorkflowFileFindFirst.mockResolvedValue({ id: 1 });
 

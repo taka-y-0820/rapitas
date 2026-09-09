@@ -50,15 +50,24 @@ export async function reconcileHardFailure(params: {
   sessionId: number;
   errorMessage: string;
   logPrefix: string;
+  isExecutionCurrent?: () => boolean;
 }): Promise<void> {
   const { taskId, sessionId, errorMessage, logPrefix } = params;
+  const current = () => params.isExecutionCurrent?.() !== false;
+  if (!current()) return;
   const session = await prisma.agentSession
-    .findUnique({ where: { id: sessionId }, select: { startedAt: true, createdAt: true } })
+    .findUnique({
+      where: { id: sessionId },
+      select: { startedAt: true, createdAt: true, status: true },
+    })
     .catch(() => null);
+  if (!current() || !session || ['cancelled', 'canceled', 'canceling'].includes(session.status))
+    return;
   // startedAt is never set on the execute-setup session-creation path — fall
   // back to createdAt (same pattern as research-phase-handler.ts).
   const since = session?.startedAt ?? session?.createdAt ?? null;
   const progressed = since ? await workflowProgressedSince(taskId, since) : false;
+  if (!current()) return;
 
   if (!progressed) {
     await prisma.task
@@ -66,9 +75,10 @@ export async function reconcileHardFailure(params: {
       .catch((e: unknown) =>
         log.error({ err: e }, `${logPrefix} Failed to update task ${taskId} to todo after failure`),
       );
+    if (!current()) return;
     await prisma.agentSession
       .update({
-        where: { id: sessionId },
+        where: { id: sessionId, status: { notIn: ['cancelled', 'canceled', 'canceling'] } },
         data: { status: 'failed', completedAt: new Date(), errorMessage },
       })
       .catch((e: unknown) =>
@@ -84,13 +94,15 @@ export async function reconcileHardFailure(params: {
 
   const { applyTaskStatusFromWorkflow } =
     await import('../../../../services/workflow/apply-task-status-from-workflow');
+  if (!current()) return;
   await applyTaskStatusFromWorkflow(prisma, taskId, logPrefix);
+  if (!current()) return;
 
   // Keep the original error for auditability — do not swallow it.
   const reconciledMessage = `${errorMessage} (ワークフローはこの実行中に前進したため 'failed' から 'interrupted' へ再調整されました)`;
   await prisma.agentSession
     .update({
-      where: { id: sessionId },
+      where: { id: sessionId, status: { notIn: ['cancelled', 'canceled', 'canceling'] } },
       data: { status: 'interrupted', completedAt: new Date(), errorMessage: reconciledMessage },
     })
     .catch((e: unknown) =>
@@ -102,6 +114,7 @@ export async function reconcileHardFailure(params: {
   // periodic sweep will handle it if it later dies.
   const { LEASE_STALE_MS } =
     await import('../../../../services/agents/orchestrator/execution-heartbeat');
+  if (!current()) return;
   const staleBefore = new Date(Date.now() - LEASE_STALE_MS);
   await prisma.agentExecution
     .updateMany({
@@ -122,6 +135,7 @@ export async function reconcileHardFailure(params: {
   // post_processing means "agent exited 0 but the artifact flip was pending" —
   // progress is already confirmed here, so flip unconditionally (heartbeat
   // freshness is irrelevant for this transient state; see plan 設計判断).
+  if (!current()) return;
   await prisma.agentExecution
     .updateMany({
       where: { sessionId, status: 'post_processing' },
