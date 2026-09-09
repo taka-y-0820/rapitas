@@ -185,7 +185,9 @@ export async function executeCLIAgent(
         // Role-aware wall-clock cap: implementer gets 2x the base (task 546).
         timeout: getAgentTimeoutMs(transition.role),
         autoCompleteTask: false,
-        investigationMode: isInvestigationPhase,
+        // A verifier produces evidence, not implementation changes. Keep its
+        // artifact/completion gates below, but do not fail the CLI on no diff.
+        investigationMode: isInvestigationPhase || transition.role === 'verifier',
         // Phase-specific output type. Drives codex's positional headline
         // (`# 調査レポート` vs `# 実装計画` vs `# レビュー指摘`) so each
         // role's CLI invocation produces an artifact in the correct shape.

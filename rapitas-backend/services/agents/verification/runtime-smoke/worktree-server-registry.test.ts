@@ -12,6 +12,7 @@ let stopCount = 0;
 let stopped = true;
 let listenerOccupied = true;
 let rootPresent = true;
+let snapshotFailed = false;
 let allocate: () => Promise<number> = async () => 45678;
 let healthUrl: string | undefined;
 let extraProcesses: Array<{ pid: number; parentPid: number; birth: string; command: string }> = [];
@@ -38,14 +39,17 @@ mock.module('./runtime-registry-store', () => ({
 }));
 mock.module('./runtime-process-snapshot', () => ({
   ownsRuntimePort: () => listenerOccupied,
-  readRuntimeProcessSnapshot: async () => ({
-    processes: [
-      ...(rootPresent ? [{ pid: 123, parentPid: 1, birth, command: 'owned' }] : []),
-      ...extraProcesses,
-    ],
-    protectedPids: new Set(),
-    listeners: listenerOccupied ? [{ port: 45678, pid: 123 }] : [],
-  }),
+  readRuntimeProcessSnapshot: async () => {
+    if (snapshotFailed) throw new Error('snapshot timeout');
+    return {
+      processes: [
+        ...(rootPresent ? [{ pid: 123, parentPid: 1, birth, command: 'owned' }] : []),
+        ...extraProcesses,
+      ],
+      protectedPids: new Set(),
+      listeners: listenerOccupied ? [{ port: 45678, pid: 123 }] : [],
+    };
+  },
 }));
 mock.module('./runtime-config', () => ({
   substitutePort: (s: string, p: number) => s.replaceAll('{port}', String(p)),
@@ -76,6 +80,56 @@ const cfg = {
   readyTimeoutMs: 100,
   checkPaths: ['/'],
 };
+const { registry } = await import('./runtime-server-registry-types');
+const { stopOwnedAndVerify } = await import('./runtime-server-registry-lifecycle');
+
+async function quarantineAfterUnconfirmedStop() {
+  const acquired = await acquireRuntimeServer(process.cwd(), cfg);
+  if (!acquired.ok) throw new Error('Initial acquisition failed');
+  releaseRuntimeServer(acquired.lease);
+  const entry = registry.get(normalizeWorkdirKey(process.cwd())!)!;
+  stopped = false;
+  await stopOwnedAndVerify(entry, 'test-timeout');
+  expect(entry.state).toBe('quarantined');
+}
+
+test('fresh exit proof clears a transient quarantine and concurrent borrowers share one new server', async () => {
+  await quarantineAfterUnconfirmedStop();
+  rootPresent = false;
+  listenerOccupied = false;
+  allocate = async () => {
+    rootPresent = true;
+    listenerOccupied = true;
+    return 45678;
+  };
+  const results = await Promise.all([
+    acquireRuntimeServer(process.cwd(), cfg),
+    acquireRuntimeServer(process.cwd(), cfg),
+  ]);
+  expect(results.every((result) => result.ok)).toBe(true);
+  expect(spawnCount).toBe(2);
+  expect(stopCount).toBe(1);
+  expect(_debugSnapshotForTests()[0].leases).toBe(2);
+});
+
+test.each(['alive', 'port', 'reused', 'persistence', 'snapshot'])(
+  'quarantine recovery stays closed with %s evidence',
+  async (condition) => {
+    await quarantineAfterUnconfirmedStop();
+    if (condition === 'port') rootPresent = false;
+    if (condition === 'reused') birth = '200';
+    if (condition === 'snapshot') snapshotFailed = true;
+    if (condition === 'persistence') {
+      rootPresent = false;
+      listenerOccupied = false;
+      storeFailed = true;
+    }
+    expect((await acquireRuntimeServer(process.cwd(), cfg)).ok).toBe(false);
+    expect(_debugSnapshotForTests()[0].state).toBe('quarantined');
+    expect(spawnCount).toBe(1);
+    expect(stopCount).toBe(1);
+  },
+);
 beforeEach(() => {
   _resetForTests();
   rows = [];
@@ -88,6 +142,7 @@ beforeEach(() => {
   listenerOccupied = true;
   extraProcesses = [];
   rootPresent = true;
+  snapshotFailed = false;
   allocate = async () => 45678;
   healthUrl = undefined;
   globalThis.fetch = (async () => new Response('ok')) as typeof fetch;

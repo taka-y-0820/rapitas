@@ -27,6 +27,7 @@ import { randomUUID } from 'crypto';
 import { createLogger } from '../../../../config/logger';
 import { extendOwnedRuntimeTree, inspectOwnedRuntimeTree } from './runtime-process-identity';
 import { readRuntimeProcessSnapshot, ownsRuntimePort } from './runtime-process-snapshot';
+import { inspectRuntimeDirectory } from './runtime-directory-occupancy';
 import type { RuntimeConfig } from './runtime-config';
 import {
   cancelIdleTimer,
@@ -48,6 +49,7 @@ import {
   ownershipStore,
   persistActive,
   persistQuarantine,
+  persistRemoval,
 } from './runtime-server-registry-persistence';
 import {
   scheduleIdleStop,
@@ -178,6 +180,37 @@ async function acquireRuntimeServerInternal(
     }
 
     if (entry.state === 'quarantined') {
+      // A transient stop/snapshot timeout must not permanently poison this
+      // workdir. Only fresh proof of an empty owned tree, port and directory
+      // releases it; never signal a process during this read-only recovery.
+      if (!entry.validationPromise) {
+        entry.validationPromise = (async () => {
+          if (entry.leases.size > 0 || !entry.identities?.length) return;
+          const snapshot = await readRuntimeProcessSnapshot();
+          const inspected = inspectOwnedRuntimeTree(
+            entry.identities,
+            snapshot.processes,
+            snapshot.protectedPids,
+          );
+          if (!inspected.safe || inspected.alive.length || !snapshot.listeners) return;
+          if (snapshot.listeners.some((listener) => listener.port === entry.port)) return;
+          if (!(await inspectRuntimeDirectory(entry.workdir, snapshot.processes)).free) return;
+          if (registry.get(key) !== entry || entry.state !== 'quarantined' || entry.leases.size)
+            return;
+          await persistRemoval(key);
+          if (registry.get(key) === entry) registry.delete(key);
+          log.info({ key }, '[registry] quarantine cleared after confirming runtime exit');
+        })();
+      }
+      const validation = entry.validationPromise;
+      try {
+        await validation;
+      } catch (error) {
+        log.warn({ err: error, key }, '[registry] quarantine exit remains unconfirmed');
+      } finally {
+        if (entry.validationPromise === validation) entry.validationPromise = undefined;
+      }
+      if (registry.get(key) !== entry) continue;
       return failure(
         `worktree ${workdir} は前回の停止確認が取れず隔離中です: ${entry.quarantineReason}`,
         { unverifiable: true },
