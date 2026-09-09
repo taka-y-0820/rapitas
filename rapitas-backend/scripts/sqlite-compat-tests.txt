@@ -48,6 +48,7 @@ services/workflow/requirement-replan-policy.test.ts
 services/workflow/requirement-replan-inflight.test.ts
 services/workflow/requirement-replan-evidence.test.ts
 services/workflow/requirement-replan-commit.test.ts
+services/workflow/plan-revision-persistence.test.ts
 services/workflow/verify-self-repair.test.ts
 services/workflow/verify-self-repair.cas.test.ts
 services/workflow/verify-self-repair-resume.test.ts
