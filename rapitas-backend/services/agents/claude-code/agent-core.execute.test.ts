@@ -389,4 +389,19 @@ describe('ClaudeCodeAgent — private buildResolveAfterParse ラッパー（chec
 
     expect(capturedResolverArgs?.investigationMode).toBe(true);
   });
+
+  test('verifier accepts evidence without enabling read-only tool restrictions', async () => {
+    mockClaudeAvailable = true;
+    capturedRunArgs = null;
+    const agent = new ClaudeCodeAgent('verify', 'verifier', {
+      workingDirectory: tmpdir(),
+      investigationMode: false,
+      investigationOutputType: 'verify',
+    });
+    void agent.execute(makeTask({ id: 201 }));
+    await waitForRunClaudeExecutionCall();
+    capturedRunArgs!.buildResolveAfterParse(0, tmpdir(), Date.now(), () => {});
+    expect(capturedResolverArgs?.investigationMode).toBe(true);
+    expect(agent.config.investigationMode).toBe(false);
+  });
 });

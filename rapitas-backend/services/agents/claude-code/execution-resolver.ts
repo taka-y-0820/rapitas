@@ -34,7 +34,7 @@ const logger = createLogger('claude-code-agent');
  * @param checkPlanCreated - Async check for whether the agent created a plan
  *   awaiting approval (so "no code changes" is a pause, not a failure) /
  *   承認待ちのプランを作成したか（コード変更なしを失敗ではなく一時停止として扱うため）
- * @param investigationMode - When true, skip the git-diff check and return success if
+ * @param allowNoCodeChanges - When true, skip the git-diff check and return success if
  *   meaningful output is present. Mirrors the codex contract (success === exit 0 with output).
  *   Empty output still falls through to the existing no-change failure path. /
  *   trueの場合、git-diffチェックをスキップし、有意な出力があれば成功を返す。
@@ -50,7 +50,7 @@ export function buildResolveAfterParse(
   getArtifacts: () => AgentArtifact[],
   getCommits: () => GitCommitInfo[],
   checkPlanCreated?: () => Promise<boolean>,
-  investigationMode?: boolean,
+  allowNoCodeChanges?: boolean,
   resourceStats?: { cpuTimeMs: number | null; peakRssKb: number | null },
 ): () => void {
   return () => {
@@ -330,17 +330,15 @@ export function buildResolveAfterParse(
       );
     }
 
-    // investigation mode (research/plan/review): file mutation is blocked by
-    // --disallowedTools, so git diff is ALWAYS empty by design. Skipping the
-    // diff check here prevents a successful read-only phase from being reported
-    // as a "no code changes" failure (which fired a spurious ERROR log + daily
-    // false concern). Mirrors the codex contract (success === exit 0).
-    if (investigationMode) {
+    // Investigation phases and verifiers produce evidence without requiring
+    // implementation changes. This result policy must not enable investigation
+    // tool restrictions: verifiers still need shell access to run checks.
+    if (allowNoCodeChanges) {
       const hasMeaningfulOutput =
         (finalMessage?.length ?? 0) > 0 || ctx.outputBuffer.trim().length >= 200;
       if (hasMeaningfulOutput) {
         logger.info(
-          `${ctx.logPrefix} Investigation mode: meaningful output present, resolving as success (skipping git diff check)`,
+          `${ctx.logPrefix} Evidence phase: meaningful output present, resolving as success (skipping git diff check)`,
         );
         ctx.status = 'completed'; // determineExecutionStatus remaps to post_processing for investigation
         resolve({
