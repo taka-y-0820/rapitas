@@ -11,6 +11,10 @@
  * multiple check results.
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+
+// Real Git subprocesses can exceed Bun's 5s default under Windows suite load.
+// Keep assertions intact and let subprocess work finish before fixture cleanup.
+const GIT_TEST_TIMEOUT_MS = 30_000;
 import { execSync } from 'child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -42,22 +46,30 @@ describe('runAutomatedVerification — schema-only change bypasses the zero-code
     rmSync(repoDir, { recursive: true, force: true });
   });
 
-  test('result.ok is false and a failing schema-change check is present when the schema file is unplanned', async () => {
-    const result = await runAutomatedVerification(repoDir, {
-      planContent: '## 変更予定ファイル\n- `other.ts`',
-    });
-    expect(result.ok).toBe(false);
-    const schemaCheck = result.checks.find((c) => c.name === 'schema-change');
-    expect(schemaCheck).toBeDefined();
-    expect(schemaCheck?.ok).toBe(false);
-  });
+  test(
+    'result.ok is false and a failing schema-change check is present when the schema file is unplanned',
+    async () => {
+      const result = await runAutomatedVerification(repoDir, {
+        planContent: '## 変更予定ファイル\n- `other.ts`',
+      });
+      expect(result.ok).toBe(false);
+      const schemaCheck = result.checks.find((c) => c.name === 'schema-change');
+      expect(schemaCheck).toBeDefined();
+      expect(schemaCheck?.ok).toBe(false);
+    },
+    GIT_TEST_TIMEOUT_MS,
+  );
 
-  test('result.ok is true when the schema file is declared in plan.md', async () => {
-    const result = await runAutomatedVerification(repoDir, {
-      planContent: '## 変更予定ファイル\n- `prisma/schema/x.prisma`',
-    });
-    expect(result.ok).toBe(true);
-    const schemaCheck = result.checks.find((c) => c.name === 'schema-change');
-    expect(schemaCheck?.ok).toBe(true);
-  });
+  test(
+    'result.ok is true when the schema file is declared in plan.md',
+    async () => {
+      const result = await runAutomatedVerification(repoDir, {
+        planContent: '## 変更予定ファイル\n- `prisma/schema/x.prisma`',
+      });
+      expect(result.ok).toBe(true);
+      const schemaCheck = result.checks.find((c) => c.name === 'schema-change');
+      expect(schemaCheck?.ok).toBe(true);
+    },
+    GIT_TEST_TIMEOUT_MS,
+  );
 });
