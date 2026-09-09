@@ -443,7 +443,7 @@ export async function lintProject(
     details:
       parsed.errorCount === 0
         ? 'eslint: 0 errors'
-        : (res.stderr || res.stdout).slice(0, MAX_DETAIL_CHARS),
+        : (res.stderr.trim() || res.stdout).slice(0, MAX_DETAIL_CHARS),
   };
 }
 

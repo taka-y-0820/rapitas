@@ -61,7 +61,7 @@ mock.module('../../../config', () => ({
       count: mockTaskCount,
       findMany: mockTaskFindMany,
       update: mockTaskUpdate,
-      findUnique: (args: any) =>
+      findUnique: (args: { select?: Record<string, unknown> }) =>
         args.select?.updatedAt && Object.keys(args.select).length === 1
           ? Promise.resolve({ updatedAt: new Date(0) })
           : mockTaskFindUnique(),
