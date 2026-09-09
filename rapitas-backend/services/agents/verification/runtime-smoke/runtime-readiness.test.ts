@@ -5,7 +5,10 @@ import { spawnPlaywrightWorker } from './playwright-worker-client';
 const worker = spawnPlaywrightWorker();
 beforeAll(async () => {
   await worker.launch({
-    channels: process.platform === 'win32' ? ['msedge'] : ['chrome'],
+    channels: [
+      process.env.RAPITAS_TEST_BROWSER_CHANNEL ||
+        (process.platform === 'win32' ? 'msedge' : 'chrome'),
+    ],
     timeoutMs: 20000,
   });
 }, 30000);
