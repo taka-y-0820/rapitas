@@ -40,6 +40,10 @@ function HomeClientPage() {
   const tasks = useTaskCacheStore((s) => s.tasks);
   const taskCacheInitialized = useTaskCacheStore((s) => s.initialized);
   const taskCacheLoading = useTaskCacheStore((s) => s.loading);
+  // Initialization also finishes on fetch failure; readiness requires successful data.
+  const taskDataReady = useTaskCacheStore(
+    (s) => s.initialized && s.lastFetchedAt !== null && !s.loading && !s.lastError,
+  );
   const fetchAllTasks = useTaskCacheStore((s) => s.fetchAll);
   const fetchTaskUpdates = useTaskCacheStore((s) => s.fetchUpdates);
 
@@ -48,6 +52,7 @@ function HomeClientPage() {
     themes,
     isLoading: filtersLoading,
     error: filtersError,
+    isInitialized: filtersInitialized,
     initializeData: initializeFilterData,
     refreshData: refreshFilterData,
     shouldBackgroundRefresh,
@@ -318,7 +323,12 @@ function HomeClientPage() {
   // overflow-auto shows a permanent scrollbar whenever the window is narrow
   // enough (e.g. split screen) for the task list to overflow vertically.
   return (
-    <div className="h-[calc(100vh-4.2rem)] overflow-auto scrollbar-thin bg-background">
+    <div
+      data-app-ready={
+        taskDataReady && filtersInitialized && !filtersLoading && !filtersError ? 'true' : 'false'
+      }
+      className="h-[calc(100vh-4.2rem)] overflow-auto scrollbar-thin bg-background"
+    >
       <div className="mx-auto max-w-6xl px-3 sm:px-4 md:px-6 py-3 sm:py-4">
         {!isEmptyWorkspace && (
           <>

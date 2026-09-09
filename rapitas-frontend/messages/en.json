@@ -2756,7 +2756,10 @@
     "readyTimeoutMs": "Ready timeout (s)",
     "checkPaths": "Paths to verify",
     "addPath": "Add path",
-    "removePath": "Remove this path"
+    "removePath": "Remove this path",
+    "readySelector": "Application readiness selector",
+    "readySelectorHelp": "Select an element visible only after the application is ready on every checked path. Without this condition, application readiness remains unverified.",
+    "readinessTimeoutMs": "Application readiness timeout (seconds)"
   },
   "themes": {
     "title": "Themes",

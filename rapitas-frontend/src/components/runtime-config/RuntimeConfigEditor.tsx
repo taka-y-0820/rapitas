@@ -21,6 +21,8 @@ export interface RuntimeConfigEditorProps {
 }
 
 interface Fields {
+  readySelector: string;
+  readinessTimeoutMs: number;
   start: string;
   url: string;
   healthPath: string;
@@ -29,6 +31,8 @@ interface Fields {
 }
 
 const DEFAULT_FIELDS: Fields = {
+  readySelector: '',
+  readinessTimeoutMs: 25000,
   start: '',
   url: '',
   healthPath: '/',
@@ -45,6 +49,8 @@ function parseValue(value: string): Fields {
       ? o.checkPaths.filter((p): p is string => typeof p === 'string')
       : [];
     return {
+      readySelector: typeof o.readySelector === 'string' ? o.readySelector : '',
+      readinessTimeoutMs: typeof o.readinessTimeoutMs === 'number' ? o.readinessTimeoutMs : 25000,
       start: typeof o.start === 'string' ? o.start : '',
       url: typeof o.url === 'string' ? o.url : '',
       healthPath: typeof o.healthPath === 'string' ? o.healthPath : '/',
@@ -59,6 +65,12 @@ function parseValue(value: string): Fields {
 function serialize(fields: Fields): string {
   const checkPaths = fields.checkPaths.map((p) => p.trim()).filter(Boolean);
   return JSON.stringify({
+    ...(fields.readySelector.trim()
+      ? {
+          readySelector: fields.readySelector.trim(),
+          readinessTimeoutMs: fields.readinessTimeoutMs,
+        }
+      : {}),
     start: fields.start.trim(),
     url: fields.url.trim(),
     healthPath: fields.healthPath.trim() || '/',
@@ -102,6 +114,35 @@ export function RuntimeConfigEditor({ value, onChange }: RuntimeConfigEditorProp
 
   return (
     <div className="space-y-2">
+      <div>
+        <label htmlFor="rce-selector" className="block text-xs text-zinc-500 mb-1">
+          {t('readySelector')}
+        </label>
+        <input
+          id="rce-selector"
+          aria-label={t('readySelector')}
+          className={inputClass}
+          value={fields.readySelector}
+          onChange={(e) => update({ readySelector: e.target.value })}
+          placeholder={'[data-app-ready="true"]'}
+        />
+        <p className="text-xs text-zinc-500">{t('readySelectorHelp')}</p>
+      </div>
+      <div>
+        <label htmlFor="rce-readiness-timeout" className="block text-xs text-zinc-500 mb-1">
+          {t('readinessTimeoutMs')}
+        </label>
+        <input
+          id="rce-readiness-timeout"
+          aria-label={t('readinessTimeoutMs')}
+          className={inputClass}
+          type="number"
+          min={1}
+          max={60}
+          value={fields.readinessTimeoutMs / 1000}
+          onChange={(e) => update({ readinessTimeoutMs: (Number(e.target.value) || 25) * 1000 })}
+        />
+      </div>
       <div>
         <label htmlFor="rce-start" className="block text-xs text-zinc-500 dark:text-zinc-400 mb-1">
           {t('start')}
