@@ -109,6 +109,8 @@ export function isPhaseCriticEnabled(): boolean {
  * what the previous rejection asked for. All fields are best-effort.
  */
 export interface CriticContext {
+  /** Required grounding could not be loaded; do not judge the artifact in isolation. */
+  unavailable?: boolean;
   /** Task title + description the artifact must serve. / タスク要求 */
   taskBrief?: string;
   /** Prior-phase document the artifact builds on (research.md for plan). / 先行フェーズ文書 */
@@ -249,6 +251,15 @@ export async function critiquePhase(
   content: string,
   context?: CriticContext,
 ): Promise<PhaseCritiqueResult> {
+  if (context?.unavailable) {
+    return {
+      verdict: 'unknown',
+      severity: 0,
+      reasons: ['Required critique context could not be loaded'],
+      inputTruncated: false,
+      evaluationComplete: false,
+    };
+  }
   if (!content.trim())
     return { verdict: 'unknown', severity: 0, reasons: [], inputTruncated: false };
   if (!(await isAnyApiKeyConfigured()))
