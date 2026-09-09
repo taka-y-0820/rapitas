@@ -9,6 +9,10 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
 const findFirstMock = mock(async (): Promise<unknown> => null);
+const validRootMock = mock(async () => true);
+mock.module('../../../services/workflow/verification-worktree', () => ({
+  isVerificationWorktreeRoot: validRootMock,
+}));
 mock.module('../../../config', () => ({
   prisma: { agentSession: { findFirst: findFirstMock } },
 }));
@@ -47,6 +51,7 @@ function ctx(taskId: string) {
 
 beforeEach(() => {
   nextRunId = 0;
+  validRootMock.mockImplementation(async () => true);
   findFirstMock.mockClear();
   beginVerificationRunMock.mockClear();
   runVerificationGateAndRecordMock.mockClear();
@@ -55,6 +60,14 @@ beforeEach(() => {
 });
 
 describe('handleRunVerification', () => {
+  it('rejects a stale worktree before recording or launching a verification job', async () => {
+    validRootMock.mockImplementation(async () => false);
+    const c = ctx('906');
+    expect(await handleRunVerification(c)).toMatchObject({ success: false });
+    expect(c.set.status).toBe(409);
+    expect(beginVerificationRunMock).not.toHaveBeenCalled();
+    expect(runVerificationGateAndRecordMock).not.toHaveBeenCalled();
+  });
   it('rejects a non-numeric task id with 400', async () => {
     const c = ctx('abc');
     const res = await handleRunVerification(c);

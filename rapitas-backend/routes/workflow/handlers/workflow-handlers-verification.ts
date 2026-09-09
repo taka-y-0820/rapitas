@@ -20,6 +20,7 @@ import {
   runVerificationGateAndRecord,
 } from '../../../services/workflow/verification-job-runner';
 import { prisma } from '../../../config';
+import { isVerificationWorktreeRoot } from '../../../services/workflow/verification-worktree';
 
 const log = createLogger('routes:workflow:self-verification');
 
@@ -112,6 +113,14 @@ async function launchVerification(ctx: RunVerificationContext) {
       };
     }
 
+    if (!(await isVerificationWorktreeRoot(session.worktreePath))) {
+      ctx.set.status = 409;
+      return {
+        success: false,
+        error:
+          '検証対象の worktree が削除済みか Git ルートと一致しません。worktree を復旧してから再実行してください。',
+      };
+    }
     const { runId, cacheInputsBefore, keyBefore } = await beginVerificationRun(
       taskId,
       session.worktreePath,
