@@ -12,16 +12,26 @@ const taskFindUnique = mock(() =>
   Promise.resolve<{ id: number; workflowStatus: string } | null>(null),
 );
 const taskUpdate = mock(() => Promise.resolve({}));
-const recordTransition = mock(() => Promise.resolve(undefined));
+const createTransition = mock(() => Promise.resolve(undefined));
 const readWorkflowFile = mock(() => Promise.resolve<string | null>(null));
+const advanceWorkflow = mock(() => Promise.resolve({ success: true }));
+mock.module('../../../services/workflow/workflow-orchestrator', () => ({
+  WorkflowOrchestrator: { getInstance: () => ({ advanceWorkflow }) },
+}));
 
 mock.module('../../../config', () => ({
-  prisma: { task: { findUnique: taskFindUnique, update: taskUpdate } },
+  prisma: {
+    task: { findUnique: taskFindUnique },
+    $transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({
+        task: { update: taskUpdate },
+        workflowTransition: { create: createTransition },
+      }),
+  },
   createLogger: () => noopLogger,
   logger: noopLogger,
 }));
 mock.module('../../../config/logger', () => ({ createLogger: () => noopLogger }));
-mock.module('../../../services/workflow/transition-recorder', () => ({ recordTransition }));
 mock.module('../../../services/workflow/workflow-file-utils', () => ({ readWorkflowFile }));
 
 const { handleRevisePlan } = await import('./workflow-handlers-plan-revision');
@@ -31,9 +41,10 @@ const UI = { 'x-rapitas-source': 'ui' };
 let originalFetch: typeof fetch;
 
 beforeEach(() => {
+  advanceWorkflow.mockClear();
   taskFindUnique.mockReset().mockResolvedValue({ id: 1, workflowStatus: 'plan_created' });
   taskUpdate.mockReset().mockResolvedValue({});
-  recordTransition.mockReset().mockResolvedValue(undefined);
+  createTransition.mockReset().mockResolvedValue(undefined);
   readWorkflowFile.mockReset().mockResolvedValue('# 実装計画');
   // The handler fires a best-effort re-run; keep it off the network.
   originalFetch = globalThis.fetch;
@@ -46,6 +57,32 @@ afterEach(() => {
 });
 
 describe('handleRevisePlan', () => {
+  test('does not dispatch without a durable revision instruction', async () => {
+    createTransition.mockRejectedValueOnce(new Error('audit unavailable'));
+    await expect(
+      handleRevisePlan({
+        params: { taskId: '1' },
+        body: { instruction: '修正' },
+        set: {},
+        headers: UI,
+      }),
+    ).rejects.toThrow('audit unavailable');
+    expect(advanceWorkflow).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  test('dispatches the planner through the phase orchestrator, not generic execute', async () => {
+    await handleRevisePlan({
+      params: { taskId: '1' },
+      body: { instruction: '取得不能時の判定を修正' },
+      set: {},
+      headers: UI,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(advanceWorkflow).toHaveBeenCalledWith(1);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
   test('rolls back to research_done and records the instruction', async () => {
     const result = await handleRevisePlan({
       params: { taskId: '1' },
@@ -58,12 +95,14 @@ describe('handleRevisePlan', () => {
     const update = taskUpdate.mock.calls[0]?.[0] as { data: { workflowStatus: string } };
     expect(update.data.workflowStatus).toBe('research_done');
 
-    const t = recordTransition.mock.calls[0]?.[0] as {
-      cause: string;
-      metadata: { instruction: string };
+    const { data: t } = createTransition.mock.calls[0]?.[0] as {
+      data: {
+        cause: string;
+        metadata: string;
+      };
     };
     expect(t.cause).toBe('plan_revision_requested');
-    expect(t.metadata.instruction).toBe('非対象からUIカード追加を外して');
+    expect(JSON.parse(t.metadata).instruction).toBe('非対象からUIカード追加を外して');
   });
 
   test('leaves plan.md in place so the planner revises rather than re-derives', async () => {
