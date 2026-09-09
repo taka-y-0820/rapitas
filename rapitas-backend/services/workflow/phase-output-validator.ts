@@ -15,6 +15,7 @@
  */
 import { PLAN_FILES_SECTION_HEADINGS } from './plan-declared-files';
 import { hasNonpassingVerifyVerdict } from './nonpassing-verify-verdict';
+import { isPendingPublicationRow } from './pending-publication-row';
 
 export interface ValidationResult {
   ok: boolean;
@@ -268,6 +269,7 @@ export function validateVerify(content: string): ValidationResult {
 
   const crossMarkFailure = scanText.split(/\r?\n/).some((line) => {
     if (!line.includes('❌')) return false;
+    if (isPendingPublicationRow(line)) return false;
     if (/❌\s*(?:の)?\s*(?:場合|とき|時|なら|ならば|であれば|if\b)/i.test(line)) return false;
     if (/[(（]\s*❌\s*[)）]/.test(line)) return false;
     if (/✅|合格|通過|成功|pass/i.test(line)) return false;
