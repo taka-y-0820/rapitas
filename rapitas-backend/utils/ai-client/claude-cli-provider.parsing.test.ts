@@ -146,6 +146,16 @@ afterEach(() => {
 // correctly plumbs the resolved path into the spawn command on Windows.
 
 describe('buildSpawnCommand — Windows', () => {
+  test('preserves an empty tool list and replaces the coding prompt for text calls', async () => {
+    await withPlatform('win32', async () => {
+      const pending = callClaudeCli(undefined, [{ role: 'user', content: 'hi' }], undefined, 100);
+      await flush();
+      expect(fullCommand(0)).toContain('--tools ""');
+      expect(fullCommand(0)).toContain('--system-prompt "You are a text processing assistant.');
+      respondSuccess(spawnedChildren[0]);
+      await pending;
+    });
+  });
   test('embeds the resolved CLI path in the spawn command', async () => {
     claudePathImpl = () => process.execPath;
 

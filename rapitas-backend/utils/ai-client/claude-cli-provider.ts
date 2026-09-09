@@ -25,7 +25,9 @@ const log = createLogger('ai-client:claude-cli');
 function buildSpawnCommand(claudePath: string, args: string[]): [string, string[]] {
   if (process.platform !== 'win32') return [claudePath, args];
   const argsString = args
-    .map((arg) => (arg.includes(' ') || arg.includes('&') || arg.includes('|') ? `"${arg}"` : arg))
+    .map((arg) =>
+      !arg || arg.includes(' ') || arg.includes('&') || arg.includes('|') ? `"${arg}"` : arg,
+    )
     .join(' ');
   const quotedPath = claudePath.includes(' ') ? `"${claudePath}"` : claudePath;
   return [`chcp 65001 >NUL 2>&1 && ${quotedPath} ${argsString}`, []];
@@ -149,6 +151,14 @@ function buildCliEnv(): NodeJS.ProcessEnv {
 /** Tools disabled for pure text generation — no repo/file/shell/network access. */
 const DISALLOWED_TOOLS =
   'Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,Task,NotebookEdit,TodoWrite,MultiEdit';
+
+/** Auxiliary calls generate text; they do not need the default coding-agent prompt or tools. */
+const TEXT_ONLY_ARGS = [
+  '--tools',
+  '',
+  '--system-prompt',
+  'You are a text processing assistant. Follow the supplied instructions and return only the requested text. Do not use tools.',
+];
 
 /**
  * Fold system prompt + conversation into a single stdin prompt. Passing text via
@@ -276,6 +286,7 @@ export async function callClaudeCli(
       toCliModel(model),
       '--disallowedTools',
       DISALLOWED_TOOLS,
+      ...TEXT_ONLY_ARGS,
     ];
     const stdout = await spawnCli(args, combinePrompt(messages, systemPrompt));
     const jsonText = extractLastJsonObject(stdout.trim()) ?? stdout.trim();
@@ -331,6 +342,7 @@ export async function callClaudeCliStream(
     toCliModel(model),
     '--disallowedTools',
     DISALLOWED_TOOLS,
+    ...TEXT_ONLY_ARGS,
   ];
 
   await acquireSlot();
