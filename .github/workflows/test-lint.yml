@@ -125,6 +125,11 @@ jobs:
           RAPITAS_DB_PROVIDER: sqlite
         run: bun run db:generate:sqlite
 
+      # Real browser processes must not compete with the parallel unit-test pool.
+      - name: Verify application readiness in a real browser
+        working-directory: rapitas-backend
+        run: bun test --isolate services/agents/verification/runtime-smoke/runtime-readiness.test.ts
+
       - name: Run full test suite (parallel, advisory)
         working-directory: rapitas-backend
         env:
