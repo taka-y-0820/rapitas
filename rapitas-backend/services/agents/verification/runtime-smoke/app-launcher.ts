@@ -40,6 +40,8 @@ export interface LaunchedApp {
   logs(): string[];
   /** Kill the whole process tree. Idempotent. */
   stop(): void;
+  /** Marks an intentional stop performed by the identity-aware registry. */
+  markStopRequested?(): void;
   pid: number | undefined;
   /** True once the process has exited, whether crashed or intentionally stopped. */
   hasExited(): boolean;
@@ -112,12 +114,13 @@ export function launchApp(command: string, cwd: string, port: number): LaunchedA
   proc.on('error', (err) => push(`[spawn error] ${err.message}`));
 
   let stopped = false;
+  let stopRequested = false;
   let exited = false;
   let lastExitCode: number | null = null;
   proc.on('exit', (code) => {
     exited = true;
     lastExitCode = code;
-    if (!stopped) {
+    if (!stopped && !stopRequested) {
       // Exiting before anyone called stop() means the app crashed on its
       // own — this is the fast, precise failure signal that used to be
       // masked by waitForHealthy() spinning for the full readyTimeoutMs
@@ -134,6 +137,9 @@ export function launchApp(command: string, cwd: string, port: number): LaunchedA
     logs: () => [...lines],
     hasExited: () => exited,
     exitCode: () => lastExitCode,
+    markStopRequested: () => {
+      stopRequested = true;
+    },
     stop: () => {
       if (stopped) return;
       stopped = true;

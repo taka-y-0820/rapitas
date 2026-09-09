@@ -17,13 +17,12 @@ import { existsSync } from 'fs';
 import { createLogger } from '../../../config/logger';
 import { prisma } from '../../../config/database';
 import { resolveLatestSessionWorktree } from '../agent-session-resolver';
+import type { LaunchedApp } from '../verification/runtime-smoke/app-launcher';
 import {
-  allocateFreePort,
-  launchApp,
-  waitForHealthy,
-  type LaunchedApp,
-} from '../verification/runtime-smoke/app-launcher';
-import { resolveRuntimeConfig, substitutePort } from '../verification/runtime-smoke/runtime-config';
+  acquireRuntimeServer,
+  releaseRuntimeServer,
+} from '../verification/runtime-smoke/worktree-server-registry';
+import { resolveRuntimeConfig } from '../verification/runtime-smoke/runtime-config';
 import {
   spawnPlaywrightWorker,
   type PlaywrightWorker,
@@ -40,7 +39,7 @@ const IDLE_TIMEOUT_MS = 15 * 60_000;
 const SWEEP_INTERVAL_MS = 60_000;
 
 export interface PreviewSession {
-  app: LaunchedApp;
+  app: Pick<LaunchedApp, 'logs' | 'stop'>;
   worker: PlaywrightWorker;
   url: string;
   startedAt: Date;
@@ -68,13 +67,20 @@ export const sessions = new Map<number, PreviewSession>();
  * three abandoned `next dev` instances all fighting over the same `.next`
  * build cache, which is almost certainly why every one of them then hung).
  */
-const pending = new Map<number, { app?: LaunchedApp; worker?: PlaywrightWorker }>();
+type PendingPreview = {
+  app?: Pick<LaunchedApp, 'logs' | 'stop'>;
+  worker?: PlaywrightWorker;
+  controller?: AbortController;
+};
+const pending = new Map<number, PendingPreview>();
+const requestVersions = new Map<number, number>();
 
 /** Stop and forget an in-progress launch for a task, if one is tracked. */
 async function killPending(taskId: number): Promise<void> {
   const p = pending.get(taskId);
   if (!p) return;
   pending.delete(taskId);
+  p.controller?.abort();
   if (p.worker) await p.worker.close().catch(() => {});
   if (p.app) p.app.stop();
 }
@@ -92,7 +98,7 @@ async function killPending(taskId: number): Promise<void> {
  */
 async function cleanupOwnAttempt(
   taskId: number,
-  app: LaunchedApp,
+  app: Pick<LaunchedApp, 'logs' | 'stop'>,
   worker?: PlaywrightWorker,
 ): Promise<void> {
   if (worker) await worker.close().catch(() => {});
@@ -131,139 +137,141 @@ export async function startPreview(
   taskId: number,
   opts?: { headless?: boolean },
 ): Promise<StartPreviewResult> {
-  await stopPreview(taskId); // clean up an established session, if any
-  await killPending(taskId); // clean up an in-flight attempt, if any (see `pending`)
+  const stopping = stopPreview(taskId);
+  const version = requestVersions.get(taskId);
+  await stopping;
+  if (requestVersions.get(taskId) !== version)
+    return { ok: false, reason: 'error', message: 'preview request superseded' };
+  const controller = new AbortController();
+  const attempt: PendingPreview = { controller };
+  pending.set(taskId, attempt);
+  try {
+    const session = await resolveLatestSessionWorktree(taskId);
+    let workdir =
+      session?.worktreePath && existsSync(session.worktreePath) ? session.worktreePath : null;
 
-  const session = await resolveLatestSessionWorktree(taskId);
-  let workdir =
-    session?.worktreePath && existsSync(session.worktreePath) ? session.worktreePath : null;
-
-  if (!workdir) {
-    const task = await prisma.task
-      .findUnique({
-        where: { id: taskId },
-        select: { theme: { select: { workingDirectory: true } } },
-      })
-      .catch(() => null);
-    const themeDir = task?.theme?.workingDirectory;
-    if (themeDir && existsSync(themeDir)) {
-      log.info(
-        { taskId, themeDir },
-        '[preview] no worktree for task — falling back to theme working directory',
-      );
-      workdir = themeDir;
+    if (!workdir) {
+      const task = await prisma.task
+        .findUnique({
+          where: { id: taskId },
+          select: { theme: { select: { workingDirectory: true } } },
+        })
+        .catch(() => null);
+      const themeDir = task?.theme?.workingDirectory;
+      if (themeDir && existsSync(themeDir)) {
+        log.info(
+          { taskId, themeDir },
+          '[preview] no worktree for task — falling back to theme working directory',
+        );
+        workdir = themeDir;
+      }
     }
-  }
 
-  if (!workdir) {
-    return {
-      ok: false,
-      reason: 'no_worktree',
-      message:
-        'このタスクのworktreeもテーマの作業ディレクトリも見つかりません。テーマに作業ディレクトリを設定するか、エージェントを一度実行してください。',
-    };
-  }
+    if (!workdir) {
+      return {
+        ok: false,
+        reason: 'no_worktree',
+        message:
+          'このタスクのworktreeもテーマの作業ディレクトリも見つかりません。テーマに作業ディレクトリを設定するか、エージェントを一度実行してください。',
+      };
+    }
 
-  const loaded = await resolveRuntimeConfig({ workdir, taskId });
-  if (loaded === null) {
-    return {
-      ok: false,
-      reason: 'not_configured',
-      message:
-        'このプロジェクトのプレビュー設定がありません。テーマ設定でプレビュー設定(JSON)を登録するか、rapitas.runtime.json を配置してください。',
-    };
-  }
-  if (loaded.error || !loaded.config) {
-    return {
-      ok: false,
-      reason: 'config_error',
-      message: `プレビュー設定が不正です: ${loaded.error}`,
-    };
-  }
-  const cfg = loaded.config;
+    const loaded = await resolveRuntimeConfig({ workdir, taskId });
+    if (loaded === null) {
+      return {
+        ok: false,
+        reason: 'not_configured',
+        message:
+          'このプロジェクトのプレビュー設定がありません。テーマ設定でプレビュー設定(JSON)を登録するか、rapitas.runtime.json を配置してください。',
+      };
+    }
+    if (loaded.error || !loaded.config) {
+      return {
+        ok: false,
+        reason: 'config_error',
+        message: `プレビュー設定が不正です: ${loaded.error}`,
+      };
+    }
+    const cfg = loaded.config;
 
-  const port = await allocateFreePort();
-  const baseUrl = substitutePort(cfg.url, port);
-  const app = launchApp(substitutePort(cfg.start, port), workdir, port);
-  pending.set(taskId, { app }); // trackable/killable from here on, however this call ends
-
-  log.info({ taskId, baseUrl, port }, '[preview] waiting for dev server to become healthy');
-  const healthy = await waitForHealthy(`${baseUrl}${cfg.healthPath}`, cfg.readyTimeoutMs, {
-    taskId,
-  });
-  if (!healthy) {
-    // Surface the app's own stdout/stderr tail — the generic "no response"
-    // message alone can't distinguish "still compiling", "crashed on start",
-    // and "wrong port/health path" from each other. runtime-check.ts already
-    // does this for the verify-repair loop; this path used to discard it.
-    const tail = app.logs().slice(-25).join('\n');
-    log.warn({ taskId, baseUrl, tail }, '[preview] dev server did not become healthy in time');
-    await cleanupOwnAttempt(taskId, app);
-    return {
-      ok: false,
-      reason: 'unhealthy',
-      message:
-        `アプリが起動しませんでした (${baseUrl}${cfg.healthPath} が無応答)。` +
-        (tail ? `\n--- 起動ログ末尾 ---\n${tail}` : ''),
-    };
-  }
-
-  const worker = spawnPlaywrightWorker();
-  pending.set(taskId, { app, worker });
-
-  try {
-    log.info({ taskId, headless: opts?.headless ?? true }, '[preview] launching browser');
-    const { channel } = await worker.launch({
-      channels: ['msedge', 'chrome'],
-      timeoutMs: BROWSER_LAUNCH_TIMEOUT_MS,
-      viewport: { width: 1280, height: 800 },
-      headless: opts?.headless,
+    if (controller.signal.aborted || pending.get(taskId) !== attempt)
+      return { ok: false, reason: 'error', message: 'preview request cancelled' };
+    const acquired = await acquireRuntimeServer(workdir, cfg, {
+      signal: controller.signal,
+      label: `preview-${taskId}`,
     });
-    log.info({ taskId, channel }, '[preview] browser launched');
-  } catch (e) {
-    log.warn(
-      { taskId, err: e instanceof Error ? e.message : e },
-      '[preview] no system browser available',
-    );
-    await cleanupOwnAttempt(taskId, app, worker);
-    return {
-      ok: false,
-      reason: 'no_browser',
-      message: `システムのEdge/Chromeが見つかりません: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`,
-    };
-  }
-
-  try {
-    log.info({ taskId, baseUrl }, '[preview] navigating headless tab to app');
-    const nav = await worker.openAndNavigate({ url: baseUrl, timeoutMs: 25_000 });
-    if (!nav.ok) throw new Error(nav.error || 'navigation failed');
-
-    // Ownership check mirrors cleanupOwnAttempt's — only claim the `pending`
-    // slot (and hand off to `sessions`) if a newer call hasn't already
-    // replaced it out from under this one.
-    if (pending.get(taskId)?.app !== app) {
-      log.info({ taskId }, '[preview] superseded by a newer preview request — discarding');
-      await worker.close().catch(() => {});
+    if (!acquired.ok) {
+      if (pending.get(taskId) === attempt) pending.delete(taskId);
+      return { ok: false, reason: 'unhealthy', message: acquired.reason };
+    }
+    const { port, baseUrl, lease } = acquired;
+    // Compatibility handle for preview session consumers: stop releases ONLY
+    // this lease, never the shared OS process.
+    const app = { logs: acquired.logs, stop: () => releaseRuntimeServer(lease) };
+    if (controller.signal.aborted || pending.get(taskId) !== attempt) {
       app.stop();
-      return { ok: false, reason: 'error', message: 'superseded by a newer preview request' };
+      return { ok: false, reason: 'error', message: 'preview request cancelled' };
     }
-    pending.delete(taskId);
-    sessions.set(taskId, {
-      app,
-      worker,
-      url: baseUrl,
-      startedAt: new Date(),
-      lastAccessedAt: new Date(),
-    });
-    log.info({ taskId, baseUrl, port }, '[preview] session started');
-    return { ok: true, url: baseUrl };
-  } catch (e) {
-    log.warn(
-      { taskId, baseUrl, err: e instanceof Error ? e.message : e },
-      '[preview] navigation to app failed',
-    );
-    await cleanupOwnAttempt(taskId, app, worker);
-    return { ok: false, reason: 'error', message: e instanceof Error ? e.message : String(e) };
+    attempt.app = app;
+    const worker = spawnPlaywrightWorker();
+    attempt.worker = worker;
+
+    try {
+      log.info({ taskId, headless: opts?.headless ?? true }, '[preview] launching browser');
+      const { channel } = await worker.launch({
+        channels: ['msedge', 'chrome'],
+        timeoutMs: BROWSER_LAUNCH_TIMEOUT_MS,
+        viewport: { width: 1280, height: 800 },
+        headless: opts?.headless,
+      });
+      log.info({ taskId, channel }, '[preview] browser launched');
+    } catch (e) {
+      log.warn(
+        { taskId, err: e instanceof Error ? e.message : e },
+        '[preview] no system browser available',
+      );
+      await cleanupOwnAttempt(taskId, app, worker);
+      return {
+        ok: false,
+        reason: 'no_browser',
+        message: `システムのEdge/Chromeが見つかりません: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`,
+      };
+    }
+
+    try {
+      log.info({ taskId, baseUrl }, '[preview] navigating headless tab to app');
+      const nav = await worker.openAndNavigate({ url: baseUrl, timeoutMs: 25_000 });
+      if (!nav.ok) throw new Error(nav.error || 'navigation failed');
+
+      // Ownership check mirrors cleanupOwnAttempt's — only claim the `pending`
+      // slot (and hand off to `sessions`) if a newer call hasn't already
+      // replaced it out from under this one.
+      if (pending.get(taskId)?.app !== app) {
+        log.info({ taskId }, '[preview] superseded by a newer preview request — discarding');
+        await worker.close().catch(() => {});
+        app.stop();
+        return { ok: false, reason: 'error', message: 'superseded by a newer preview request' };
+      }
+      pending.delete(taskId);
+      sessions.set(taskId, {
+        app,
+        worker,
+        url: baseUrl,
+        startedAt: new Date(),
+        lastAccessedAt: new Date(),
+      });
+      log.info({ taskId, baseUrl, port }, '[preview] session started');
+      return { ok: true, url: baseUrl };
+    } catch (e) {
+      log.warn(
+        { taskId, baseUrl, err: e instanceof Error ? e.message : e },
+        '[preview] navigation to app failed',
+      );
+      await cleanupOwnAttempt(taskId, app, worker);
+      return { ok: false, reason: 'error', message: e instanceof Error ? e.message : String(e) };
+    }
+  } finally {
+    if (pending.get(taskId) === attempt) await killPending(taskId);
   }
 }
 
@@ -276,6 +284,7 @@ export async function startPreview(
  * @param taskId - Task whose preview to stop. / 対象タスクID
  */
 export async function stopPreview(taskId: number): Promise<void> {
+  requestVersions.set(taskId, (requestVersions.get(taskId) ?? 0) + 1);
   const s = sessions.get(taskId);
   if (s) {
     sessions.delete(taskId);

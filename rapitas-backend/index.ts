@@ -255,6 +255,13 @@ const runStartupWarmup = async (): Promise<void> => {
   // before we start CPU-heavy init on the single JS thread.
   await new Promise((resolve) => setTimeout(resolve, 250));
 
+  await timed('runtime-server-registry-reconcile', async () => {
+    const { recoverRuntimeServerRegistry } =
+      await import('./services/agents/verification/runtime-smoke/worktree-server-registry');
+    await recoverRuntimeServerRegistry();
+  });
+  await yieldToLoop();
+
   await timed('behavior-scheduler', () => BehaviorScheduler.start());
   await yieldToLoop();
   await timed('memory-system', () => initializeMemorySystem());
