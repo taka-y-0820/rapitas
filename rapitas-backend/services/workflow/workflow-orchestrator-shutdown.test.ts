@@ -152,6 +152,8 @@ mock.module('./workflow-context-builder', () => ({
 
 // task-execution-lock: always grant the lock.
 mock.module('../agents/task-execution-lock', () => ({
+  getTaskExecutionCancellationVersion: () => 0,
+  getTaskExecutionLockOwner: () => Symbol.for('test-workflow-lock'),
   acquireTaskExecutionLock: () => true,
   releaseTaskExecutionLock: () => {},
   isTaskExecutionLocked: () => true,

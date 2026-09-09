@@ -8,10 +8,13 @@
 import { observeWorkflowStage } from './workflow-stage-timing';
 import { prisma } from '../../config';
 import { createLogger } from '../../config/logger';
+import { ExecutionCancelledError } from '../agents/execution-cancelled-error';
 import { type WorkflowAdvanceResult } from './workflow-agent-executor';
 import {
   acquireTaskExecutionLock,
+  getTaskExecutionLockOwner,
   releaseTaskExecutionLock,
+  getTaskExecutionCancellationVersion,
   WORKFLOW_LOCK_TTL_MS,
 } from '../agents/task-execution-lock';
 import { narrowWorkflowStatus } from './workflow-types.guards.generated';
@@ -108,6 +111,21 @@ export class WorkflowOrchestrator {
       };
     }
 
+    const owner = getTaskExecutionLockOwner(taskId);
+    const cancellationVersion = getTaskExecutionCancellationVersion(taskId);
+    const guardedAdvance = async (nextTaskId: number, nextLanguage: 'ja' | 'en') => {
+      if (getTaskExecutionCancellationVersion(taskId) !== cancellationVersion) {
+        throw new ExecutionCancelledError('Workflow continuation cancelled by stop request');
+      }
+      return this.advanceWorkflow(nextTaskId, nextLanguage);
+    };
+    const assertOwnership = () => {
+      if (!owner || getTaskExecutionLockOwner(taskId) !== owner) {
+        throw new ExecutionCancelledError(
+          'Workflow preparation cancelled: execution lock ownership was revoked',
+        );
+      }
+    };
     try {
       // A phase-critic verdict may still be in flight for the artifact that
       // triggered this advance (the save handler fails open past 90s while
@@ -117,9 +135,10 @@ export class WorkflowOrchestrator {
       // (task 536), which is what made critic bounces never regenerate.
       const { awaitCriticSettled } = await import('./phase-critic');
       await observeWorkflowStage(taskId, 'critic-settle', () => awaitCriticSettled(taskId));
-      return await this.runAdvanceWorkflow(taskId, language);
+      assertOwnership();
+      return await this.runAdvanceWorkflow(taskId, language, assertOwnership, guardedAdvance);
     } finally {
-      releaseTaskExecutionLock(taskId);
+      if (owner) releaseTaskExecutionLock(taskId, owner);
     }
   }
 
@@ -139,6 +158,8 @@ export class WorkflowOrchestrator {
   private async runAdvanceWorkflow(
     taskId: number,
     language: 'ja' | 'en' = 'ja',
+    assertOwnership: () => void = () => {},
+    advanceFn = this.advanceWorkflow.bind(this),
   ): Promise<WorkflowAdvanceResult> {
     const preflight = await observeWorkflowStage(taskId, 'preflight', () => runPreflight(taskId));
     if (preflight.done) return preflight.result;
@@ -181,11 +202,14 @@ export class WorkflowOrchestrator {
       roleConfig,
       agentConfig,
     );
+    assertOwnership();
     await observeWorkflowStage(taskId, 'status-reconcile', () =>
       reconcileTaskStatusBeforeRun(taskId, currentStatus),
     );
 
+    assertOwnership();
     return await executeAgentWithFallback({
+      assertOwnership,
       taskId,
       task,
       transition,
@@ -195,7 +219,7 @@ export class WorkflowOrchestrator {
       agentConfig,
       effectiveModelId,
       currentStatus,
-      advanceFn: this.advanceWorkflow.bind(this),
+      advanceFn,
       devConfigFn: this.getOrCreateDevConfig.bind(this),
     });
   }

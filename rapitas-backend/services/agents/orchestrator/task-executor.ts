@@ -566,6 +566,7 @@ export async function executeTask(
 
     // Execute agent (wrapped in ALS scope to capture sendAIMessage calls from main process)
     let result = await withLlmCallScope(async () => {
+      options.assertExecutionAllowed?.();
       let r = await agent.execute(taskWithAnalysis);
       logger.info(
         `[TaskExecutor] Execution result - success: ${r.success}, waitingForInput: ${r.waitingForInput}, questionType: ${r.questionType}, question: ${r.question?.substring(0, 100)}`,
@@ -591,6 +592,7 @@ export async function executeTask(
         const freshAgent = agentFactory.createAgent(agentConfig);
         agentInfo.agent = freshAgent;
         setupAgentHandlers(ctx, freshAgent, setup, options);
+        options.assertExecutionAllowed?.();
         r = await freshAgent.execute(taskWithAnalysis);
       }
 
