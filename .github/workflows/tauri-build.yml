@@ -599,7 +599,8 @@ jobs:
           # Tauri RPMs omit. rpm2archive validates the header/file archive instead.
           rpm2archive -n "${packages[0]}" > "$payload_dir/payload.tar"
           tar -xf "$payload_dir/payload.tar" -C "$payload_dir"
-          cmp "src-tauri/target/${{ matrix.target }}/release/rapitas" "$payload_dir/usr/bin/rapitas"
+          node --test scripts/verify-tauri-rpm-binary.test.cjs
+          node scripts/verify-tauri-rpm-binary.cjs "src-tauri/target/${{ matrix.target }}/release/rapitas" "$payload_dir/usr/bin/rapitas"
           mapfile -t backends < <(find "$payload_dir" -type f -name "rapitas-backend-${{ matrix.target }}")
           find "$payload_dir" -name '*rapitas-backend*' -ls
           printf 'Backend matches: %s\n' "${#backends[@]}"
