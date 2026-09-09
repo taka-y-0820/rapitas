@@ -56,6 +56,16 @@ mock.module('../common/cli-path-resolver', () => ({
 
 const registerMock = mock((_info: { pid: number; role: string }) => {});
 const unregisterMock = mock((_pid: number) => {});
+mock.module('./aux-cli-cleanup', () => ({
+  auxCliCleanup: {
+    assertReady: () => {},
+    stop: (child: MockChild) => {
+      child.kill();
+      unregisterMock(child.pid);
+      return true;
+    },
+  },
+}));
 
 mock.module('../../services/agents/agent-process-tracker', () => ({
   registerProcess: registerMock,
@@ -126,6 +136,8 @@ describe('aux CLI child tracking — one-shot (callClaudeCli)', () => {
     expect(registerMock).toHaveBeenCalledTimes(1);
     expect(unregisterMock).toHaveBeenCalledTimes(1);
     expect(unregisterMock).toHaveBeenCalledWith(4242);
+    spawnedChildren[0].emit('close', 0);
+    expect(unregisterMock).toHaveBeenCalledTimes(1);
   });
 });
 

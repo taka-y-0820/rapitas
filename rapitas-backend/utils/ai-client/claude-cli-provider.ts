@@ -17,6 +17,7 @@ import { registerProcess, unregisterProcess } from '../../services/agents/agent-
 import { getClaudePathAsync } from '../common/cli-path-resolver';
 import { type AIMessage, type AIResponse } from './types';
 import { describeCliFailure, extractLastJsonObject } from './cli-failure-reason';
+import { auxCliCleanup } from './aux-cli-cleanup';
 
 const log = createLogger('ai-client:claude-cli');
 
@@ -199,6 +200,7 @@ function trackAuxCliChild(child: ChildProcess): () => void {
 /** Spawn the CLI with the given args, feed `prompt` on stdin, resolve stdout. */
 async function spawnCli(args: string[], prompt: string): Promise<string> {
   const claudePath = await getClaudePathAsync();
+  auxCliCleanup.assertReady();
   return new Promise((resolve, reject) => {
     const [command, spawnArgs] = buildSpawnCommand(claudePath, args);
     const child: ChildProcess = spawn(command, spawnArgs, {
@@ -212,26 +214,32 @@ async function spawnCli(args: string[], prompt: string): Promise<string> {
 
     let stdout = '';
     let stderr = '';
+    let timedOut = false;
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
     child.stdout?.on('data', (d: string) => (stdout += d));
     child.stderr?.on('data', (d: string) => (stderr += d));
 
     const timer = setTimeout(() => {
-      child.kill();
-      // Untrack promptly — on Windows the shell wrapper may linger after
-      // kill(); the tracker's liveness check self-heals if it survives.
-      untrack();
+      timedOut = true;
+      // Cleanup owns tracking until every observed member has exited.
+      try {
+        auxCliCleanup.stop(child);
+      } catch (error) {
+        log.error({ error, pid: child.pid }, 'Auxiliary CLI timeout cleanup failed');
+      }
       reject(new ClaudeCliUnavailableError(`Claude CLI timed out after ${CLI_TIMEOUT_MS}ms`));
     }, CLI_TIMEOUT_MS);
 
     child.on('error', (err) => {
       clearTimeout(timer);
+      if (timedOut) return;
       untrack();
       reject(new ClaudeCliUnavailableError(`Claude CLI spawn failed: ${err.message}`));
     });
     child.on('close', (code) => {
       clearTimeout(timer);
+      if (timedOut) return;
       untrack();
       if (code === 0) {
         resolve(stdout);
@@ -338,7 +346,14 @@ export async function callClaudeCliStream(
   ];
 
   await acquireSlot();
-  const claudePath = await getClaudePathAsync();
+  let claudePath: string;
+  try {
+    claudePath = await getClaudePathAsync();
+    auxCliCleanup.assertReady();
+  } catch (error) {
+    releaseSlot();
+    throw error;
+  }
   const [command, spawnArgs] = buildSpawnCommand(claudePath, args);
   const child = spawn(command, spawnArgs, {
     cwd: tmpdir(),
@@ -379,10 +394,11 @@ export async function callClaudeCliStream(
         emit(controller, { error: message });
         controller.close();
         releaseSlot();
-        child.kill();
-        // Untrack after kill — the tracker's liveness check self-heals if the
-        // shell wrapper lingers past the kill on Windows.
-        untrack();
+        try {
+          auxCliCleanup.stop(child);
+        } catch (error) {
+          log.error({ error, pid: child.pid }, 'Auxiliary CLI stream cleanup failed');
+        }
       };
 
       const timer = setTimeout(
@@ -391,6 +407,7 @@ export async function callClaudeCliStream(
       );
 
       const handleLine = (line: string) => {
+        if (settled) return;
         const trimmed = line.trim();
         if (!trimmed) return;
         let evt: {
@@ -416,6 +433,7 @@ export async function callClaudeCliStream(
       };
 
       child.stdout?.on('data', (chunk: string) => {
+        if (settled) return;
         lineBuffer += chunk;
         let idx: number;
         while ((idx = lineBuffer.indexOf('\n')) !== -1) {
