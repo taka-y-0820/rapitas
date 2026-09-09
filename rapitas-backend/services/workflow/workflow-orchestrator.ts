@@ -5,6 +5,7 @@
  * CLI agents (claude-code, gemini, codex) run via AgentOrchestrator.
  * API agents (anthropic-api, openai, etc.) call APIs directly and save output files on their behalf.
  */
+import { observeWorkflowStage } from './workflow-stage-timing';
 import { prisma } from '../../config';
 import { createLogger } from '../../config/logger';
 import { type WorkflowAdvanceResult } from './workflow-agent-executor';
@@ -115,7 +116,7 @@ export class WorkflowOrchestrator {
       // AFTER the next phase already dispatched against the rejected artifact
       // (task 536), which is what made critic bounces never regenerate.
       const { awaitCriticSettled } = await import('./phase-critic');
-      await awaitCriticSettled(taskId);
+      await observeWorkflowStage(taskId, 'critic-settle', () => awaitCriticSettled(taskId));
       return await this.runAdvanceWorkflow(taskId, language);
     } finally {
       releaseTaskExecutionLock(taskId);
@@ -139,7 +140,7 @@ export class WorkflowOrchestrator {
     taskId: number,
     language: 'ja' | 'en' = 'ja',
   ): Promise<WorkflowAdvanceResult> {
-    const preflight = await runPreflight(taskId);
+    const preflight = await observeWorkflowStage(taskId, 'preflight', () => runPreflight(taskId));
     if (preflight.done) return preflight.result;
     const { task, workflowMode, currentStatus, transition } = preflight;
 
@@ -147,22 +148,32 @@ export class WorkflowOrchestrator {
     // implementer overlap hold (which can wait up to 30 min) rather than after
     // it — otherwise detection is delayed by however long the hold lasts
     // (task 800: 45.1 min plan_approved stay before plan_invalid_replan fired).
-    const guard = await guardPlanValidity(taskId, transition, workflowMode, language);
+    const guard = await observeWorkflowStage(taskId, 'plan-guard', () =>
+      guardPlanValidity(taskId, transition, workflowMode, language),
+    );
     if (guard.done) return guard.result;
 
     // Before any agent/prompt work: hold the implementer while its files are
     // still changing in another open auto-PR (skipped → the runner re-queues).
-    const overlap = await guardImplementOverlap(taskId, transition, task, currentStatus);
+    const overlap = await observeWorkflowStage(taskId, 'overlap-guard', () =>
+      guardImplementOverlap(taskId, transition, task, currentStatus),
+    );
     if (overlap.done) return overlap.result;
 
-    const prep = await prepareAgentAndPrompt(taskId, transition, currentStatus);
+    const prep = await observeWorkflowStage(taskId, 'agent-prep', () =>
+      prepareAgentAndPrompt(taskId, transition, currentStatus),
+    );
     if (prep.done) return prep.result;
     const { roleConfig, agentConfig, systemPromptContent } = prep;
 
-    const probe = await runPreflightProbe(taskId, transition.role, agentConfig, currentStatus);
+    const probe = await observeWorkflowStage(taskId, 'preflight-probe', () =>
+      runPreflightProbe(taskId, transition.role, agentConfig, currentStatus),
+    );
     if (probe.done) return probe.result;
 
-    const context = await buildExecutionContext(taskId, transition, task, language, workflowMode);
+    const context = await observeWorkflowStage(taskId, 'context', () =>
+      buildExecutionContext(taskId, transition, task, language, workflowMode),
+    );
     const effectiveModelId = await resolveEffectiveModel(
       taskId,
       transition,
@@ -170,7 +181,9 @@ export class WorkflowOrchestrator {
       roleConfig,
       agentConfig,
     );
-    await reconcileTaskStatusBeforeRun(taskId, currentStatus);
+    await observeWorkflowStage(taskId, 'status-reconcile', () =>
+      reconcileTaskStatusBeforeRun(taskId, currentStatus),
+    );
 
     return await executeAgentWithFallback({
       taskId,
