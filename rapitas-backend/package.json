@@ -30,6 +30,7 @@
     "check:docs:phase2": "bun run scripts/check-docs-health.ts --phase=2",
     "eval:gates": "bun run scripts/eval-gates.ts",
     "eval:judge": "bun run scripts/eval-judge.ts",
+    "eval:phase-critic": "bun run scripts/eval-phase-critic.ts",
     "generate:route-barrels": "node scripts/generate-route-barrels.cjs",
     "generate:route-barrels:check": "node scripts/generate-route-barrels.cjs --check",
     "db:push": "prisma db push",
