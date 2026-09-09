@@ -13,7 +13,9 @@ function createWriter(ctx: OutputHandlerContext, manager: LogChunkManager) {
   let attempted = 0;
   let errorMessage: string | undefined;
   let closed = false;
-  const active = () => ['running', 'waiting_for_input'].includes(ctx.state.status);
+  // New executions retain the initial local "idle" state while their DB row
+  // is running. The conditional DB write remains the authority for admission.
+  const active = () => ['idle', 'running', 'waiting_for_input'].includes(ctx.state.status);
 
   const flush = async (): Promise<void> => {
     if (writing) {
