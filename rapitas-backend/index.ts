@@ -23,7 +23,7 @@ import { swagger } from '@elysiajs/swagger';
 
 // All modular routes are registered via registerAllRoutes() in register-routes.ts.
 import { registerAllRoutes } from './register-routes';
-import { getAgentSystemSnapshot } from './routes/agents/system/agent-system-router';
+import { handleTopLevelHealthCheck } from './routes/system/top-level-health-route';
 
 // Import shared database client
 import { prisma, ensureDatabaseConnection } from './config';
@@ -167,36 +167,7 @@ registerAllRoutes(app);
 // SAME data `/agents/system-status` already computes (via the shared
 // getAgentSystemSnapshot()) plus process uptime, so operators/CI have one
 // fast, read-only endpoint instead of needing to know the `/agents` prefix.
-app.get('/health', async () => {
-  const startedAt = Date.now();
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    const snapshot = await getAgentSystemSnapshot();
-    return {
-      status:
-        snapshot.status === 'healthy' || snapshot.status === 'busy' ? 'healthy' : snapshot.status,
-      database: 'connected',
-      uptimeSeconds: Math.round(process.uptime()),
-      activeExecutions: snapshot.activeExecutions,
-      runningExecutions: snapshot.runningExecutions,
-      interruptedExecutions: snapshot.interruptedExecutions,
-      queueDepth: snapshot.queueDepth,
-      activePreviewCount: snapshot.activePreviewCount,
-      checkMs: Date.now() - startedAt,
-      timestamp: new Date().toISOString(),
-    };
-  } catch (error) {
-    return Response.json(
-      {
-        status: 'unhealthy',
-        database: 'disconnected',
-        error: error instanceof Error ? error.message : 'Unknown error',
-        timestamp: new Date().toISOString(),
-      },
-      { status: 503 },
-    );
-  }
-});
+app.get('/health', handleTopLevelHealthCheck);
 
 // Warm-up tasks (schedulers, memory system, agent worker manager, recovery)
 // are imported here but deliberately NOT invoked until AFTER app.listen() —
@@ -283,6 +254,13 @@ const runStartupWarmup = async (): Promise<void> => {
   // Brief grace so the listener can answer the first in-flight requests
   // before we start CPU-heavy init on the single JS thread.
   await new Promise((resolve) => setTimeout(resolve, 250));
+
+  await timed('runtime-server-registry-reconcile', async () => {
+    const { recoverRuntimeServerRegistry } =
+      await import('./services/agents/verification/runtime-smoke/worktree-server-registry');
+    await recoverRuntimeServerRegistry();
+  });
+  await yieldToLoop();
 
   await timed('behavior-scheduler', () => BehaviorScheduler.start());
   await yieldToLoop();

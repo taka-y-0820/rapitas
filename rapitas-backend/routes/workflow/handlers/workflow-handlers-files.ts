@@ -169,6 +169,7 @@ export async function handleSaveFile({
     // commit/PR stage left the gate + jury unregistered and the runner blocked
     // task 658 mid-jury, 3.5 minutes before its PR landed).
     const commitPr = await runVerifyPostSaveAutomation({
+      completionReceipt: transition.completionReceipt,
       taskId,
       fileType,
       newStatus,

@@ -168,6 +168,70 @@ branch refs/heads/feature/task-123
 });
 
 describe('removeWorktree — return-value signal', () => {
+  test('missing local Git metadata cannot borrow a clean parent status', async () => {
+    mockExistsSync.mockImplementation((p: string) => p === mockWorktreePath);
+    expect(await removeWorktree(mockBaseDir, mockWorktreePath, false)).toBe(false);
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(mockRmDirWithRetry).not.toHaveBeenCalled();
+  });
+
+  test.each(['late-change', 'status-error'])('refuses uncertain content: %s', async (scenario) => {
+    mockExistsSync.mockImplementation(
+      (p: string) => p === mockWorktreePath || p === join(mockWorktreePath, '.git'),
+    );
+    let checks = 0;
+    mockExecFile.mockImplementation(
+      (file: string, args: unknown, options: unknown, callback?: unknown) => {
+        const argv = Array.isArray(args) ? (args as string[]) : [];
+        const cb = (typeof options === 'function' ? options : callback) as
+          | ((error: Error | null, result: unknown) => void)
+          | undefined;
+        if (argv.includes('status')) {
+          checks++;
+          if (scenario === 'status-error') cb?.(new Error('git status failed'), undefined);
+          else cb?.(null, { stdout: checks > 1 ? '?? late.ts\n' : '', stderr: '' });
+        } else cb?.(null, makeExecResult([file, ...argv].join(' ')));
+        return { kill: mock(() => undefined) };
+      },
+    );
+    expect(await removeWorktree(mockBaseDir, mockWorktreePath, false)).toBe(false);
+    expect(
+      mockExecFile.mock.calls.some((call) => Array.isArray(call[1]) && call[1].includes('remove')),
+    ).toBe(false);
+    expect(mockRmDirWithRetry).not.toHaveBeenCalled();
+  });
+
+  test.each([' M existing.ts\n', '?? new-module.ts\n'])(
+    'preserves unsaved work before teardown: %s',
+    async (status) => {
+      mockExistsSync.mockImplementation(() => true);
+      mockExecFile.mockImplementation(
+        (file: string, args: unknown, options: unknown, callback?: unknown) => {
+          const argv = Array.isArray(args) ? (args as string[]) : [];
+          const cb = (typeof options === 'function' ? options : callback) as
+            | ((error: Error | null, result: unknown) => void)
+            | undefined;
+          cb?.(
+            null,
+            argv.includes('status')
+              ? { stdout: status, stderr: '' }
+              : makeExecResult([file, ...argv].join(' ')),
+          );
+          return { kill: mock(() => undefined) };
+        },
+      );
+
+      expect(await removeWorktree(mockBaseDir, mockWorktreePath, false)).toBe(false);
+      expect(
+        mockExecFile.mock.calls.some((call) => {
+          const argv = Array.isArray(call[1]) ? (call[1] as string[]) : [];
+          return argv.includes('--teardown') || argv.includes('remove');
+        }),
+      ).toBe(false);
+      expect(mockRmDirWithRetry).not.toHaveBeenCalled();
+    },
+  );
+
   test('returns false without throwing when the safety guard refuses', async () => {
     mockIsPathSafe.mockImplementation(() => false);
 
@@ -184,7 +248,9 @@ describe('removeWorktree — return-value signal', () => {
 
   test('returns true when git worktree remove fails but the fs fallback succeeds', async () => {
     gitRemoveFails();
-    mockExistsSync.mockImplementation((p: string) => p === mockWorktreePath);
+    mockExistsSync.mockImplementation(
+      (p: string) => p === mockWorktreePath || p === join(mockWorktreePath, '.git'),
+    );
     mockRmDirWithRetry.mockResolvedValue(true);
 
     const result = await removeWorktree(mockBaseDir, mockWorktreePath, false);
@@ -194,7 +260,9 @@ describe('removeWorktree — return-value signal', () => {
 
   test('returns false when git worktree remove fails and the fs fallback is exhausted', async () => {
     gitRemoveFails();
-    mockExistsSync.mockImplementation((p: string) => p === mockWorktreePath);
+    mockExistsSync.mockImplementation(
+      (p: string) => p === mockWorktreePath || p === join(mockWorktreePath, '.git'),
+    );
     mockRmDirWithRetry.mockResolvedValue(false);
 
     const result = await removeWorktree(mockBaseDir, mockWorktreePath, false);
@@ -226,7 +294,9 @@ describe('cleanupOrphanedWorktrees — refused/failed removal is not treated as 
       { id: 1, worktreePath: mockWorktreePath, status: 'completed' },
     ] as never);
     gitRemoveFails();
-    mockExistsSync.mockImplementation((p: string) => p === mockWorktreePath);
+    mockExistsSync.mockImplementation(
+      (p: string) => p === mockWorktreePath || p === join(mockWorktreePath, '.git'),
+    );
     mockRmDirWithRetry.mockResolvedValue(false);
 
     const cleanedCount = await cleanupOrphanedWorktrees(mockBaseDir);
@@ -250,7 +320,9 @@ describe('cleanupOrphanedWorktrees — refused/failed removal is not treated as 
 describe('cleanupStaleWorktrees — refused/failed removal is not counted', () => {
   test('does not increment cleanedCount when removeWorktree returns false', async () => {
     gitRemoveFails();
-    mockExistsSync.mockImplementation((p: string) => p === mockWorktreePath);
+    mockExistsSync.mockImplementation(
+      (p: string) => p === mockWorktreePath || p === join(mockWorktreePath, '.git'),
+    );
     mockRmDirWithRetry.mockResolvedValue(false);
 
     const cleanedCount = await cleanupStaleWorktrees(mockBaseDir);

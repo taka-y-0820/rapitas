@@ -546,3 +546,56 @@ describe('spawnCodexProcess — close handling', () => {
     expect(state.turnFailed).toBe(false);
   });
 });
+
+test('stop requested during setup prevents spawning', async () => {
+  const result = await spawnCodexProcess(
+    {},
+    'C:/work',
+    'prompt',
+    makeState({ cancelRequested: true }),
+    makeCallbacks(),
+    Date.now(),
+    noArtifacts,
+    noCommits,
+  );
+  expect(result.failureType).toBe('cancelled');
+  expect(mockSpawn).not.toHaveBeenCalled();
+});
+test('cancellation intent wins over a late status event and exit zero', async () => {
+  const state = makeState();
+  const pending = spawnCodexProcess(
+    {},
+    'C:/work',
+    'prompt',
+    state,
+    makeCallbacks(),
+    Date.now(),
+    noArtifacts,
+    noCommits,
+  );
+  await flush();
+  state.cancelRequested = true;
+  state.status = 'running';
+  spawnedChildren[0].emit('close', 0);
+  expect((await pending).failureType).toBe('cancelled');
+});
+
+test('stop from a startup output callback prevents the subsequent spawn', async () => {
+  const state = makeState();
+  const callbacks = makeCallbacks();
+  callbacks.emitOutput.mockImplementation(() => {
+    state.cancelRequested = true;
+  });
+  const result = await spawnCodexProcess(
+    {},
+    'C:/work',
+    'prompt',
+    state,
+    callbacks,
+    Date.now(),
+    noArtifacts,
+    noCommits,
+  );
+  expect(result.failureType).toBe('cancelled');
+  expect(mockSpawn).not.toHaveBeenCalled();
+});

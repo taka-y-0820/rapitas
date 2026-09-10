@@ -15,6 +15,8 @@ import { prisma } from '../../../config/database';
 import { createLogger } from '../../../config/logger';
 import { sendAIMessage, getDefaultProvider, isAnyApiKeyConfigured } from '../../../utils/ai-client';
 import type { CriticPhase } from './phase-critic-types';
+import { createHash } from 'node:crypto';
+import { readCriticLessonCache, writeCriticLessonCache } from './critic-lesson-cache';
 
 const log = createLogger('workflow:critic-lessons');
 
@@ -75,7 +77,7 @@ const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_SOURCE_CHARS = 7000;
 
 interface CacheEntry {
-  /** `${latest transition id}:${row count}` — new failures invalidate. */
+  /** Source contents and distillation instructions — edits also invalidate. */
   fingerprint: string;
   at: number;
   bullets: string[];
@@ -241,10 +243,20 @@ export async function buildCriticLessonsSection(
     // (buildCriticFeedback / verify.md bounce context), not a house-wide lesson.
     if (reasons.length < MIN_REASONS || tasks.size < MIN_TASKS) return '';
 
-    const fingerprint = `${rows[0]?.id ?? 0}:${rows.length}`;
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify(rows))
+      .update(distillSystemPrompt(stream))
+      .digest('hex');
     const cached = cache.get(stream);
     if (cached && cached.fingerprint === fingerprint && Date.now() - cached.at < CACHE_TTL_MS) {
       return renderLessonsSection(cached.bullets, stream, language);
+    }
+
+    const persisted = await readCriticLessonCache(stream, fingerprint, CACHE_TTL_MS);
+    if (persisted) {
+      cache.set(stream, persisted);
+      log.info({ stream }, '[critic-lessons] reused persisted lessons');
+      return renderLessonsSection(persisted.bullets, stream, language);
     }
 
     if (!(await isAnyApiKeyConfigured())) return '';
@@ -260,7 +272,9 @@ export async function buildCriticLessonsSection(
     const bullets = parseLessonsResponse(res.content);
     // Cache even an empty distillation — retrying every prompt build would
     // burn an AI call per failure until the fingerprint changes.
-    cache.set(stream, { fingerprint, at: Date.now(), bullets });
+    const entry = { fingerprint, at: Date.now(), bullets };
+    cache.set(stream, entry);
+    await writeCriticLessonCache(stream, entry);
     log.info(
       { stream, sourceReasons: reasons.length, sourceTasks: tasks.size, lessons: bullets.length },
       '[critic-lessons] distilled cross-task lessons',

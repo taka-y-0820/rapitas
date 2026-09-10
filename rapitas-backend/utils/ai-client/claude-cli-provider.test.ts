@@ -47,12 +47,17 @@ const mockSpawn = mock((command: string, args: string[], options: Record<string,
   return child as unknown as ChildProcess;
 });
 
+// OS containment is exercised with real processes in windows-aux-job.live.test.ts.
+mock.module('./aux-cli-launch', () => ({ prepareAuxCli: async () => null }));
 mock.module('child_process', () => ({
   spawn: mockSpawn,
   // NOTE: agent-process-tracker (imported transitively for process registration)
   // statically imports execSync — must remain a valid named export even though
   // these tests never exercise that path.
   execSync: mock(() => ''),
+  execFile: mock(() => {
+    throw new Error('Unexpected process snapshot in provider unit test');
+  }),
   execFileSync: mock(() => Buffer.from('')),
   spawnSync: mock(() => ({ status: 0, stdout: '', stderr: '' })),
   fork: mock(() => {}),
@@ -376,15 +381,18 @@ describe('callClaudeCliStream — success', () => {
 describe('isClaudeCliAvailable', () => {
   test('probes with --version and memoizes the result across calls', async () => {
     const p = isClaudeCliAvailable();
+    const concurrent = isClaudeCliAvailable();
     // checkClaudeAvailable() awaits getClaudePathAsync() before spawning, so
     // the spawn call lands after a microtask tick — flush before asserting.
     await flush();
     expect(spawnCalls.length).toBe(1);
-    expect(spawnCalls[0].args).toEqual(['--version']);
+    if (process.platform === 'win32') expect(spawnCalls[0].command).toContain('--version');
+    else expect(spawnCalls[0].args).toEqual(['--version']);
     expect(spawnCalls[0].options).toMatchObject({ shell: true, windowsHide: true });
 
     spawnedChildren[0].emit('close', 0);
     expect(await p).toBe(true);
+    expect(await concurrent).toBe(true);
 
     const callsBefore = mockSpawn.mock.calls.length;
     expect(await isClaudeCliAvailable()).toBe(true);

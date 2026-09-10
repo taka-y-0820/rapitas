@@ -6,6 +6,7 @@ const transition = mock(async () => {});
 mock.module('../../config/database', () => ({
   prisma: {
     agentExecution: { findFirst: lookup },
+    workflowTransition: { findFirst: async () => null },
     task: {
       updateMany: async ({ where, data }: any) => {
         if (!where.status.in.includes(row.status) || where.workflowStatus !== row.workflowStatus)

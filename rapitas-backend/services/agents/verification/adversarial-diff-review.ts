@@ -1,3 +1,4 @@
+import { parseAcceptanceCriteria } from './review-acceptance-criteria';
 /**
  * Adversarial Diff Review — jury edition
  *
@@ -22,7 +23,7 @@
  * realized task outcomes (Weaver, arXiv:2506.18203).
  */
 import { getDiff } from '../orchestrator/git-operations/core/diff-structured';
-import { sendAIMessage } from '../../../utils/ai-client';
+import { getAuxAiMode, sendAIMessage } from '../../../utils/ai-client';
 import type { AIProvider } from '../../../utils/ai-client/types';
 import { DEFAULT_MODELS } from '../../../utils/ai-client/types';
 import { inferProviderFromModelId } from '../../workflow/role-provider-resolver';
@@ -367,6 +368,15 @@ export function recordJurorOutcome(provider: AIProvider, timedOut: boolean, nowM
  */
 async function askJuror(provider: AIProvider, prompt: string): Promise<JurorVerdict> {
   const unknown: JurorVerdict = { provider, verdict: 'unknown', severity: 0, reasons: [] };
+  // CLI auxiliary mode routes every family through Claude. Never count those
+  // duplicate calls as independent Gemini/OpenAI votes, or wait for them.
+  if (getAuxAiMode() === 'cli' && provider !== 'claude') {
+    return {
+      ...unknown,
+      reasons: ['Requested provider unavailable in Claude-only auxiliary CLI mode'],
+    };
+  }
+
   const timeoutMs = jurorTimeoutMs();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -497,6 +507,7 @@ export async function reviewDiffAdversarially(params: {
             provider: j.provider,
             verdict: j.verdict,
             severity: j.severity,
+            reasons: j.reasons,
           })),
         },
         correlationId: `task-${taskId}`,
@@ -542,18 +553,4 @@ export async function reviewDiffAdversarially(params: {
     log.warn({ err, taskId }, '[adversarial-review] Review errored — failing open');
     return { verdict: 'unknown', severity: 0, reasons: [], judged: false };
   }
-}
-
-/** Parse the task's acceptanceCriteria JSON-string column into a string[]. */
-function parseAcceptanceCriteria(raw: unknown): string[] {
-  if (Array.isArray(raw)) return raw.filter((x): x is string => typeof x === 'string');
-  if (typeof raw === 'string' && raw.trim()) {
-    try {
-      const p: unknown = JSON.parse(raw);
-      return Array.isArray(p) ? p.filter((x): x is string => typeof x === 'string') : [];
-    } catch {
-      return [];
-    }
-  }
-  return [];
 }

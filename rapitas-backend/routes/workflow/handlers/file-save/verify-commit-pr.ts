@@ -1,3 +1,5 @@
+import { writeBlockedTask } from '../../../../services/workflow/blocked-task-write';
+import type { CompletionReviewReceipt } from '../../../../services/workflow/requirement-replan-commit';
 /**
  * FileSave Verify Commit/PR Completion
  *
@@ -43,6 +45,7 @@ export type { CommitPrCompletionOutcome };
  * @returns The completion outcome (pass-through when the gates skip this stage)
  */
 export async function runVerifyCommitPrCompletion(params: {
+  completionReceipt?: CompletionReviewReceipt;
   taskId: number;
   fileType: WorkflowFileType;
   newStatus: string | undefined;
@@ -83,6 +86,13 @@ export async function runVerifyCommitPrCompletion(params: {
     // reports DIRTY goes through the bounded self-repair loop instead.
     const prNumber = conflictTask?.githubPrId ?? null;
     const prVerdict = prNumber == null ? null : await readConflictPrVerdict(taskId, prNumber);
+    if (!prVerdict?.state || prVerdict.state === 'UNKNOWN') {
+      log.warn(
+        { taskId, prNumber, state: prVerdict?.state },
+        '[Workflow] Conflict PR evidence unavailable; completion held for verification',
+      );
+      return { newStatus, taskMarkedDone, autoCommitPRResult };
+    }
     if (prVerdict?.dirty) {
       const reason = `PR #${prNumber} は GitHub 上でまだ競合状態です（mergeStateStatus=DIRTY）。base ブランチの最新を取り込んで競合を解消し、PR ブランチへ push してから再検証してください。`;
       const { attemptVerifyRepair } =
@@ -99,9 +109,7 @@ export async function runVerifyCommitPrCompletion(params: {
           { taskId, prNumber },
           '[Workflow] Conflict-resolution PR still DIRTY on GitHub and repairs exhausted — blocking task',
         );
-        await prisma.task
-          .update({ where: { id: taskId }, data: { status: 'blocked', updatedAt: new Date() } })
-          .catch(() => {});
+        await writeBlockedTask(prisma, taskId).catch(() => {});
         await recordTransition({
           taskId,
           fromStatus: 'verify_done',
@@ -127,32 +135,17 @@ export async function runVerifyCommitPrCompletion(params: {
       });
       return { newStatus: 'verify_done', taskMarkedDone, autoCommitPRResult };
     }
-    // Compare-and-swap on verify_done: a concurrent duplicate of this save
-    // (task 594 recorded the same completion twice, 242ms apart) must not
-    // record a second completion transition — only the request that actually
-    // flips the row completes and records. Mirrors the repair rollback below.
-    const completed = await prisma.task
-      .updateMany({
-        where: { id: taskId, workflowStatus: 'verify_done' },
-        data: { status: 'done', workflowStatus: 'completed', completedAt: new Date() },
-      })
-      .catch(() => ({ count: 0 }));
-    if (completed.count === 0) {
-      log.warn(
-        { taskId, prNumber: conflictTask?.githubPrId },
-        '[Workflow] Conflict-resolution completion already applied by a concurrent request — skipping duplicate transition',
-      );
-    } else {
+    if (!params.completionReceipt) throw new Error('Missing server completion review receipt');
+    const { completeReviewedTask } =
+      await import('../../../../services/workflow/requirement-replan-commit');
+    const completed = await completeReviewedTask(prisma, params.completionReceipt, {
+      cause: 'conflict_resolution_completed',
+    });
+    if (!completed.committed && completed.reason !== 'already_completed')
+      throw new Error(`Reviewed conflict completion held: ${completed.reason}`);
+    if (completed.committed) {
       taskMarkedDone = true;
-      await recordTransition({
-        taskId,
-        fromStatus: 'verify_done',
-        toStatus: 'completed',
-        actor: 'system',
-        cause: 'conflict_resolution_completed',
-        phase: 'verify',
-        metadata: { prNumber: conflictTask?.githubPrId },
-      });
+      newStatus = 'completed';
       log.info(
         { taskId, prNumber: conflictTask?.githubPrId },
         '[Workflow] Conflict-resolution task completed (work pushed to PR branch; commit/PR/scope gates skipped).',
@@ -171,6 +164,7 @@ export async function runVerifyCommitPrCompletion(params: {
     // gate + adversarial jury + this stage as one registered unit; registering
     // here again would overwrite that entry with a narrower Promise.
     const outcome = await runVerifyCommitPrPipeline({
+      completionReceipt: params.completionReceipt,
       taskId,
       savedContent,
       preferredBaseBranchForVerify,

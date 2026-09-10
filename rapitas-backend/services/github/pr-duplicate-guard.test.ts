@@ -51,10 +51,15 @@ describe('findOpenPrForTask', () => {
   });
 });
 
+const revision = new Date('2026-09-01T00:00:00Z');
+const findUnique = () => Promise.resolve({ updatedAt: revision });
+
 describe('claimPrCreationLock / releasePrCreationLock', () => {
   test('claims the lock when unheld (count:1)', async () => {
     const updateMany = mock(() => Promise.resolve({ count: 1 }));
-    const prisma = { task: { updateMany } } as unknown as Parameters<typeof claimPrCreationLock>[0];
+    const prisma = { task: { updateMany, findUnique } } as unknown as Parameters<
+      typeof claimPrCreationLock
+    >[0];
 
     expect(await claimPrCreationLock(prisma, 1)).toBe(true);
     const args = updateMany.mock.calls[0][0] as { where: { id: number; OR: unknown[] } };
@@ -65,33 +70,41 @@ describe('claimPrCreationLock / releasePrCreationLock', () => {
 
   test('fails to claim when already held by a concurrent caller (count:0)', async () => {
     const updateMany = mock(() => Promise.resolve({ count: 0 }));
-    const prisma = { task: { updateMany } } as unknown as Parameters<typeof claimPrCreationLock>[0];
+    const prisma = { task: { updateMany, findUnique } } as unknown as Parameters<
+      typeof claimPrCreationLock
+    >[0];
 
     expect(await claimPrCreationLock(prisma, 1)).toBe(false);
   });
 
   test('fails open (treated as not claimed) when the CAS update throws', async () => {
     const updateMany = mock(() => Promise.reject(new Error('db down')));
-    const prisma = { task: { updateMany } } as unknown as Parameters<typeof claimPrCreationLock>[0];
+    const prisma = { task: { updateMany, findUnique } } as unknown as Parameters<
+      typeof claimPrCreationLock
+    >[0];
 
     expect(await claimPrCreationLock(prisma, 1)).toBe(false);
   });
 
   test('releasePrCreationLock clears the lock field', async () => {
-    const update = mock(() => Promise.resolve({}));
-    const prisma = { task: { update } } as unknown as Parameters<typeof releasePrCreationLock>[0];
+    const update = mock(() => Promise.resolve({ count: 1 }));
+    const prisma = { task: { updateMany: update, findUnique } } as unknown as Parameters<
+      typeof releasePrCreationLock
+    >[0];
 
     await releasePrCreationLock(prisma, 1);
 
     expect(update).toHaveBeenCalledWith({
-      where: { id: 1 },
-      data: { prCreationLockedAt: null },
+      where: { id: 1, updatedAt: revision },
+      data: { prCreationLockedAt: null, updatedAt: revision },
     });
   });
 
   test('releasePrCreationLock swallows errors instead of throwing', async () => {
     const update = mock(() => Promise.reject(new Error('db down')));
-    const prisma = { task: { update } } as unknown as Parameters<typeof releasePrCreationLock>[0];
+    const prisma = { task: { updateMany: update, findUnique } } as unknown as Parameters<
+      typeof releasePrCreationLock
+    >[0];
 
     await expect(releasePrCreationLock(prisma, 1)).resolves.toBeUndefined();
   });

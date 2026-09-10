@@ -5,6 +5,7 @@
  * lessons, memory, rejected plans, CBR case, playbook, research.md, subtask
  * split directive). Does not build contexts for other roles.
  */
+import { observeWorkflowStage } from './workflow-stage-timing';
 import { readWorkflowFile } from './workflow-file-utils';
 import { buildMemoryContext } from './workflow-memory-context';
 import { buildRejectedPlanContext } from './workflow-rejected-plan-context';
@@ -15,6 +16,8 @@ import { buildCriticFeedback, buildCriticLessonsSection } from './phase-critic';
 import { buildSubtaskSplitDirective } from './subtask-split-policy';
 import { recordContextMetrics } from './workflow-context-metrics';
 import type { PlannerTexts } from './workflow-role-prompts';
+import { prisma } from '../../config/database';
+import { buildRequirementReplanContext } from './requirement-replan-context';
 
 /**
  * Build the planner role's prompt context.
@@ -41,6 +44,8 @@ export async function buildPlannerContext(
 ): Promise<string> {
   const research = await readWorkflowFile(taskId, 'research');
   let ctx = taskInfo;
+  const requirementReplan = await buildRequirementReplanContext(prisma, taskId, language);
+  if (requirementReplan) ctx += `\n\n${requirementReplan}`;
 
   // A human asked for a targeted change to THIS plan. Leads the context: it is
   // a direct instruction about the document being written, so it outranks the
@@ -63,7 +68,9 @@ ${planRevision}`;
     ctx += `\n\n${planCritic}`;
   }
   // Cross-task learning loop — see the researcher case for rationale.
-  const planLessons = await buildCriticLessonsSection('plan', language);
+  const planLessons = await observeWorkflowStage(taskId, 'context.buildCriticLessonsSection', () =>
+    buildCriticLessonsSection('plan', language),
+  );
   if (planLessons) {
     ctx += `\n\n${planLessons}`;
   }
@@ -71,7 +78,9 @@ ${planRevision}`;
   // and blocked-task lessons should shape the plan, not be re-discovered
   // (or re-violated) at implementation time. Previously only researcher and
   // implementer received memory, so the planner re-decided settled points.
-  const plannerMemory = await buildMemoryContext(taskId, task, language);
+  const plannerMemory = await observeWorkflowStage(taskId, 'context.buildMemoryContext', () =>
+    buildMemoryContext(taskId, task, language),
+  );
   if (plannerMemory) {
     ctx += `\n\n${plannerMemory}`;
   }
@@ -83,13 +92,17 @@ ${planRevision}`;
   }
   // CBR (R9): the nearest SOLVED similar task's plan-that-worked — concrete
   // file layout / step ordering to adapt, stronger than abstract lessons.
-  const plannerCase = await buildCaseContext(taskId, task, language);
+  const plannerCase = await observeWorkflowStage(taskId, 'context.buildCaseContext', () =>
+    buildCaseContext(taskId, task, language),
+  );
   if (plannerCase) {
     ctx += `\n\n${plannerCase}`;
   }
   // Playbook: distilled procedure from same-shape completed tasks (at most
   // one, freshness-verified) — complements the single raw CBR case above.
-  const plannerPlaybook = await buildPlaybookContext(taskId, task, language);
+  const plannerPlaybook = await observeWorkflowStage(taskId, 'context.buildPlaybookContext', () =>
+    buildPlaybookContext(taskId, task, language),
+  );
   if (plannerPlaybook) {
     ctx += `\n\n${plannerPlaybook}`;
   }

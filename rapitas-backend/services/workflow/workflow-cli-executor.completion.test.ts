@@ -19,6 +19,7 @@ import {
   installWorkflowCliExecutorMocks,
 } from '../../tests/helpers/workflow-cli-executor-mock-state';
 import type { RoleTransition, WorkflowAdvanceResult } from './workflow-types';
+import { ExecutionCancelledError } from '../agents/execution-cancelled-error';
 
 installWorkflowCliExecutorMocks();
 
@@ -147,6 +148,33 @@ describe('executeCLIAgent — no-outputFile status advance (implementer)', () =>
     resetWfMockState();
   });
 
+  test('a stop before a successful CLI result returns prevents phase advancement', async () => {
+    let stopped = false;
+    wf.executeTaskImpl = async () => {
+      stopped = true;
+      return { success: true, output: 'late successful output' };
+    };
+    const advance = mock(noopAdvance);
+    await expect(
+      executeCLIAgent(
+        1,
+        task,
+        agentConfig,
+        'system',
+        'context',
+        implementerTransition(),
+        'ja',
+        advance,
+        getOrCreateDevConfig,
+        () => {
+          if (stopped) throw new ExecutionCancelledError('ownership revoked');
+        },
+      ),
+    ).rejects.toThrow('ownership revoked');
+    expect(spies.taskUpdate).not.toHaveBeenCalled();
+    expect(advance).not.toHaveBeenCalled();
+  });
+
   test('advances workflowStatus + records a phase_completed transition on success', async () => {
     wf.taskWorkflowState = { ...wf.taskWorkflowState!, workflowStatus: 'plan_approved' };
 
@@ -271,7 +299,13 @@ describe('executeCLIAgent — AgentSession の終端化', () => {
     const [call] = spies.agentSessionUpdate.mock.calls[0] as [
       { where: { id: number }; data: { status: string; lastActivityAt: Date } },
     ];
-    expect(call.where).toEqual({ id: 100 });
+    expect(call.where).toEqual({
+      id: 100,
+      status: { in: ['active', 'running'] },
+      agentExecutions: {
+        none: { status: { in: ['canceling', 'cancelling', 'cancelled', 'canceled'] } },
+      },
+    });
     expect(call.data.status).toBe('completed');
     expect(call.data.lastActivityAt).toBeInstanceOf(Date);
   });

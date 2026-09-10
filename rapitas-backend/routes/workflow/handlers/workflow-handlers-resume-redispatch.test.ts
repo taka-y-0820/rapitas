@@ -45,10 +45,16 @@ mock.module('../../../services/workflow/auto-run/theme-auto-run-service', () => 
   setCurrentTask: mockSetCurrentTask,
 }));
 
+const mockAdvance = mock(() => Promise.resolve({ success: true }));
+mock.module('../../../services/workflow/workflow-orchestrator', () => ({
+  WorkflowOrchestrator: { getInstance: () => ({ advanceWorkflow: mockAdvance }) },
+}));
+
 const { triggerReExecutionAfterAnswer, triggerRedispatchAfterResume } =
   await import('./workflow-handlers-resume-redispatch');
 
 beforeEach(() => {
+  mockAdvance.mockReset().mockResolvedValue({ success: true });
   mockFindFirstExecution.mockReset().mockResolvedValue(null);
   mockResolveTaskThemeId.mockReset().mockResolvedValue(null);
   mockEnqueue.mockReset().mockResolvedValue({});
@@ -63,49 +69,25 @@ afterAll(() => {
 });
 
 describe('triggerReExecutionAfterAnswer', () => {
-  test('re-triggers execution with the last-used agentConfigId', async () => {
-    mockFindFirstExecution.mockResolvedValue({ agentConfigId: 1 });
-
+  test('uses workflow role selection instead of generic manual execution', async () => {
     await triggerReExecutionAfterAnswer(512);
-
-    expect(mockFindFirstExecution).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { session: { config: { taskId: 512 } } } }),
-    );
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('http://127.0.0.1:3001/tasks/512/execute');
-    expect(init.method).toBe('POST');
-    expect(JSON.parse(init.body as string)).toEqual({ agentConfigId: 1 });
+    expect(mockAdvance).toHaveBeenCalledWith(512);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockFindFirstExecution).not.toHaveBeenCalled();
   });
-
-  test('still re-triggers execution (default agent config) when the task has no prior execution', async () => {
-    // Regression test (task 513): a task run through the workflow CLI
-    // executor never gets an AgentExecution row via this session→config
-    // chain — that relation is populated by a different execution path.
-    mockFindFirstExecution.mockResolvedValue(null);
-
-    await triggerReExecutionAfterAnswer(999);
-
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('http://127.0.0.1:3001/tasks/999/execute');
-    expect(JSON.parse(init.body as string)).toEqual({ agentConfigId: undefined });
+  test('resumes only the answered task while its theme is disabled', async () => {
+    mockResolveTaskThemeId.mockResolvedValue({ id: 512, themeId: 1 });
+    mockGetAutoRunState.mockResolvedValue({ enabled: false, status: 'idle', currentTaskId: null });
+    await triggerReExecutionAfterAnswer(512);
+    expect(mockAdvance).toHaveBeenCalledWith(512);
+    expect(mockSetCurrentTask).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
   });
-
-  test('does not throw when the re-trigger request is rejected', async () => {
-    mockFindFirstExecution.mockResolvedValue({ agentConfigId: 1 });
-    mockFetch.mockResolvedValue(
-      new Response(JSON.stringify({ error: 'AUTO_RUN_ACTIVE' }), { status: 409 }),
-    );
-
+  test('does not reject the persisted answer on workflow failure', async () => {
+    mockAdvance.mockRejectedValue(new Error('workflow failed'));
     await expect(triggerReExecutionAfterAnswer(512)).resolves.toBeUndefined();
-  });
-
-  test('does not throw when the fetch itself rejects', async () => {
-    mockFindFirstExecution.mockResolvedValue({ agentConfigId: 1 });
-    mockFetch.mockRejectedValue(new Error('ECONNREFUSED'));
-
-    await expect(triggerReExecutionAfterAnswer(512)).resolves.toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });
 

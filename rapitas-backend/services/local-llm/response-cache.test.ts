@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { join } from 'path';
 import { createHash } from 'crypto';
@@ -62,6 +62,34 @@ describe('generateCacheKey', () => {
 });
 
 describe('getCachedResponse / setCachedResponse', () => {
+  test.each([0, 2000])('expires exactly at the UTC deadline (ttlMs=%i)', (ttlMs) => {
+    const hash = `${TEST_PREFIX}utc-deadline-${ttlMs}`;
+    setCachedResponse(hash, 'boundary', 1, 'claude', 'model-x', ttlMs);
+    const raw = new Database(DB_PATH);
+    raw
+      .prepare('UPDATE llm_cache SET created_at = ? WHERE hash = ?')
+      .run('2026-09-09 00:00:00', hash);
+    raw.close();
+    const clock = spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-09T00:00:00Z') + ttlMs);
+    try {
+      if (ttlMs > 0) {
+        clock.mockReturnValue(Date.parse('2026-09-09T00:00:00Z') + ttlMs - 1);
+        expect(getCachedResponse(hash)).toEqual({ content: 'boundary', tokensUsed: 1 });
+        clock.mockReturnValue(Date.parse('2026-09-09T00:00:00Z') + ttlMs);
+      }
+      expect(getCachedResponse(hash)).toBeNull();
+      const verify = new Database(DB_PATH);
+      try {
+        expect(verify.prepare('SELECT hash FROM llm_cache WHERE hash = ?').get(hash)).toBeNull();
+      } finally {
+        verify.close();
+      }
+    } finally {
+      clock.mockRestore();
+      cleanupTestRows();
+    }
+  });
+
   test('returns null for a hash that has never been cached', () => {
     const hash = `${TEST_PREFIX}${createHash('sha256').update('never-cached').digest('hex')}`;
     expect(getCachedResponse(hash)).toBeNull();

@@ -12,6 +12,7 @@ const mockPrisma = {
   task: {
     findMany: mock(() => Promise.resolve([] as unknown[])),
     update: mock(() => Promise.resolve({})),
+    updateMany: mock(() => Promise.resolve({ count: 1 })),
   },
   agentExecution: { findFirst: mock(() => Promise.resolve(null as unknown)) },
   workflowTransition: {
@@ -91,6 +92,7 @@ function blockedTask(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 beforeEach(() => {
+  mockPrisma.task.updateMany.mockReset().mockResolvedValue({ count: 1 });
   automationPolicy.mockReset().mockResolvedValue({ autoMergePR: false });
   mockPrisma.task.findMany.mockReset().mockResolvedValue([]);
   mockPrisma.task.update.mockReset().mockResolvedValue({});
@@ -717,7 +719,7 @@ describe('healBlockedStatusDesync（task 802: status/workflowStatus 不整合の
     const healed = await healBlockedStatusDesync(NOW);
 
     expect(healed).toBe(1);
-    const tu = mockPrisma.task.update.mock.calls[0][0] as {
+    const tu = mockPrisma.task.updateMany.mock.calls[0][0] as {
       data: { status: string; workflowStatus?: string };
     };
     expect(tu.data.status).toBe('todo');
@@ -727,6 +729,34 @@ describe('healBlockedStatusDesync（task 802: status/workflowStatus 不整合の
     expect(rt.toStatus).toBe('plan_approved');
   });
 
+  test('an unrecorded newer block moves the resume evidence cutoff', async () => {
+    const reblockedAt = new Date(NOW - 10 * 60 * 1000);
+    mockPrisma.task.findMany.mockResolvedValue([
+      blockedTask({ workflowStatus: 'plan_approved', updatedAt: reblockedAt }),
+    ]);
+    mockTransitions({ hasBlocked: true, hasUserAdvance: false });
+    expect(await healBlockedStatusDesync(NOW)).toBe(0);
+    const query = mockPrisma.workflowTransition.findFirst.mock.calls.find(
+      (call) => call[0].where.actor === 'user',
+    )[0];
+    expect(query.where.createdAt.gt).toEqual(reblockedAt);
+    expect(query.where.cause.in).not.toContain('intake_question_answered');
+    expect(mockPrisma.task.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('a concurrent mutation cannot be counted as a successful heal', async () => {
+    mockPrisma.task.findMany.mockResolvedValue([blockedTask({ workflowStatus: 'plan_approved' })]);
+    mockTransitions({ hasBlocked: true, hasUserAdvance: true });
+    mockPrisma.task.updateMany.mockResolvedValue({ count: 0 });
+    expect(await healBlockedStatusDesync(NOW)).toBe(0);
+    expect(recordTransition).not.toHaveBeenCalled();
+    expect(mockPrisma.task.updateMany.mock.calls[0][0].where).toEqual({
+      id: 595,
+      status: 'blocked',
+      updatedAt: OLD,
+    });
+  });
+
   test('workflowStatus=draft（人手先行の痕跡なし）では対象外', async () => {
     mockPrisma.task.findMany.mockResolvedValue([blockedTask({ id: 801, workflowStatus: 'draft' })]);
     mockTransitions({ hasBlocked: true, hasUserAdvance: true });
@@ -734,7 +764,7 @@ describe('healBlockedStatusDesync（task 802: status/workflowStatus 不整合の
     const healed = await healBlockedStatusDesync(NOW);
 
     expect(healed).toBe(0);
-    expect(mockPrisma.task.update).not.toHaveBeenCalled();
+    expect(mockPrisma.task.updateMany).not.toHaveBeenCalled();
   });
 
   test('actor:user 遷移が無い（システム由来の前進のみ）場合は対象外', async () => {
@@ -746,6 +776,6 @@ describe('healBlockedStatusDesync（task 802: status/workflowStatus 不整合の
     const healed = await healBlockedStatusDesync(NOW);
 
     expect(healed).toBe(0);
-    expect(mockPrisma.task.update).not.toHaveBeenCalled();
+    expect(mockPrisma.task.updateMany).not.toHaveBeenCalled();
   });
 });

@@ -58,6 +58,15 @@ export async function resolveExecutionWorkdir(params: {
   // immediately (and the agent runs inside it).
   let resolvedWorktreePath: string | null = null;
   let resolvedBranchName: string | null = null;
+  // A revised plan must inspect the implementation that was actually verified,
+  // including uncommitted files. Reuse only; planning must not recreate it.
+  if (transition.role === 'planner') {
+    const prior = await resolveLatestSessionWorktree(taskId);
+    if (prior?.worktreePath && canReuseWorktree(prior.worktreePath)) {
+      resolvedWorktreePath = prior.worktreePath;
+      resolvedBranchName = prior.branchName;
+    }
+  }
   if (isImplementationRole || isVerifierRole) {
     const sessionWithWorktree = await resolveLatestSessionWorktree(taskId);
     // Only REUSE a recorded worktree if it still exists ON DISK. A prior

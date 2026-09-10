@@ -3,7 +3,9 @@
  *
  * Handles the execution logic for new tasks.
  */
+import { ExecutionCancelledError } from '../execution-cancelled-error';
 import { agentFactory } from '../agent-factory';
+import { resolveAgentConfig } from './task-agent-config';
 import type { AgentConfigInput } from '../agent-factory';
 import type { AgentTask, AgentExecutionResult, BaseAgent } from '../base-agent';
 import { ExecutionFileLogger } from '../execution-file-logger';
@@ -36,90 +38,6 @@ import { buildTaskRAGContext } from '../../memory/rag/context-builder';
 import { withLlmCallScope, getLlmCallCount } from '../../../utils/llm-call-context';
 
 const logger = createLogger('task-executor');
-
-/** Result of resolving agent configuration */
-interface ResolvedAgentConfig {
-  agentConfig: AgentConfigInput;
-  resolvedAgentConfigId: number | undefined;
-}
-
-/**
- * Resolve agent configuration from options or database defaults.
- */
-async function resolveAgentConfig(
-  ctx: OrchestratorContext,
-  options: ExecutionOptions,
-): Promise<ResolvedAgentConfig> {
-  let agentConfig: AgentConfigInput = {
-    type: 'claude-code',
-    name: 'Claude Code Agent',
-    workingDirectory: options.workingDirectory,
-    timeout: options.timeout,
-    dangerouslySkipPermissions: true,
-  };
-  // Only a positive id can be a real AIAgentConfig FK. Synthetic/built-in ids
-  // (e.g. -1) and 0 must NOT be persisted as the FK — they'd violate the
-  // foreign key on agentExecution.create.
-  let resolvedAgentConfigId =
-    options.agentConfigId && options.agentConfigId > 0 ? options.agentConfigId : undefined;
-
-  if (options.agentConfigId && options.agentConfigId > 0) {
-    const dbConfig = await ctx.prisma.aIAgentConfig.findUnique({
-      where: { id: options.agentConfigId },
-    });
-    if (dbConfig) {
-      agentConfig = await ctx.buildAgentConfigFromDb(dbConfig, options);
-      resolvedAgentConfigId = dbConfig.id;
-    } else {
-      // A since-deleted config id. Keep the built-in Claude Code agentConfig
-      // above and NULL the FK so agentExecution.create() doesn't blow up.
-      logger.warn(
-        `[TaskExecutor] agentConfigId ${options.agentConfigId} not found — falling back to built-in Claude Code (null FK)`,
-      );
-      resolvedAgentConfigId = undefined;
-    }
-  } else {
-    // No usable explicit id (unset, 0, or a synthetic/built-in negative id):
-    // prefer the DB default agent, else the built-in Claude Code with null FK.
-    const defaultDbConfig = await ctx.prisma.aIAgentConfig.findFirst({
-      where: { isDefault: true, isActive: true },
-    });
-    if (defaultDbConfig) {
-      agentConfig = await ctx.buildAgentConfigFromDb(defaultDbConfig, options);
-      resolvedAgentConfigId = defaultDbConfig.id;
-      logger.info(
-        `[TaskExecutor] Using default agent from DB: ${defaultDbConfig.name} (type: ${defaultDbConfig.agentType})`,
-      );
-    } else {
-      logger.info(`[TaskExecutor] No default agent in DB, falling back to built-in Claude Code`);
-      resolvedAgentConfigId = undefined;
-    }
-  }
-
-  if (options.modelIdOverride) {
-    agentConfig = { ...agentConfig, modelId: options.modelIdOverride };
-  }
-
-  // Continue the caller-supplied CLI session instead of cold-starting. Only the
-  // claude-code agent understands this id shape (codex/gemini keep their own),
-  // and executeTask() retries once without it if the CLI rejects it.
-  if (options.resumeSessionId && agentConfig.type === 'claude-code') {
-    agentConfig = { ...agentConfig, resumeSessionId: options.resumeSessionId };
-  }
-
-  // Forward investigation-mode flags onto the agent config
-  if (options.investigationMode || options.investigationOutputType) {
-    agentConfig = {
-      ...agentConfig,
-      investigationMode: options.investigationMode ?? agentConfig.investigationMode,
-      investigationOutputType:
-        options.investigationOutputType ?? agentConfig.investigationOutputType,
-      outputLastMessageFile: options.outputLastMessageFile ?? agentConfig.outputLastMessageFile,
-    };
-  }
-
-  return { agentConfig, resolvedAgentConfigId };
-}
 
 /** Execution setup result containing all initialized resources */
 interface ExecutionSetup {
@@ -360,9 +278,7 @@ async function buildTaskWithContext(
   return taskWithAnalysis;
 }
 
-// NOTE: FallbackContext / executeWithFallbackAgent moved verbatim to
-// fallback-executor.ts (file-size ratchet) and instrumented there with
-// recovery-metrics recording (task 641). Behavior is unchanged.
+// Provider fallback and recovery metrics are handled in fallback-executor.ts.
 
 /**
  * Merge the primary agent's CLI segment time into a fallback result.
@@ -568,6 +484,7 @@ export async function executeTask(
 
     // Execute agent (wrapped in ALS scope to capture sendAIMessage calls from main process)
     let result = await withLlmCallScope(async () => {
+      options.assertExecutionAllowed?.();
       let r = await agent.execute(taskWithAnalysis);
       logger.info(
         `[TaskExecutor] Execution result - success: ${r.success}, waitingForInput: ${r.waitingForInput}, questionType: ${r.questionType}, question: ${r.question?.substring(0, 100)}`,
@@ -593,6 +510,7 @@ export async function executeTask(
         const freshAgent = agentFactory.createAgent(agentConfig);
         agentInfo.agent = freshAgent;
         setupAgentHandlers(ctx, freshAgent, setup, options);
+        options.assertExecutionAllowed?.();
         r = await freshAgent.execute(taskWithAnalysis);
       }
 
@@ -613,6 +531,8 @@ export async function executeTask(
           agentConfig,
         );
 
+        if (fallbackResult.result.failureType === 'cancelled')
+          r = mergeFallbackSegmentTime(r, fallbackResult.result);
         if (fallbackResult.newAgentConfig) {
           // NOTE: keep the primary run's CLI segment time — replacing the
           // result wholesale would discard it and under-record executionTimeMs.
@@ -677,6 +597,8 @@ export async function executeTask(
       (event) => ctx.emitEvent(event),
       'Execution',
     );
+    if (state.status === 'cancelled')
+      throw new ExecutionCancelledError('Execution cancelled; result persistence did not complete');
     throw error;
   } finally {
     stopExecutionHeartbeat(execution.id);

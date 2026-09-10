@@ -6,7 +6,7 @@
  * 通常通り通ること）を検証する。他の system-event（init/error等）は毎回そのまま
  * 通ること、重複抑制が thinking_tokens 以外に波及しないことも確認する。
  */
-import { describe, test, expect, mock } from 'bun:test';
+import { describe, test, expect, mock, spyOn } from 'bun:test';
 import { handleWorkerMessage, type WorkerMessageContext } from './worker-message-handler';
 import type { WorkerSystemEvent } from '../../../workers/output-parser-types';
 
@@ -39,6 +39,33 @@ function systemEvent(subtype: string, displayOutput: string): WorkerSystemEvent 
 }
 
 describe('handleWorkerMessage — system-event thinking_tokens collapsing', () => {
+  test('ongoing received activity remains observable at bounded intervals per execution', () => {
+    const clock = spyOn(Date, 'now').mockReturnValue(1000);
+    try {
+      const ctx = makeCtx();
+      const other = makeCtx();
+      const event = systemEvent('thinking_tokens', '[System: thinking_tokens]\n');
+      handleWorkerMessage(ctx, event);
+      clock.mockReturnValue(30_999);
+      handleWorkerMessage(ctx, event);
+      expect(ctx.emitOutputInternal).toHaveBeenCalledTimes(1);
+      handleWorkerMessage(other, event);
+      expect(other.emitOutputInternal).toHaveBeenCalledTimes(1);
+      clock.mockReturnValue(31_000);
+      handleWorkerMessage(ctx, event);
+      expect(ctx.emitOutputInternal).toHaveBeenCalledTimes(2);
+      handleWorkerMessage(ctx, event);
+      expect(ctx.emitOutputInternal).toHaveBeenCalledTimes(2);
+      clock.mockReturnValue(100_000);
+      // Passage of time alone does not fabricate an event.
+      expect(ctx.emitOutputInternal).toHaveBeenCalledTimes(2);
+      expect(ctx.finalResultText).toBe('');
+      expect(ctx.status).toBe('running');
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   test('a single thinking_tokens event appends and emits normally', () => {
     const ctx = makeCtx();
     handleWorkerMessage(ctx, systemEvent('thinking_tokens', '[System: thinking_tokens]\n'));

@@ -63,7 +63,7 @@ const mockPrisma = {
   task: { findUnique: taskFindUniqueMock, update: taskUpdateMock },
   workflowRoleConfig: { findUnique: roleConfigFindUniqueMock },
   systemPrompt: { findUnique: mock(() => Promise.resolve(null)) },
-  workflowTransition: { count: mock(() => Promise.resolve(0)) },
+  workflowTransition: { findFirst: async () => null, count: mock(() => Promise.resolve(0)) },
   workflowFile: { findFirst: mock(() => Promise.resolve(null)) },
 };
 
@@ -94,8 +94,9 @@ mock.module('./workflow-file-utils', () => ({
   cleanupRootWorkflowFiles: mock(() => Promise.resolve()),
   extractMarkdownFromOutput: mock(() => null),
 }));
+const contextMock = mock(() => Promise.resolve('context'));
 mock.module('./workflow-context-builder', () => ({
-  buildRoleContext: mock(() => Promise.resolve('context')),
+  buildRoleContext: contextMock,
   researchModeDirective: mock(() => ''),
   applyPlanModeDirective: mock((_role: unknown, content: string) => content),
 }));
@@ -108,10 +109,18 @@ mock.module('./workflow-agent-executor', () => ({
     Promise.resolve({ success: true, role: 'researcher', status: 'research_done' }),
   ),
 }));
+let lockOwner: symbol | undefined = Symbol();
+let cancellationVersion = 0;
+const releaseMock = mock((_taskId: number, owner?: symbol) => {
+  if (owner === undefined) cancellationVersion++;
+  if (owner === undefined || owner === lockOwner) lockOwner = undefined;
+});
 mock.module('../agents/task-execution-lock', () => ({
+  getTaskExecutionCancellationVersion: () => cancellationVersion,
+  getTaskExecutionLockOwner: () => lockOwner,
   WORKFLOW_LOCK_TTL_MS: 30 * 60 * 1000,
   acquireTaskExecutionLock: mock(() => true),
-  releaseTaskExecutionLock: mock(() => {}),
+  releaseTaskExecutionLock: releaseMock,
   isTaskExecutionLocked: mock(() => true),
 }));
 mock.module('../../routes/ai/system-prompts/default-prompts', () => ({
@@ -131,9 +140,8 @@ mock.module('./workflow-mode-config', () => ({
   })),
   selectProvisionalMode: mock(() => Promise.resolve('standard')),
 }));
-mock.module('../intake', () => ({
-  ensureIntakeReady: mock(() => Promise.resolve({ status: 'ready' })),
-}));
+const intakeReadyMock = mock(() => Promise.resolve({ status: 'ready' }));
+mock.module('../intake', () => ({ ensureIntakeReady: intakeReadyMock }));
 mock.module('./role-provider-resolver', () => ({
   inferProviderFromModelId: mock(() => 'claude'),
   resolveRoleProviderPreferences: mock(() => Promise.resolve({})),
@@ -174,6 +182,10 @@ function resetSingleton() {
 
 describe('WorkflowOrchestrator — preflight probe integration', () => {
   beforeEach(() => {
+    intakeReadyMock.mockReset().mockResolvedValue({ status: 'ready' });
+    lockOwner = Symbol();
+    releaseMock.mockClear();
+    contextMock.mockReset().mockResolvedValue('context');
     resetSingleton();
     taskFindUniqueMock.mockClear();
     taskFindUniqueMock.mockImplementation(() => Promise.resolve(makeTask()));
@@ -192,6 +204,85 @@ describe('WorkflowOrchestrator — preflight probe integration', () => {
     expect(result.success).toBe(true);
     expect(executeCLIAgentMock).toHaveBeenCalledTimes(1);
     expect(alertPermanentProbeFailureMock).not.toHaveBeenCalled();
+  });
+
+  test('research context receives the intake-enriched spec even with a pinned workflow mode', async () => {
+    intakeReadyMock.mockImplementation(async () => {
+      taskFindUniqueMock.mockResolvedValue(
+        makeTask({
+          acceptanceCriteria: '["original", "added during intake"]',
+          goals: '["fresh goal"]',
+        }),
+      );
+      return { status: 'ready' };
+    });
+    await WorkflowOrchestrator.getInstance().advanceWorkflow(1);
+    const args = contextMock.mock.calls[0] as unknown as unknown[];
+    expect(args[2]).toMatchObject({
+      acceptanceCriteria: '["original", "added during intake"]',
+      goals: '["fresh goal"]',
+    });
+  });
+
+  test('a deferred next phase is revoked by a stop after normal completion', async () => {
+    await WorkflowOrchestrator.getInstance().advanceWorkflow(1);
+    const args = executeCLIAgentMock.mock.calls[0] as unknown as unknown[];
+    const continuePhase = args[7] as (id: number, language: 'ja' | 'en') => Promise<unknown>;
+    expect(typeof continuePhase).toBe('function');
+    releaseMock(1);
+    await expect(continuePhase(1, 'ja')).rejects.toThrow('continuation cancelled');
+    expect(executeCLIAgentMock).toHaveBeenCalledTimes(1);
+  });
+
+  test('a failed post-intake refresh cannot launch with the old specification', async () => {
+    intakeReadyMock.mockImplementation(async () => {
+      taskFindUniqueMock.mockRejectedValue(new Error('spec read failed'));
+      return { status: 'ready' };
+    });
+    await expect(WorkflowOrchestrator.getInstance().advanceWorkflow(1)).rejects.toThrow(
+      'spec read failed',
+    );
+    expect(contextMock).not.toHaveBeenCalled();
+    expect(executeCLIAgentMock).not.toHaveBeenCalled();
+  });
+
+  test('stop and restart during preflight preparation cannot dispatch the stale phase or unlock its successor', async () => {
+    let entered!: () => void;
+    const preparing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    probeRetryImpl = async () => {
+      entered();
+      await gate;
+      return { outcome: 'success', attempts: 1, latencyMs: 5, errorMessage: null };
+    };
+    const oldOwner = lockOwner;
+    const pending = WorkflowOrchestrator.getInstance().advanceWorkflow(1);
+    const settled = pending.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await Promise.race([
+      preparing,
+      pending.then(() => {
+        throw new Error('phase finished before preparation pause');
+      }),
+    ]);
+    releaseMock(1);
+    const replacement = Symbol();
+    lockOwner = replacement;
+    probeRetryImpl = () =>
+      Promise.resolve({ outcome: 'success', attempts: 1, latencyMs: 5, errorMessage: null });
+    finish();
+    expect(await settled).toBeInstanceOf(Error);
+    expect(String(await settled)).toContain('ownership was revoked');
+    expect(executeCLIAgentMock).not.toHaveBeenCalled();
+    expect(releaseMock).toHaveBeenLastCalledWith(1, oldOwner);
+    expect(lockOwner).toBe(replacement);
   });
 
   test('permanent probe failure stops BEFORE guardPlanValidity/context/execute run', async () => {

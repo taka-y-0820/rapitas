@@ -7,6 +7,7 @@
  */
 import { prisma } from '../../config';
 import { createLogger } from '../../config/logger';
+import { ExecutionCancelledError } from '../agents/execution-cancelled-error';
 import { writeWorkflowFile } from './workflow-file-utils';
 import { callAnthropicAPI, callOpenAIAPI, decryptApiKey } from './workflow-api-callers';
 import { resolveTaskWithTheme } from '../task/task-resolver';
@@ -75,8 +76,10 @@ export async function executeAPIAgent(
   language: 'ja' | 'en',
   advanceWorkflow: (taskId: number, language: 'ja' | 'en') => Promise<WorkflowAdvanceResult>,
   getOrCreateDevConfig: (taskId: number) => Promise<{ id: number }>,
+  assertOwnership?: () => void,
 ): Promise<WorkflowAdvanceResult> {
   const devConfig = await getOrCreateDevConfig(taskId);
+  assertOwnership?.();
   const session = await prisma.agentSession.create({
     data: { configId: devConfig.id, mode: `workflow-${transition.role}`, status: 'active' },
   });
@@ -124,6 +127,7 @@ export async function executeAPIAgent(
     // NOTE: Complexity-based local LLM routing — low-complexity researcher/verifier phases
     // use Ollama with RAG to reduce API costs while maintaining quality.
     const complexity = assessComplexity(task, transition.role, context.length);
+    assertOwnership?.();
 
     if (complexity.canUseLocalLLM) {
       log.info(
@@ -151,6 +155,7 @@ export async function executeAPIAgent(
     }
 
     if (!output) {
+      assertOwnership?.();
       if (agentConfig.agentType === 'anthropic-api') {
         output = await callAnthropicAPI(
           apiKey,
@@ -179,6 +184,8 @@ export async function executeAPIAgent(
     }
 
     const executionTimeMs = Date.now() - startTime;
+    assertOwnership?.();
+    let repairEntryStatus: WorkflowAdvanceResult['status'] | undefined;
 
     if (transition.outputFile && output.trim()) {
       // Critic-rejection guard: mirror the CLI executor — if the phase critic
@@ -219,7 +226,8 @@ export async function executeAPIAgent(
       // response. The CLI path (the real contamination source) is stricter.
       const { extractMarkdownFromOutput } = await import('./workflow-file-utils');
       const cleaned = extractMarkdownFromOutput(output, transition.outputFile) ?? output;
-      await writeWorkflowFile(taskId, transition.outputFile, cleaned);
+      assertOwnership?.();
+      const persistedOutput = await writeWorkflowFile(taskId, transition.outputFile, cleaned);
 
       // verify.md honesty gate + self-repair — API agents save directly here
       // (bypassing the workflow file HTTP handler), so without this they could
@@ -229,7 +237,7 @@ export async function executeAPIAgent(
       let resolvedNextStatus: string = transition.nextStatus;
       if (transition.outputFile === 'verify') {
         const { validateVerify } = await import('./phase-output-validator');
-        const verifyValidation = validateVerify(output);
+        const verifyValidation = validateVerify(persistedOutput);
         if (!verifyValidation.ok && verifyValidation.severity >= 80) {
           const { attemptVerifyRepair } = await import('./verify-self-repair');
           // CAS snapshot: the repair's compare-and-swap needs the status the
@@ -243,10 +251,11 @@ export async function executeAPIAgent(
             taskId,
             live?.workflowStatus ?? null,
             verifyValidation.summary,
-            output,
+            persistedOutput,
           );
           if (repair.bounced && repair.newStatus) {
             resolvedNextStatus = repair.newStatus;
+            repairEntryStatus = repair.newStatus as WorkflowAdvanceResult['status'];
           } else if (repair.stale) {
             // The workflow moved past the evaluated status while this verdict
             // was computed — do not advance to verify_done AND do not block.
@@ -304,10 +313,12 @@ export async function executeAPIAgent(
         }
       }
 
-      await prisma.task.update({
-        where: { id: taskId },
-        data: { workflowStatus: resolvedNextStatus },
-      });
+      // The repair transaction already committed this exact version and its queue receipt.
+      if (!repairEntryStatus)
+        await prisma.task.update({
+          where: { id: taskId },
+          data: { workflowStatus: resolvedNextStatus },
+        });
     } else if (transition.outputFile) {
       throw new Error(`${transition.outputFile}.md was not generated`);
     } else {
@@ -329,7 +340,7 @@ export async function executeAPIAgent(
     const finalResult: WorkflowAdvanceResult = {
       success: true,
       role: transition.role,
-      status: transition.nextStatus,
+      status: repairEntryStatus ?? transition.nextStatus,
       output: output.substring(0, 2000), // Truncate to 2000 chars for response
       executionId: execution.id,
     };
@@ -352,10 +363,22 @@ export async function executeAPIAgent(
     return finalResult;
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    await finalizeExecution(execution.id, 'failed', { output: `Error: ${errorMessage}` });
+    const cancelled = error instanceof ExecutionCancelledError;
+    if (cancelled) {
+      await prisma.agentExecution.update({
+        where: { id: execution.id },
+        data: {
+          status: 'cancelled',
+          completedAt: new Date(),
+          errorMessage,
+        },
+      });
+    } else {
+      await finalizeExecution(execution.id, 'failed', { output: `Error: ${errorMessage}` });
+    }
     await prisma.agentSession.update({
       where: { id: session.id },
-      data: { status: 'completed', completedAt: new Date() },
+      data: { status: cancelled ? 'cancelled' : 'completed', completedAt: new Date() },
     });
     throw error;
   }

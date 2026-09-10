@@ -31,6 +31,7 @@ const CLI_AGENT_TYPES = new Set(['claude-code', 'codex', 'gemini']);
  */
 export async function executeAgentWithFallback(params: {
   taskId: number;
+  assertOwnership?: () => void;
   task: ResolvedTask;
   transition: RoleTransition;
   systemPromptContent: string;
@@ -71,6 +72,7 @@ export async function executeAgentWithFallback(params: {
   const resolvedAgentConfig = await resolveExecutableAgentConfig(agentConfig, effectiveModelId);
 
   const runAgent = async (cfg: typeof agentConfig): Promise<WorkflowAdvanceResult> => {
+    params.assertOwnership?.();
     if (CLI_AGENT_TYPES.has(cfg.agentType)) {
       return await executeCLIAgent(
         taskId,
@@ -82,6 +84,7 @@ export async function executeAgentWithFallback(params: {
         language,
         advanceFn,
         devConfigFn,
+        params.assertOwnership,
       );
     }
     return await executeAPIAgent(
@@ -94,6 +97,7 @@ export async function executeAgentWithFallback(params: {
       language,
       advanceFn,
       devConfigFn,
+      params.assertOwnership,
     );
   };
 
@@ -107,6 +111,7 @@ export async function executeAgentWithFallback(params: {
   // is unreliable.
   try {
     const first = await runAgent(resolvedAgentConfig);
+    if (first.superseded) return first;
     const firstHasImplicitError = await hasProviderErrorInOutput(
       `${first.error ?? ''}\n${typeof first.output === 'string' ? first.output : ''}`,
     );
@@ -133,6 +138,8 @@ export async function executeAgentWithFallback(params: {
     }
     return first;
   } catch (error: unknown) {
+    // A stop during asynchronous setup must not become a provider fallback.
+    params.assertOwnership?.();
     // NOTE: Shutdown errors are not agent failures — skip fallback and re-throw so the runner
     // can requeue the item without consuming retry budget.
     if (isShutdownError(error)) {

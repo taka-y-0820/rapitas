@@ -7,6 +7,7 @@ import type { QuestionKey } from '../question-detection';
 import type { ExecutionFileLogger } from '../execution-file-logger';
 import type { ExecutionState, OrchestratorEvent, PrismaClientInstance } from './types';
 import { toJsonString } from './execution-helpers-types';
+import { ExecutionCancelledError } from '../execution-cancelled-error';
 
 /**
  * Coerce a possibly-stringified numeric value to a finite number.
@@ -59,6 +60,12 @@ export function determineExecutionStatus(
   state: ExecutionState,
   opts?: { investigationMode?: boolean },
 ): string {
+  if (state.status === 'cancelled') {
+    result.success = false;
+    result.waitingForInput = false;
+    result.failureType = 'cancelled';
+    result.errorMessage ??= 'Execution cancelled';
+  }
   if (result.waitingForInput) {
     state.status = 'waiting_for_input';
     fileLogger.logStatusChange('running', 'waiting_for_input', 'Question detected');
@@ -202,8 +209,11 @@ export async function saveExecutionResult(
         }
       : {};
 
-  await prisma.agentExecution.update({
-    where: { id: executionId },
+  const saved = await prisma.agentExecution.updateMany({
+    where: {
+      id: executionId,
+      status: { notIn: ['canceling', 'cancelling', 'cancelled', 'canceled'] },
+    },
     data: {
       status: executionStatus,
       output: state.output || result.output,
@@ -222,6 +232,24 @@ export async function saveExecutionResult(
       ...resourceUpdate,
     },
   });
+  if (saved.count === 0) {
+    const current = await prisma.agentExecution.findUnique({
+      where: { id: executionId },
+      select: { status: true },
+    });
+    if (!current || !['canceling', 'cancelling', 'cancelled', 'canceled'].includes(current.status))
+      throw new Error('Execution result was not saved; cancellation could not be confirmed');
+    // A stop won the race. Preserve its persisted status and suppress success
+    // handling in callers that retain this result object after saving it.
+    state.status = 'cancelled';
+    result.success = false;
+    result.waitingForInput = false;
+    result.failureType = 'cancelled';
+    result.errorMessage = 'Execution result ignored after cancellation';
+    fileLogger.logWarn(result.errorMessage);
+    fileLogger.logStatusChange(executionStatus, 'cancelled', result.errorMessage);
+    return;
+  }
 
   // NOTE: Same defensive coercion as above — if upstream bugs send strings
   // for these fields, we still write a clean number to Prisma so the
@@ -378,16 +406,8 @@ export async function handleExecutionError(
   errorContext: string,
 ): Promise<void> {
   const errorMessage = error instanceof Error ? error.message : String(error);
-  state.status = 'failed';
-
-  fileLogger.logError(
-    `${errorContext} failed with uncaught error`,
-    error instanceof Error ? error : new Error(errorMessage),
-  );
-  fileLogger.logExecutionEnd('failed', {
-    success: false,
-    errorMessage,
-  });
+  let cancelled = error instanceof ExecutionCancelledError || state.status === 'cancelled';
+  let status: 'cancelled' | 'failed' = cancelled ? 'cancelled' : 'failed';
 
   const completedAt = new Date();
 
@@ -411,10 +431,16 @@ export async function handleExecutionError(
     // Defensive: the lookup must never block persisting the failure itself.
   }
 
-  await prisma.agentExecution.update({
-    where: { id: executionId },
+  // A stop can arrive while the timing lookup above is pending.
+  cancelled ||= state.status === 'cancelled';
+  status = cancelled ? 'cancelled' : 'failed';
+  const saved = await prisma.agentExecution.updateMany({
+    where: {
+      id: executionId,
+      status: { notIn: ['canceling', 'cancelling', 'cancelled', 'canceled', 'completed'] },
+    },
     data: {
-      status: 'failed',
+      status,
       output: state.output,
       completedAt,
       errorMessage,
@@ -422,8 +448,30 @@ export async function handleExecutionError(
     },
   });
 
+  if (saved.count === 0) {
+    const current = await prisma.agentExecution.findUnique({
+      where: { id: executionId },
+      select: { status: true },
+    });
+    if (current?.status === 'completed') return;
+    if (!current || !['canceling', 'cancelling', 'cancelled', 'canceled'].includes(current.status))
+      throw new Error('Execution error was not saved; terminal state could not be confirmed');
+    cancelled = true;
+    status = 'cancelled';
+  }
+  if (!cancelled)
+    fileLogger.logError(
+      `${errorContext} failed with uncaught error`,
+      error instanceof Error ? error : new Error(errorMessage),
+    );
+  fileLogger.logExecutionEnd(status, {
+    success: false,
+    errorMessage,
+  });
+
+  state.status = status;
   emitEvent({
-    type: 'execution_failed',
+    type: cancelled ? 'execution_cancelled' : 'execution_failed',
     executionId,
     sessionId,
     taskId,

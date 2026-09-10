@@ -8,6 +8,15 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 
 const findManyMock = mock(async (): Promise<unknown[]> => []);
+const readCache = mock(
+  async (): Promise<{ fingerprint: string; at: number; bullets: string[] } | undefined> =>
+    undefined,
+);
+const writeCache = mock(async () => {});
+mock.module('./critic-lesson-cache', () => ({
+  readCriticLessonCache: readCache,
+  writeCriticLessonCache: writeCache,
+}));
 
 mock.module('../../../config/database', () => ({
   prisma: { workflowTransition: { findMany: findManyMock } },
@@ -35,6 +44,8 @@ function row(id: number, taskId: number, reasons: string[]) {
 }
 
 beforeEach(() => {
+  readCache.mockReset().mockResolvedValue(undefined);
+  writeCache.mockClear();
   findManyMock.mockClear();
   sendAIMessageMock.mockClear();
   isAnyApiKeyConfiguredMock.mockClear();
@@ -91,6 +102,28 @@ describe('renderLessonsSection', () => {
 });
 
 describe('buildCriticLessonsSection', () => {
+  it('reuses persisted source-matched lessons without another AI call', async () => {
+    findManyMock.mockResolvedValue([row(90001, 10, ['a', 'b']), row(90000, 11, ['c', 'd'])]);
+    readCache.mockResolvedValue({
+      fingerprint: 'persisted',
+      at: Date.now(),
+      bullets: ['Persisted lesson'],
+    });
+    expect(await buildCriticLessonsSection('research')).toContain('Persisted lesson');
+    expect(sendAIMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('a correction to existing source metadata invalidates the cache', async () => {
+    findManyMock.mockResolvedValue([row(91001, 10, ['a', 'b']), row(91000, 11, ['c', 'd'])]);
+    await buildCriticLessonsSection('research');
+    findManyMock.mockResolvedValue([
+      row(91001, 10, ['corrected', 'b']),
+      row(91000, 11, ['c', 'd']),
+    ]);
+    await buildCriticLessonsSection('research');
+    expect(sendAIMessageMock).toHaveBeenCalledTimes(2);
+    expect(writeCache).toHaveBeenCalledTimes(2);
+  });
   it('returns "" when disabled via env', async () => {
     process.env.RAPITAS_CRITIC_LESSONS = 'off';
     expect(await buildCriticLessonsSection('research')).toBe('');

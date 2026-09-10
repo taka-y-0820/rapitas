@@ -65,13 +65,15 @@ function makePrisma(
   } = {},
 ): PrismaClientInstance {
   return {
-    agentExecution: { update: overrides.agentExecutionUpdate ?? mock(async () => ({})) },
-    agentSession: { update: overrides.agentSessionUpdate ?? mock(async () => ({})) },
+    agentExecution: {
+      updateMany: overrides.agentExecutionUpdate ?? mock(async () => ({ count: 1 })),
+    },
+    agentSession: { updateMany: overrides.agentSessionUpdate ?? mock(async () => ({ count: 1 })) },
     task: {
       findUnique:
         overrides.taskFindUnique ??
         mock(async () => ({ id: 100, status: 'in-progress', workflowStatus: 'in_progress' })),
-      update: overrides.taskUpdate ?? mock(async () => ({})),
+      updateMany: overrides.taskUpdate ?? mock(async () => ({ count: 1 })),
     },
   } as unknown as PrismaClientInstance;
 }
@@ -98,8 +100,41 @@ function makeCtx(overrides: Partial<LifecycleContext> = {}): LifecycleContext {
 // ── saveAgentState ────────────────────────────────────────────────────────
 
 describe('saveAgentState', () => {
+  for (const terminal of ['canceling', 'cancelled', 'completed', 'failed']) {
+    test(`shutdown preserves ${terminal} execution and leaves its session/task alone`, async () => {
+      let stored = terminal;
+      const update = mock(
+        async (args: { where: { status: { in: string[] } }; data: { status: string } }) => {
+          if (!args.where.status.in.includes(stored)) return { count: 0 };
+          stored = args.data.status;
+          return { count: 1 };
+        },
+      );
+      const session = mock(async () => ({ count: 1 }));
+      const task = mock(async () => ({ count: 1 }));
+      await saveAgentState(
+        makePrisma({ agentExecutionUpdate: update, agentSessionUpdate: session, taskUpdate: task }),
+        1,
+        makeAgentInfo(),
+        'interrupted',
+      );
+      expect(stored).toBe(terminal);
+      expect(session).not.toHaveBeenCalled();
+      expect(task).not.toHaveBeenCalled();
+    });
+  }
+  test('a stop between task read and update does not emit a false revert transition', async () => {
+    mockRecordTransition.mockClear();
+    const update = mock(async () => ({ count: 0 }));
+    await saveAgentState(makePrisma({ taskUpdate: update }), 1, makeAgentInfo(), 'interrupted');
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 100, status: 'in-progress', workflowStatus: 'in_progress' },
+      data: { status: 'todo' },
+    });
+    expect(mockRecordTransition).not.toHaveBeenCalled();
+  });
   test('interrupted status writes a Japanese "interrupted" error message', async () => {
-    const update = mock(async () => ({}));
+    const update = mock(async () => ({ count: 1 }));
     const prisma = makePrisma({ agentExecutionUpdate: update });
     const info = makeAgentInfo();
 
@@ -110,13 +145,16 @@ describe('saveAgentState', () => {
       where: { id: number };
       data: { errorMessage: string; status: string };
     };
-    expect(call.where).toEqual({ id: 1 });
+    expect(call.where).toEqual({
+      id: 1,
+      status: { in: ['pending', 'running', 'waiting_for_input', 'interrupted'] },
+    });
     expect(call.data.status).toBe('interrupted');
     expect(call.data.errorMessage).toContain('中断されました');
   });
 
   test('failed status writes a Japanese "abnormal termination" error message', async () => {
-    const update = mock(async () => ({}));
+    const update = mock(async () => ({ count: 1 }));
     const prisma = makePrisma({ agentExecutionUpdate: update });
     const info = makeAgentInfo();
 
@@ -128,7 +166,7 @@ describe('saveAgentState', () => {
   });
 
   test('truncates lastOutput to the final 1000 characters in the message', async () => {
-    const update = mock(async () => ({}));
+    const update = mock(async () => ({ count: 1 }));
     const prisma = makePrisma({ agentExecutionUpdate: update });
     const info = makeAgentInfo({ lastOutput: 'x'.repeat(1500) + 'TAIL' });
 
@@ -143,7 +181,7 @@ describe('saveAgentState', () => {
     const sessionUpdate = mock(async () => {
       throw new Error('session db error');
     });
-    const taskUpdate = mock(async () => ({}));
+    const taskUpdate = mock(async () => ({ count: 1 }));
     const prisma = makePrisma({ agentSessionUpdate: sessionUpdate, taskUpdate });
     const info = makeAgentInfo();
 
@@ -152,14 +190,17 @@ describe('saveAgentState', () => {
   });
 
   test('reverts an in-progress task back to todo', async () => {
-    const taskUpdate = mock(async () => ({}));
+    const taskUpdate = mock(async () => ({ count: 1 }));
     const taskFindUnique = mock(async () => ({ id: 100, status: 'in-progress' }));
     const prisma = makePrisma({ taskFindUnique, taskUpdate });
     const info = makeAgentInfo();
 
     await saveAgentState(prisma, 1, info, 'interrupted');
 
-    expect(taskUpdate).toHaveBeenCalledWith({ where: { id: 100 }, data: { status: 'todo' } });
+    expect(taskUpdate).toHaveBeenCalledWith({
+      where: { id: 100, status: 'in-progress', workflowStatus: undefined },
+      data: { status: 'todo' },
+    });
   });
 
   test('records a workflow transition when reverting an in-progress task', async () => {
@@ -184,7 +225,7 @@ describe('saveAgentState', () => {
   });
 
   test('does not touch a task that is not in-progress', async () => {
-    const taskUpdate = mock(async () => ({}));
+    const taskUpdate = mock(async () => ({ count: 1 }));
     const taskFindUnique = mock(async () => ({ id: 100, status: 'done' }));
     const prisma = makePrisma({ taskFindUnique, taskUpdate });
     const info = makeAgentInfo();
@@ -210,7 +251,7 @@ describe('saveAgentState', () => {
   });
 
   test('missing task is handled without throwing or updating', async () => {
-    const taskUpdate = mock(async () => ({}));
+    const taskUpdate = mock(async () => ({ count: 1 }));
     const taskFindUnique = mock(async () => null);
     const prisma = makePrisma({ taskFindUnique, taskUpdate });
     const info = makeAgentInfo();
@@ -234,7 +275,7 @@ describe('saveAgentState', () => {
 
 describe('saveAllAgentStates', () => {
   test('saves state for every active agent', async () => {
-    const update = mock(async () => ({}));
+    const update = mock(async () => ({ count: 1 }));
     const prisma = makePrisma({ agentExecutionUpdate: update });
     const activeAgents = new Map<number, ActiveAgentInfo>([
       [1, makeAgentInfo({ executionId: 1 })],
@@ -303,7 +344,7 @@ describe('gracefulShutdown', () => {
 
   test('stops every active agent, persists state, clears maps, and stops the server', async () => {
     const stop = mock(() => Promise.resolve());
-    const agentUpdate = mock(async () => ({}));
+    const agentUpdate = mock(async () => ({ count: 1 }));
     const prisma = makePrisma({ agentExecutionUpdate: agentUpdate });
     const info = makeAgentInfo({
       executionId: 1,
@@ -344,7 +385,7 @@ describe('gracefulShutdown', () => {
 
   test('still saves agent state when agent.stop() rejects', async () => {
     const stop = mock(() => Promise.reject(new Error('stop failed')));
-    const agentUpdate = mock(async () => ({}));
+    const agentUpdate = mock(async () => ({ count: 1 }));
     const prisma = makePrisma({ agentExecutionUpdate: agentUpdate });
     const info = makeAgentInfo({
       executionId: 1,
@@ -366,7 +407,7 @@ describe('gracefulShutdown', () => {
   });
 
   test('falls back to saving all agent states when an unexpected error occurs mid-shutdown', async () => {
-    const agentUpdate = mock(async () => ({}));
+    const agentUpdate = mock(async () => ({ count: 1 }));
     const prisma = makePrisma({ agentExecutionUpdate: agentUpdate });
     const info = makeAgentInfo({ executionId: 1 });
     const questionTimeoutManager = {

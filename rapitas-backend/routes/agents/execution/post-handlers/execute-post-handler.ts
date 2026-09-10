@@ -1,3 +1,4 @@
+import { writeBlockedTask } from '../../../../services/workflow/blocked-task-write';
 /**
  * execution/execute-post-handler
  *
@@ -33,6 +34,8 @@ export interface ExecuteTaskResult {
 
 /** Parameters passed to handleExecuteResult. */
 export interface HandleExecuteResultParams {
+  /** The original manual run still owns the task; a stop invalidates it. */
+  isExecutionCurrent?: () => boolean;
   result: ExecuteTaskResult;
   taskIdNum: number;
   sessionId: number;
@@ -60,6 +63,7 @@ export { reconcileHardFailure } from './hard-failure-reconciler';
  * @param params - Execution context and result / 実行コンテキストと結果
  */
 export async function handleExecuteResult(params: HandleExecuteResultParams): Promise<void> {
+  if (params.isExecutionCurrent?.() === false) return;
   const {
     result,
     taskIdNum,
@@ -84,6 +88,7 @@ export async function handleExecuteResult(params: HandleExecuteResultParams): Pr
   const terminalCheck = await prisma.task
     .findUnique({ where: { id: taskIdNum }, select: { status: true, workflowStatus: true } })
     .catch(() => null);
+  if (params.isExecutionCurrent?.() === false) return;
   if (terminalCheck?.workflowStatus === 'completed' || terminalCheck?.status === 'done') {
     log.info(
       { taskId: taskIdNum, mode },
@@ -110,14 +115,9 @@ export async function handleExecuteResult(params: HandleExecuteResultParams): Pr
 
   if (result.waitingForInput) {
     log.info(`[API] Task ${taskIdNum} is waiting for user input, setting status to 'blocked'`);
-    await prisma.task
-      .update({
-        where: { id: taskIdNum },
-        data: { status: 'blocked' },
-      })
-      .catch((e: unknown) => {
-        log.error({ err: e }, `[API] Failed to update task ${taskIdNum} status to in_progress`);
-      });
+    await writeBlockedTask(prisma, taskIdNum).catch((e: unknown) => {
+      log.error({ err: e }, `[API] Failed to update task ${taskIdNum} status to in_progress`);
+    });
 
     await prisma.agentSession
       .update({
@@ -151,6 +151,7 @@ export async function handleExecuteResult(params: HandleExecuteResultParams): Pr
       sessionId,
       errorMessage: result.errorMessage || 'Execution failed',
       logPrefix: '[API]',
+      isExecutionCurrent: params.isExecutionCurrent,
     });
   }
 }

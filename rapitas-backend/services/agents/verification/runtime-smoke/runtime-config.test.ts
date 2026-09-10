@@ -31,6 +31,22 @@ const VALID_CONFIG_JSON = JSON.stringify({
   url: 'http://localhost:{port}',
 });
 
+test('validates and preserves a bounded browser readiness contract', async () => {
+  const { parseRuntimeConfig } = await import('./runtime-config');
+  const base = JSON.parse(VALID_CONFIG_JSON);
+  expect(
+    parseRuntimeConfig(JSON.stringify({ ...base, readySelector: ' [data-ready] ' })).config,
+  ).toMatchObject({ readySelector: '[data-ready]', readinessTimeoutMs: 25000 });
+  for (const value of [0, -1, 60001, '1000']) {
+    expect(
+      parseRuntimeConfig(
+        JSON.stringify({ ...base, readySelector: '[data-ready]', readinessTimeoutMs: value }),
+      ).error,
+    ).toBeDefined();
+  }
+  expect(parseRuntimeConfig(JSON.stringify({ ...base, readySelector: ' ' })).error).toBeDefined();
+});
+
 beforeEach(() => {
   mockTaskFindUnique.mockReset().mockResolvedValue(null);
   mockThemeFindFirst.mockReset().mockResolvedValue(null);

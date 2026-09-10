@@ -62,8 +62,8 @@ const RESEARCH_NO_CHANGE_VERDICTS: RegExp[] = [
 /**
  * Whether research.md explicitly concludes the task needs NO change (the
  * requirement is already satisfied by existing implementation). When true, the
- * task may be completed directly from the research phase — no plan.md / impl /
- * verify — avoiding a duplicate PR for already-satisfied work.
+ * finding only describes implementation scope. It does not authorize completion
+ * or bypass verification, acceptance criteria, or configured completion gates.
  *
  * @param researchContent - research.md body / research.md 本文
  * @returns true when an explicit no-change verdict is present / 明示的な修正不要判定があれば true

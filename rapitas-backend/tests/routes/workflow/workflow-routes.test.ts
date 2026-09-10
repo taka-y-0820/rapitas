@@ -5,6 +5,8 @@
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 import { Elysia } from 'elysia';
 
+const realFsPromises = await import('node:fs/promises');
+
 const mockPrisma = {
   task: {
     findUnique: mock(() => Promise.resolve(null)),
@@ -98,17 +100,26 @@ mock.module('../../../services/agents/agent-orchestrator', () => ({
   },
 }));
 
+// File-management route tests must not launch an auxiliary CLI or load its OS adapters.
+mock.module('../../../utils/ai-client/aux-cli-launch', () => ({
+  prepareAuxCli: async () => {
+    throw new Error('Auxiliary CLI launch is outside this route test');
+  },
+}));
+
 // Mock fs/promises
 // NOTE (task 865): routes/workflow/commit-cwd.ts imports `readdir` from
 // 'fs/promises' and is statically pulled in via routes/workflow/core/workflow
 // — omitting it here left the whole route module load failing with "Export
 // named 'readdir' not found" (bun's mock.module needs every export mirrored).
 mock.module('fs/promises', () => ({
+  ...realFsPromises,
   readFile: mock(() => Promise.resolve('# Test content')),
   writeFile: mock(() => Promise.resolve()),
   mkdir: mock(() => Promise.resolve()),
   rename: mock(() => Promise.resolve()),
   readdir: mock(() => Promise.resolve([])),
+  lstat: mock(() => Promise.resolve({ isSymbolicLink: () => false, isDirectory: () => true })),
   unlink: mock(() => Promise.resolve()),
   stat: mock(() =>
     Promise.resolve({

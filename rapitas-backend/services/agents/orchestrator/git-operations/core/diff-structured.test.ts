@@ -294,6 +294,7 @@ describe('getDiff — resolveBaseRef fetches origin/<branch> itself (task 516: n
     return execSync(cmd, { cwd: dir }).toString().trim();
   }
 
+  // Multiple real Git repositories need more than 5s under Windows suite load.
   beforeEach(() => {
     remoteDir = mkdtempSync(join(tmpdir(), 'getdiff-remote-'));
     runIn(remoteDir, 'git init -q -b develop');
@@ -337,7 +338,7 @@ describe('getDiff — resolveBaseRef fetches origin/<branch> itself (task 516: n
     // since the worktree was cloned. Only resolveBaseRef's own fetch (inside
     // getDiff, called below) may bring it forward again.
     runIn(repoDir, `git update-ref refs/remotes/origin/develop ${rootSha}`);
-  });
+  }, 30_000);
 
   afterEach(() => {
     rmSync(repoDir, { recursive: true, force: true });

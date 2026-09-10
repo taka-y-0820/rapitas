@@ -234,6 +234,23 @@ describe('updateTask — フィールドマッピング', () => {
     expect(call.data.completedAt).toBeInstanceOf(Date);
   });
 
+  test.each(['completed', null, 'research_done'])(
+    'reopen preserves nonterminal workflow %s',
+    async (workflowStatus) => {
+      setupFindUnique(
+        { status: 'done', parentId: null, workflowStatus },
+        { id: 1, status: 'todo', parentId: null },
+      );
+      await updateTask(mockPrisma as never, 1, { status: 'todo' });
+      const call = mockPrisma.task.update.mock.calls[0]![0] as {
+        data: { completedAt?: Date | null; startedAt?: Date | null; workflowStatus?: string };
+      };
+      expect(call.data.completedAt).toBeNull();
+      expect(call.data.startedAt).toBeNull();
+      expect(call.data.workflowStatus).toBe(workflowStatus === 'completed' ? 'draft' : undefined);
+    },
+  );
+
   test('status=done かつ workflowStatus が completed 以外の場合、workflowStatus を completed にすること', async () => {
     setupFindUnique(
       { status: 'in-progress', parentId: null, workflowStatus: 'in_progress' },
@@ -318,5 +335,37 @@ describe('updateTask — フィールドマッピング', () => {
 
     const call = mockPrisma.task.update.mock.calls[0]![0] as { data: { isProtected?: boolean } };
     expect(call.data.isProtected).toBe(false);
+  });
+});
+
+describe('manual hold revision', () => {
+  test('reopen rejects a concurrent task change and records no false success', async () => {
+    const revision = new Date();
+    setupFindUnique({ status: 'done', workflowStatus: 'completed', updatedAt: revision }, null);
+    mockPrisma.task.update.mockRejectedValueOnce(new Error('revision conflict'));
+    await expect(updateTask(mockPrisma as never, 1, { status: 'todo' })).rejects.toThrow(
+      'revision conflict',
+    );
+    expect(mockPrisma.task.update.mock.calls[0][0].where).toEqual({ id: 1, updatedAt: revision });
+    expect(mockPrisma.activityLog.create).not.toHaveBeenCalled();
+  });
+
+  test('a re-block advances the revision and conditions the write on the observed version', async () => {
+    const revision = new Date(Date.now() + 60_000);
+    setupFindUnique({ status: 'blocked', updatedAt: revision }, { id: 1, status: 'blocked' });
+    await updateTask(mockPrisma as never, 1, { status: 'blocked' });
+    const call = mockPrisma.task.update.mock.calls[0][0];
+    expect(call.where).toEqual({ id: 1, updatedAt: revision });
+    expect(call.data.updatedAt.getTime()).toBe(revision.getTime() + 1);
+    expect(call.data.status).toBe('blocked');
+  });
+
+  test('a conflicting manual hold write reports failure instead of claiming success', async () => {
+    setupFindUnique({ status: 'blocked', updatedAt: new Date() }, null);
+    mockPrisma.task.update.mockRejectedValueOnce(new Error('revision conflict'));
+    await expect(updateTask(mockPrisma as never, 1, { status: 'blocked' })).rejects.toThrow(
+      'revision conflict',
+    );
+    expect(mockPrisma.activityLog.create).not.toHaveBeenCalled();
   });
 });

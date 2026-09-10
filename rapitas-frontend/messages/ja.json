@@ -1815,7 +1815,8 @@
         "busy": "実行中",
         "shutting_down": "シャットダウン中",
         "interrupted": "中断あり",
-        "unhealthy": "異常"
+        "unhealthy": "異常",
+        "unknown": "確認不可"
       },
       "running": "実行中のexecution数",
       "active": "アクティブなexecution数",
@@ -2755,7 +2756,10 @@
     "readyTimeoutMs": "起動待機タイムアウト (秒)",
     "checkPaths": "検証するパス",
     "addPath": "パスを追加",
-    "removePath": "このパスを削除"
+    "removePath": "このパスを削除",
+    "readySelector": "画面の準備完了を示す要素",
+    "readySelectorHelp": "すべての確認パスで、操作可能になってから表示される要素のセレクターを指定します。未設定の場合、画面の準備完了は未検証になります。",
+    "readinessTimeoutMs": "画面の準備を待つ時間（秒）"
   },
   "themes": {
     "title": "テーマ一覧",

@@ -33,13 +33,15 @@ interface HealthSnapshot {
   database?: string;
   uptimeSeconds?: number;
   activeExecutions?: number;
+  activeExecutionsDegraded?: boolean;
   runningExecutions?: number;
   interruptedExecutions?: number;
+  interruptedExecutionsDegraded?: boolean;
   queueDepth?: number;
   activePreviewCount?: number;
 }
 
-type PillStatus = 'healthy' | 'busy' | 'shutting_down' | 'interrupted' | 'unhealthy';
+type PillStatus = 'healthy' | 'busy' | 'shutting_down' | 'interrupted' | 'unhealthy' | 'unknown';
 
 // Icon/color choices are recorded in .claude/ICON_POLICY.md §3 — Server ties
 // this pill to the same "backend server" meaning BackendConnectionError uses.
@@ -53,6 +55,8 @@ const PILL_STYLES: Record<PillStatus, string> = {
     'bg-rose-50 text-rose-700 border-rose-300 dark:bg-rose-900/30 dark:text-rose-400 dark:border-rose-600',
   unhealthy:
     'bg-red-50 text-red-700 border-red-300 dark:bg-red-900/30 dark:text-red-400 dark:border-red-600',
+  unknown:
+    'bg-zinc-100 text-zinc-700 border-zinc-300 dark:bg-zinc-700/40 dark:text-zinc-300 dark:border-zinc-600',
 };
 
 /**
@@ -62,12 +66,19 @@ const PILL_STYLES: Record<PillStatus, string> = {
  * `status` field (see index.ts) so busy/interrupted are re-derived here from
  * the raw execution counts to give the operator the finer-grained signal.
  *
+ * `interruptedExecutionsDegraded` is checked before the interrupted-count
+ * signal: if the backend couldn't verify whether interrupted executions are
+ * still resumable, that must never render as "healthy" just because the
+ * raw-count fallback happens to be 0 (task 913).
+ *
  * @param data - Parsed /health JSON, or null on a failed/unparseable fetch / 取得失敗時はnull
  * @returns The pill state to render / 表示するピル状態
  */
 function derivePillStatus(data: HealthSnapshot | null): PillStatus {
   if (!data) return 'unhealthy';
   if (data.status === 'unhealthy') return 'unhealthy';
+  if (data.activeExecutionsDegraded) return 'unknown';
+  if (data.interruptedExecutionsDegraded) return 'unknown';
   if (data.status === 'shutting_down') return 'shutting_down';
   if ((data.interruptedExecutions ?? 0) > 0) return 'interrupted';
   if ((data.activeExecutions ?? 0) > 0) return 'busy';

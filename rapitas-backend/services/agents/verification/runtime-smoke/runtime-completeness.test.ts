@@ -1,15 +1,25 @@
 import { beforeEach, expect, mock, test } from 'bun:test';
 let configured = true;
+let readySelector: string | undefined = '[data-app-ready="true"]';
 let healthy = true;
 let logs: string[] = [];
 let browserAvailable = true;
 let harnessError = false;
 const stop = mock(() => {});
-const launch = mock(() => ({
-  logs: () => logs,
-  stop,
-  hasExited: () => false,
-  exitCode: () => null,
+const launch = mock(async () =>
+  healthy
+    ? {
+        ok: true,
+        baseUrl: 'http://127.0.0.1:3009',
+        port: 3009,
+        lease: 'test-lease',
+        logs: () => logs,
+      }
+    : { ok: false, reason: 'startup failed', logs, hasExited: false, exitCode: null },
+);
+mock.module('./worktree-server-registry', () => ({
+  acquireRuntimeServer: launch,
+  releaseRuntimeServer: stop,
 }));
 mock.module('./runtime-config', () => ({
   resolveRuntimeConfig: async () =>
@@ -21,29 +31,28 @@ mock.module('./runtime-config', () => ({
             healthPath: '/',
             readyTimeoutMs: 100,
             checkPaths: ['/'],
+            readySelector,
           },
         }
       : null,
   substitutePort: (s: string) => s,
 }));
-mock.module('./app-launcher', () => ({
-  allocateFreePort: async () => 3009,
-  launchApp: launch,
-  waitForHealthy: async () => {
-    if (harnessError) throw new Error('harness');
-    return healthy;
-  },
-}));
 mock.module('./browser-smoke', () => ({
-  runBrowserSmoke: async () => ({
-    browserAvailable,
-    unavailableReason: 'missing browser',
-    findings: [{ path: '/', httpStatus: 200, pageErrors: [], serverErrors: [], consoleErrors: [] }],
-  }),
+  runBrowserSmoke: async () => {
+    if (harnessError) throw new Error('harness');
+    return {
+      browserAvailable,
+      unavailableReason: 'missing browser',
+      findings: [
+        { path: '/', httpStatus: 200, pageErrors: [], serverErrors: [], consoleErrors: [] },
+      ],
+    };
+  },
 }));
 const { runRuntimeSmokeCheck } = await import('./runtime-check');
 beforeEach(() => {
   configured = true;
+  readySelector = '[data-app-ready="true"]';
   healthy = true;
   logs = [];
   browserAvailable = true;
@@ -58,6 +67,15 @@ test('unconfigured projects remain not applicable', async () => {
 });
 test('completed browser verification succeeds and cleans up', async () => {
   expect(await runRuntimeSmokeCheck('/success')).toMatchObject({ ran: true, ok: true });
+  expect(stop).toHaveBeenCalledTimes(1);
+});
+test('HTTP and browser checks without an application readiness contract remain unverified', async () => {
+  readySelector = undefined;
+  expect(await runRuntimeSmokeCheck('/no-readiness')).toMatchObject({
+    ran: true,
+    ok: false,
+    unverifiable: true,
+  });
   expect(stop).toHaveBeenCalledTimes(1);
 });
 test('app startup failure remains a failed executed check', async () => {
@@ -79,7 +97,8 @@ test('environment failure and its cached result are both unverifiable', async ()
     });
   }
   expect(launch).toHaveBeenCalledTimes(1);
-  expect(stop).toHaveBeenCalledTimes(1);
+  // A failed acquisition provides no lease; registry failure cleanup is tested separately.
+  expect(stop).not.toHaveBeenCalled();
 });
 test('HTTP readiness without browser cannot complete runtime verification', async () => {
   browserAvailable = false;

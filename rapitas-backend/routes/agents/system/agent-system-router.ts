@@ -11,6 +11,11 @@ import { createLogger } from '../../../config/logger';
 import { scheduleShutdownSequence } from '../../../services/system/shutdown-sequence';
 import { AuthenticationError } from '../../../middleware/error-handler';
 import { getActivePreviewCount } from '../../../services/agents/preview/preview-session-manager';
+import {
+  isResumableInterrupted,
+  getCurrentActiveExecutionIds,
+  getLiveTaskIdsForActiveExecutions,
+} from '../../../services/agents/resumable-execution';
 
 const log = createLogger('routes:agent-system');
 
@@ -46,32 +51,24 @@ export async function getAgentSystemSnapshot(): Promise<{
   status: string;
   isShuttingDown: boolean;
   activeExecutions: number;
+  activeExecutionsDegraded: boolean;
   runningExecutions: number;
   interruptedExecutions: number;
+  interruptedExecutionsHistoryCount: number;
+  interruptedExecutionsDegraded: boolean;
   queueDepth: number;
   activePreviewCount: number;
   serverTime: string;
 }> {
-  // NOTE: Sync getActiveExecutionCount() returns a cached value (0 right after startup).
-  // Use the async version when available to get the accurate count from the worker.
-  // The worker subprocess isn't ready for the first few seconds after every
-  // restart — sendIPCRequest throws 'Worker not ready' during that window, which
-  // is an expected, transient condition (this snapshot is polled by the frontend
-  // on a timer, so it always lands in that window right after a restart), not a
-  // real failure. Fall back to the cached sync count instead of letting it
-  // surface as an ERROR-level "Unhandled error" on every single restart.
-  const workerMgr = orchestrator as unknown as {
-    getActiveExecutionCountAsync?: () => Promise<number>;
-  };
-  let activeExecutions: number;
+  // One deduplicated snapshot of both execution owners. Reuse it below so
+  // visibility and interrupted filtering cannot observe different IPC reads.
+  let activeExecutionIds: number[] | null = null;
   try {
-    activeExecutions = workerMgr.getActiveExecutionCountAsync
-      ? await workerMgr.getActiveExecutionCountAsync()
-      : orchestrator.getActiveExecutionCount?.() || 0;
+    activeExecutionIds = await getCurrentActiveExecutionIds();
   } catch (err) {
-    log.debug({ err }, '[agent-system] Active count unavailable (worker likely still starting)');
-    activeExecutions = orchestrator.getActiveExecutionCount?.() || 0;
+    log.debug({ err }, '[agent-system] Live execution ownership unavailable');
   }
+  const activeExecutionsDegraded = activeExecutionIds === null;
   const isShuttingDown = orchestrator.isInShutdown();
 
   // Count running/pending executions, but EXCLUDE orphaned rows whose task is
@@ -86,27 +83,76 @@ export async function getAgentSystemSnapshot(): Promise<{
     },
   });
 
-  const interruptedExecutions = await prisma.agentExecution.count({
+  const activeExecutions = activeExecutionIds?.length ?? runningExecutions;
+
+  // Raw count of every `interrupted` row regardless of whether its task can
+  // still be resumed — kept as its own field (never removed/renamed) so
+  // operators retain the historical total even after the filtering below.
+  const interruptedExecutionsHistoryCount = await prisma.agentExecution.count({
     where: {
       status: 'interrupted',
     },
   });
 
+  // Resumability-filtered count: excludes `interrupted` rows whose task is
+  // already terminal (done/completed/cancelled/failed/archived, or
+  // workflowStatus=completed) and rows whose task already has a live
+  // execution running elsewhere — matching the definition `/resumable-executions`
+  // uses, so the two endpoints never disagree about what's "operationally
+  // interrupted". If this computation itself fails, fall back to the raw
+  // count (never silently to 0) and flag `interruptedExecutionsDegraded` so
+  // the derived `status` below does not report `healthy` on unverified data.
+  let interruptedExecutions = interruptedExecutionsHistoryCount;
+  let interruptedExecutionsDegraded = false;
+  try {
+    const interruptedRows = await prisma.agentExecution.findMany({
+      where: { status: 'interrupted' },
+      select: {
+        session: {
+          select: {
+            config: {
+              select: { task: { select: { id: true, status: true, workflowStatus: true } } },
+            },
+          },
+        },
+      },
+    });
+    if (activeExecutionIds === null) throw new Error('Live execution ownership unavailable');
+    const liveTaskIds = await getLiveTaskIdsForActiveExecutions(activeExecutionIds);
+    interruptedExecutions = interruptedRows.filter((row) =>
+      isResumableInterrupted({ status: 'interrupted' }, row.session.config?.task, liveTaskIds),
+    ).length;
+  } catch (err) {
+    log.warn(
+      { err },
+      '[agent-system] Resumable-interrupted computation failed, falling back to raw count',
+    );
+    interruptedExecutionsDegraded = true;
+  }
+
   // Auto-run backlog depth — cheap indexed count (@@index([status, priority])
   // on WorkflowQueueItem), not a new tracking mechanism.
   const queueDepth = await prisma.workflowQueueItem.count({ where: { status: 'queued' } });
 
+  // NOTE: `interruptedExecutionsDegraded` is checked BEFORE the raw count —
+  // a failed computation must never be allowed to read as `healthy` just
+  // because the raw-count fallback happens to be 0 (task 913 counter-example).
   let status = 'healthy';
   if (isShuttingDown) status = 'shutting_down';
+  else if (activeExecutionsDegraded) status = 'active_executions_unknown';
   else if (activeExecutions > 0) status = 'busy';
+  else if (interruptedExecutionsDegraded) status = 'interrupted_executions_unknown';
   else if (interruptedExecutions > 0) status = 'interrupted_executions';
 
   return {
     status,
     isShuttingDown,
     activeExecutions,
+    activeExecutionsDegraded,
     runningExecutions,
     interruptedExecutions,
+    interruptedExecutionsHistoryCount,
+    interruptedExecutionsDegraded,
     queueDepth,
     activePreviewCount: getActivePreviewCount(),
     serverTime: new Date().toISOString(),

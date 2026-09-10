@@ -49,10 +49,13 @@ async function resolveUncached(cliName: string): Promise<string> {
   // NOTE: npm global bins on Windows are .cmd shims. `where claude` fails when the npm
   // bin directory is not yet in the bun process's PATH (inherited from the parent shell),
   // but `where claude.cmd` succeeds because cmd.exe always resolves shims. Try the bare
-  // name first, then fall back to the .cmd shim before giving up.
+  // name first, then fall back to the .cmd shim, then the native .exe (native installs
+  // that ship claude.exe without a .cmd shim — task #914) before giving up.
+  const hasKnownExtension = cliName.endsWith('.cmd') || cliName.endsWith('.exe');
   const resolved =
     (await tryWhere(cliName)) ??
-    (!cliName.endsWith('.cmd') ? await tryWhere(`${cliName}.cmd`) : null);
+    (!hasKnownExtension ? await tryWhere(`${cliName}.cmd`) : null) ??
+    (!hasKnownExtension ? await tryWhere(`${cliName}.exe`) : null);
 
   const result = resolved ?? cliName;
   if (resolved) {
@@ -104,8 +107,8 @@ export async function resolveCliPathAsync(cliName: string): Promise<string> {
  * @returns Resolved absolute or relative CLI path / 解決されたCLIパス
  */
 export async function getClaudePathAsync(): Promise<string> {
-  const isWindows = process.platform === 'win32';
-  const baseClaudePath = process.env.CLAUDE_CODE_PATH || (isWindows ? 'claude.cmd' : 'claude');
+  // An explicit override stays exact; the default must allow both native and npm installs.
+  const baseClaudePath = process.env.CLAUDE_CODE_PATH || 'claude';
   return resolveCliPathAsync(baseClaudePath);
 }
 

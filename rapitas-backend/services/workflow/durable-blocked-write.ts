@@ -1,3 +1,4 @@
+import { writeBlockedTask } from './blocked-task-write';
 /**
  * Durable Blocked-Status Write
  *
@@ -40,11 +41,14 @@ export async function writeBlockedStatusDurable(
   options: DurableBlockWriteOptions,
 ): Promise<boolean> {
   const { taskId, log, source, notification } = options;
-  const attempt = () =>
-    prisma.task
-      .update({ where: { id: taskId }, data: { status: 'blocked', updatedAt: new Date() } })
-      .then(() => true)
-      .catch(() => false);
+  const attempt = async () => {
+    try {
+      await writeBlockedTask(prisma, taskId);
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   if (await attempt()) return true;
 

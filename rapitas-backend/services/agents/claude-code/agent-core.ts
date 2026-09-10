@@ -49,9 +49,8 @@ export type ClaudeCodeAgentConfig = {
    */
   investigationMode?: boolean;
   /**
-   * Investigation phase output type — drives the prompt template only.
-   * The runner does not need to inspect this; it is forwarded to the
-   * prompt builder via the AgentTask field.
+   * Phase output type. Verifier evidence may succeed without a code diff,
+   * independently of investigationMode's read-only tool restrictions.
    */
   investigationOutputType?: 'research' | 'plan' | 'review' | 'verify';
 };
@@ -231,7 +230,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           return false;
         }
       },
-      this.config.investigationMode,
+      this.config.investigationMode || this.config.investigationOutputType === 'verify',
       resourceStats,
     );
   }

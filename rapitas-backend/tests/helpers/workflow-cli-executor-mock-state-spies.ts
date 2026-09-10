@@ -23,6 +23,11 @@ import {
 // ---------------------------------------------------------------------------
 
 export const spies = {
+  assertReviewedTaskCurrent: mock(async (_db: unknown, _receipt: unknown) => undefined),
+  completeReviewedTask: mock(async (_db: unknown, _receipt: unknown, _completion: unknown) => ({
+    committed: true,
+    reason: 'verify_passed',
+  })),
   resolveTaskWithTheme: mock(() => Promise.resolve(wf.taskWithTheme)),
   resolveTaskTitle: mock(() => Promise.resolve(wf.taskTitle)),
   resolveTaskWorkflowState: mock(() => Promise.resolve(wf.taskWorkflowState)),

@@ -1,9 +1,7 @@
 /**
  * workflow-cli-executor-postprocess.test
  *
- * Guards the auto-run no-change early exit: 27 of 31 no-change tasks in the
- * week to 2026-08-30 ran plan/implement/verify because only the HTTP-save and
- * dev-mode routes honoured the research verdict.
+ * Research findings must preserve acceptance verification and completion gates.
  *
  * Run this file on its own: bun's mock.module is process-global.
  */
@@ -13,8 +11,10 @@ mock.module('../../config/logger', () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
 const taskUpdates: unknown[] = [];
+const findQueueOwner = mock(async (): Promise<{ id: number } | null> => null);
 mock.module('../../config', () => ({
   prisma: {
+    workflowQueueItem: { findFirst: findQueueOwner },
     task: {
       update: (args: unknown) => {
         taskUpdates.push(args);
@@ -63,18 +63,59 @@ beforeEach(() => {
   transitions.length = 0;
   advances.length = 0;
   researchContent = null;
+  findQueueOwner.mockReset();
+  findQueueOwner.mockResolvedValue(null);
 });
 
-describe('runPostProcessing — research no-change early exit (auto-run path)', () => {
-  test('修正不要の結論なら implement へ進まず完了させる', async () => {
+test('queue owner alone advances implementer and auto-approved planner phases', async () => {
+  findQueueOwner.mockResolvedValue({ id: 42 });
+  for (const role of ['implementer', 'planner']) {
+    await runPostProcessing({
+      ...base,
+      transition: { role } as never,
+      phaseStatus: 'plan_approved',
+    });
+  }
+  await Bun.sleep(1100);
+  expect(findQueueOwner).toHaveBeenCalledTimes(2);
+  expect(findQueueOwner).toHaveBeenCalledWith({
+    where: { taskId: 776, status: 'running' },
+    select: { id: true },
+  });
+  expect(advances).toEqual([]);
+});
+
+test('direct implementer execution still advances without a queue owner', async () => {
+  await runPostProcessing({
+    ...base,
+    transition: { role: 'implementer' } as never,
+    phaseStatus: 'in_progress',
+  });
+  await Bun.sleep(1100);
+  expect(advances).toEqual([776]);
+});
+
+test('owner lookup failure does not start a competing execution', async () => {
+  findQueueOwner.mockRejectedValue(new Error('DB unavailable'));
+  await runPostProcessing({
+    ...base,
+    transition: { role: 'implementer' } as never,
+    phaseStatus: 'in_progress',
+  });
+  await Bun.sleep(1100);
+  expect(advances).toEqual([]);
+});
+
+describe('runPostProcessing — research preserves completion gates', () => {
+  test('修正不要の結論だけで完了させない', async () => {
     researchContent = '# 調査\n\n## 結論: 修正不要\n\n既存実装で満たされている。';
     await runPostProcessing({
       ...base,
       transition: RESEARCHER as never,
       phaseStatus: 'research_done' as never,
     });
-    expect(taskUpdates.length).toBe(1);
-    expect(transitions.map((t) => t.cause)).toEqual(['research_no_change_complete']);
+    expect(taskUpdates.length).toBe(0);
+    expect(transitions).toEqual([]);
     expect(advances).toEqual([]);
   });
 

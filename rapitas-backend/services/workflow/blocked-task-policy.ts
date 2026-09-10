@@ -129,6 +129,27 @@ export const HUMAN_ADVANCED_WORKFLOW_STATUSES: readonly string[] = [
   'verify_done',
 ];
 
+/**
+ * `WorkflowTransition.cause` values that count as an explicit human decision to
+ * resume a task out of its CURRENT blocked hold, for
+ * {@link healBlockedStatusDesync}-style checks (task 905). A bare `actor:'user'`
+ * row is not enough on its own — task894 showed a stale, unrelated user
+ * transition (`intake_question_answered`, a spec-question answer that resets
+ * `workflowStatus` to `draft` and carries no resume intent) being accepted as
+ * proof that a LATER, separately re-applied block was meant to be lifted.
+ * Add a new cause here only when it represents a deliberate, gate-passing
+ * human action taken with the task's blocked/failed status already in view
+ * (e.g. a new resume API) — do not add causes that merely happen to carry
+ * `actor:'user'` for unrelated reasons.
+ */
+export const EXPLICIT_RESUME_CAUSES: readonly string[] = [
+  'task_retried',
+  'manual_status_change',
+  'manual_plan_approved',
+  'manual_plan_rejected',
+  'question_resolved',
+];
+
 /** Reason a blocked task is excluded from the blind auto-retry. */
 export type BlockedExclusionReason =
   | 'awaiting_question'

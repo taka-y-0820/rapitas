@@ -1,3 +1,4 @@
+import { writeBlockedTask } from '../../../../services/workflow/blocked-task-write';
 /**
  * execution/success-execution-handler
  *
@@ -148,14 +149,12 @@ export async function handleSuccessfulExecution(
       );
     }
 
-    await prisma.task
-      .update({ where: { id: taskIdNum }, data: { status: 'blocked' } })
-      .catch((e: unknown) =>
-        log.error(
-          { err: e },
-          `[API] Failed to update task ${taskIdNum} to blocked after detecting failure markers`,
-        ),
-      );
+    await writeBlockedTask(prisma, taskIdNum).catch((e: unknown) =>
+      log.error(
+        { err: e },
+        `[API] Failed to update task ${taskIdNum} to blocked after detecting failure markers`,
+      ),
+    );
 
     const revertNote = !planFile
       ? ' worktree の未承認変更は破棄しました。タスクを再実行すれば調査・計画フェーズからやり直します。'

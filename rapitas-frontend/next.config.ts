@@ -4,11 +4,35 @@ import path from 'path';
 const isTauriBuild = process.env.TAURI_BUILD === 'true';
 const disableTurbopack = process.env.NEXT_TURBO === '0';
 const isCI = process.env.CI === 'true';
+const isRuntimePreview = process.env.RAPITAS_RUNTIME_PREVIEW === 'true';
+const runtimePort = Number(process.env.PORT);
+if (
+  isRuntimePreview &&
+  (isTauriBuild || !Number.isInteger(runtimePort) || runtimePort < 1024 || runtimePort > 65535)
+) {
+  throw new Error(
+    'Runtime preview requires a web server and an explicit PORT between 1024 and 65535.',
+  );
+}
 
 // NOTE: この config に webpack キー(splitChunks 等)を追加しないこと。Next 16 の Turbopack ビルドは
 // 「webpack 設定あり・turbopack 設定なし」を validateTurboNextConfig が検出すると process.exit(1) で
 // 強制失敗する(task #553 で実測)。バンドル予算は scripts/check-bundle-size.cjs の eager 限定判定で担保する。
 const nextConfig: NextConfig = {
+  // Runtime checks and local API links use the IPv4 loopback host. Next's
+  // default localhost allowlist otherwise rejects their dev WebSocket/font requests.
+  allowedDevOrigins: ['127.0.0.1'],
+
+  // The owned runtime launcher allocates PORT. Serve its API on that same
+  // loopback origin so preview ports need no permanent backend CORS grants.
+  // Only the explicit dev:runtime command enables this fixed local target.
+  ...(isRuntimePreview && {
+    env: { NEXT_PUBLIC_API_BASE_URL: `http://127.0.0.1:${runtimePort}/__rapitas_api` },
+    rewrites: async () => [
+      { source: '/__rapitas_api/:path*', destination: 'http://127.0.0.1:3001/:path*' },
+    ],
+  }),
+
   // ビルド出力ディレクトリを環境で分離
   // CI環境では標準の.nextを使用（静的エクスポートは常にoutディレクトリに出力される）
   distDir: !isCI && isTauriBuild ? '.next-tauri' : '.next',

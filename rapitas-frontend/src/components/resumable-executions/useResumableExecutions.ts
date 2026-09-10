@@ -102,6 +102,12 @@ export function useResumableExecutions(): UseResumableExecutionsReturn {
         return data;
       } else {
         logger.warn(`Failed to fetch resumable executions: ${res.status} ${res.statusText}`);
+        // 503 means the backend explicitly couldn't verify interrupted-execution
+        // state (DB query failure) — surface it as a connection issue rather than
+        // silently treating the resulting empty list as "nothing interrupted".
+        if (res.status === 503) {
+          setConnectionError(new Error(t('backendDisconnected')));
+        }
         setExecutions([]);
       }
     } catch (error) {
@@ -113,7 +119,7 @@ export function useResumableExecutions(): UseResumableExecutionsReturn {
       setIsLoading(false);
     }
     return [];
-  }, []);
+  }, [t]);
 
   const { isConnected, isIntentionalRestart } = useBackendHealth({
     onReconnectAction: () => {

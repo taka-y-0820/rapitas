@@ -511,3 +511,27 @@ describe('APIClient.performFetch - SSR / non-browser fallbacks', () => {
     }
   });
 });
+
+describe('APIClient timeout logging', () => {
+  it('warns instead of error logging while still rejecting the timed out request', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockOfflineFetch.mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise((_, reject) => {
+          init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+        }),
+    );
+    try {
+      const client = new APIClient();
+      await expect(
+        client.fetch('/tasks/805', { skipCache: true, skipRetry: true, timeoutMs: 1 }),
+      ).rejects.toThrow('Request timeout');
+      expect(warn).toHaveBeenCalledWith('[api-client]', '[api-client] timeout', 'GET /tasks/805');
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+});

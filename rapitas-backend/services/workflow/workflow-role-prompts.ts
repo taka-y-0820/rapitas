@@ -1,3 +1,7 @@
+import {
+  verificationEvidencePrompt,
+  shellExitCodeSafetyRule,
+} from './workflow-verification-evidence-prompt';
 /**
  * Workflow Role Prompts
  *
@@ -9,6 +13,7 @@ import {
   QUESTION_FORMAT_GUIDANCE_JA,
   QUESTION_FORMAT_GUIDANCE_EN,
 } from './workflow-question-format-guidance';
+import { resolveAcceptanceCriteria } from '../agents/verification/acceptance-self-check';
 
 /** Researcher-role prompt texts. */
 export interface ResearcherTexts {
@@ -82,12 +87,20 @@ export interface RoleContextTexts {
  */
 export function buildRoleTexts(
   taskId: number,
-  task: { title: string; description: string | null },
+  task: { title: string; description: string | null; acceptanceCriteria?: string | null },
   language: 'ja' | 'en',
 ): RoleContextTexts {
+  const criteria = resolveAcceptanceCriteria(task);
+  const acceptanceBlock = criteria.length
+    ? '\n\n' +
+      (language === 'ja'
+        ? '## 明示された受入条件\n以下の各条件を計画・実装・検証に対応づけてください。調査結果や過去の計画を理由に省略しないでください。既存計画との矛盾や欠落は完了扱いせず報告し、正規の再計画経路で解消してください。\n'
+        : '## Explicit acceptance criteria\nMap every criterion to planning, implementation and verification. Do not omit criteria based on prior research or plans. Report contradictions or omissions in an existing plan and resolve them through the supported replanning flow before claiming completion.\n') +
+      criteria.map((criterion, index) => `${index + 1}. ${criterion}`).join('\n')
+    : '';
   const texts = {
     ja: {
-      taskInfo: `# タスク情報\n- **タイトル**: ${task.title}\n- **説明**: ${task.description || '(なし)'}\n- **タスクID**: ${taskId}`,
+      taskInfo: `# タスク情報\n- **タイトル**: ${task.title}\n- **説明**: ${task.description || '(なし)'}\n- **タスクID**: ${taskId}${acceptanceBlock}`,
       questionFormat: QUESTION_FORMAT_GUIDANCE_JA,
       researcher: {
         instruction: '上記のタスクについてコードベースを調査してください。',
@@ -107,7 +120,7 @@ export function buildRoleTexts(
         output:
           '調査結果をresearch.mdとしてMarkdown形式でまとめてください。\n\n' +
           '出力整形: 見出しはテンプレートの形（例: `## 影響範囲分析`）のまま書き、`[...]` のプレースホルダ説明を見出しや本文に残さない（`## 影響範囲: [変更が及ぶファイル一覧]` のような見出しは不可）。類似コードのセクション見出しは「類似機能」を使う（「類似実装」ではなく）。\n\n' +
-          '**重要**: 調査の結果、タスクの要件が既存コードで**既に満たされており修正が不要**だと判断した場合は、research.md の最後に必ずこの見出し行を入れてください: `## 結論: 修正不要`（直後に1〜2行で根拠を記載）。これにより plan/実装フェーズに進まず research 段階で完了でき、不要な再計画ループ（plan_invalid_replan）や重複PRを避けられます。本当に変更が必要な場合はこの行を書かないでください。',
+          '**重要**: 既存コードで修正が不要なら research.md に `## 結論: 修正不要` と根拠を記載してください。これはコード変更の要否の判断であり、タスク完了の証拠ではありません。未実施のテスト・運用確認・受入条件を明記し、通常の検証と必要な完了ゲートを維持してください。不要な実装や重複PRは作らず、既存成果の確認を後続作業として示してください。',
       },
       planner: {
         researchHeader: '# リサーチャーの調査結果 (research.md)',
@@ -145,7 +158,12 @@ export function buildRoleTexts(
           '- 同様に `PUT /tasks/:id/status` などタスクステータスを変更する API も呼ばないでください。状態遷移は Rapitas 側が自動で行います。\n' +
           '- ワークフロー API の保存系を叩いても **400 で拒否されます** (status guard)。回避策の探索はせず、コード変更が終わったらそこで終了してください。\n' +
           `- **完了前の自己検証（必須・ジョブ起動＋GETポーリング）**: コード変更が完了したと判断したら、終了する前に \`curl -s --max-time 30 -X POST http://127.0.0.1:3001/workflow/tasks/${taskId}/run-verification\` を実行してください。このAPIは即座に \`{"runId":"...","status":"running","pollUrl":"..."}\` を返し、実際のlint/型/テストゲートはサーバー側で非同期に実行されます。\n` +
-          '- **結果の取得（GETポーリング、POSTの再送は禁止）**: 応答の `pollUrl`（`GET http://127.0.0.1:3001<pollUrl>`）を20秒間隔・最大45回（合計最大900秒）ポーリングしてください。`status:"completed"` になったら `ok`/`unverifiable`/`checks`/`markdown` を確認し、`"ok":false` なら内容を修正して再度POSTから実行（最大3回）。`status:"failed"` ならエラー内容を確認して修正してください。45回経過しても `running` のまま、または `status:"interrupted"`（前回ジョブがサーバー再起動等で中断）の場合は、検証を「未確定」として最終サマリに記録し終了してください。**同一taskIdへ`run-verification`をPOSTで繰り返し送る行為・接続断のたびに新しい検証を起動する行為は禁止**です（実行中のジョブがあれば同じ `runId` を返すだけで新規ジョブは起動されません）。最初のPOSTの応答自体を受け取れなかった場合は `GET http://127.0.0.1:3001/workflow/tasks/${taskId}/run-verification/latest` で直近のジョブを取得してください（これも新規検証は起動しません）。検証状態を記録するためにローカルファイルを作る場合、`status` が `completed`/`failed`/`interrupted` のいずれかに確定するまではそのファイルを削除しないでください。最終サマリには使用した `runId` を必ず記載してください。\n' +
+          '- **結果の取得（GETポーリング、POSTの再送は禁止）**: 応答の `pollUrl`（`GET http://127.0.0.1:3001<pollUrl>`）を20秒間隔・最大45回（合計最大900秒）ポーリングしてください。`status:"completed"` になったら `ok`/`unverifiable`/`checks`/`markdown` を確認し、`"ok":false` なら内容を修正して再度POSTから実行（最大3回）。`status:"failed"` ならエラー内容を確認して修正してください。45回経過しても `running` のまま、または `status:"interrupted"`（前回ジョブがサーバー再起動等で中断）の場合は、検証を「未確定」として最終サマリに記録し終了してください。**同一taskIdへ`run-verification`をPOSTで繰り返し送る行為・接続断のたびに新しい検証を起動する行為は禁止**です（実行中のジョブがあれば同じ `runId` を返すだけで新規ジョブは起動されません）。最初のPOSTの応答自体を受け取れなかった場合は `GET http://127.0.0.1:3001/workflow/tasks/${taskId}/run-verification/latest` で直近のジョブを取得してください（これも新規検証は起動しません）。検証状態を記録するためにローカルファイルを作る場合、`status` が `completed`/`failed`/`interrupted` のいずれかに確定するまではそのファイルを削除しないでください。最終サマリには使用した `runId` を必ず記載してください。\n'.replace(
+            '${taskId}',
+            String(taskId),
+          ) +
+          verificationEvidencePrompt(language) +
+          shellExitCodeSafetyRule(language) +
           '- **受入基準の自己照合（完了宣言の条件）**: 自己検証の応答に `acceptance=NG` が含まれる場合、差分が受入基準に対応していない（または受入基準・タスク本文と無関係な差分である）可能性が高い。各受入基準に「この差分のどのファイル/変更が満たすか」を対応付けて確認し、対応付けられない基準が1つでも残る間は完了を宣言せず、差分を修正して自己検証を再実行してください。機械照合の誤検出（対応済みなのに NG）と判断した場合のみ、どの変更がどの基準を満たすかを最終サマリで明示した上で終了してよい。同様に `coverage=NG`（ソース変更にテスト非同伴）も、テストを追加してから完了してください。\n' +
           '- 実装が完了したら、変更内容のサマリ (どのファイルを何のために変えたか) を最後のメッセージに残して終了してください。Rapitas が後段で verify.md を自動生成します。\n' +
           '- **テスト検証はファイル単位** (`bun test <1ファイル>`) で行ってください。bun の `mock.module` は**プロセスグローバル**なので、同じモジュールを mock する複数のテストファイルを**同時実行すると mock が衝突して偽の失敗**になります。これは bun の制約でありコードのバグではありません。**各ファイルが単体で通れば十分**です。複数テストファイルを「同時に通す」ためにモックの順序変更や beforeAll 化を延々と試みないでください（解決不能であり、時間を浪費します）。',
@@ -154,6 +172,8 @@ export function buildRoleTexts(
         planHeader: '# 実装計画 (plan.md)',
         diffHeader: '# 変更差分 (git diff)',
         instruction:
+          verificationEvidencePrompt(language) +
+          shellExitCodeSafetyRule(language) +
           '上記の計画と実装結果を検証し、verify.mdとしてMarkdown形式でレポートを作成してください。\n\n' +
           '計画チェックリストの消化状況、テスト結果、品質メトリクスを含めてください。\n\n' +
           '## 検証フェーズの厳守事項\n' +
@@ -193,7 +213,7 @@ export function buildRoleTexts(
       },
     },
     en: {
-      taskInfo: `# Task Information\n- **Title**: ${task.title}\n- **Description**: ${task.description || '(None)'}\n- **Task ID**: ${taskId}`,
+      taskInfo: `# Task Information\n- **Title**: ${task.title}\n- **Description**: ${task.description || '(None)'}\n- **Task ID**: ${taskId}${acceptanceBlock}`,
       questionFormat: QUESTION_FORMAT_GUIDANCE_EN,
       researcher: {
         instruction: 'Please investigate the codebase for the above task.',
@@ -211,7 +231,7 @@ export function buildRoleTexts(
         output:
           'Please summarize the research results as research.md in Markdown format.\n\n' +
           'Formatting: keep headings in their template form (e.g. `## 影響範囲分析`) — never leave `[...]` placeholder notes in headings or body (a heading like `## 影響範囲: [list of affected files]` is invalid). Use 「類似機能」 as the similar-code section heading (not 「類似実装」).\n\n' +
-          '**Important**: If your investigation concludes the task requirement is ALREADY satisfied by existing code and no change is needed, you MUST end research.md with this exact heading line: `## Conclusion: No change needed` (followed by 1-2 lines of justification). This lets the task complete at the research phase instead of proceeding to plan/implementation — avoiding a wasted re-plan loop (plan_invalid_replan) and a duplicate PR. Do NOT write this line if any change is actually required.',
+          '**Important**: If existing code needs no change, include `## Conclusion: No change needed` with justification. This is a code-change assessment, not completion evidence. List outstanding tests, operational verification, and acceptance criteria; preserve normal verification and required completion gates. Avoid unnecessary implementation or duplicate PRs and identify verification of existing work as the next step.',
       },
       planner: {
         researchHeader: '# Research Results (research.md)',
@@ -247,7 +267,12 @@ export function buildRoleTexts(
           '- DO NOT call `PUT /tasks/:id/status` or any task-status mutation API. State transitions are managed by Rapitas.\n' +
           '- Save-type workflow API calls will return 400 if you try (status guard). Do not search for workarounds — finish when code changes are done.\n' +
           `- **Self-verification before finishing (REQUIRED — job launch + GET polling)**: once you judge the code changes complete, run \`curl -s --max-time 30 -X POST http://127.0.0.1:3001/workflow/tasks/${taskId}/run-verification\` before exiting. This API returns immediately with \`{"runId":"...","status":"running","pollUrl":"..."}\`; the actual lint/type/test gate runs asynchronously on the server.\n` +
-          '- **Retrieving the result (GET polling — do NOT re-send the POST)**: poll the response\'s `pollUrl` (`GET http://127.0.0.1:3001<pollUrl>`) every 20 seconds, up to 45 times (900 seconds total). Once `status:"completed"`, check `ok`/`unverifiable`/`checks`/`markdown`; if `"ok":false`, fix the issues and re-run from POST (up to 3 times). If `status:"failed"`, inspect the error and fix it. If it is still `running` after 45 polls, or `status:"interrupted"` (the previous job was interrupted by e.g. a server restart), record verification as unconfirmed in your final summary and exit. **Repeatedly POSTing `run-verification` for the same taskId, or starting a new verification on every disconnect, is FORBIDDEN** — a running job returns the SAME `runId` and no new job is started. If the initial POST response itself was never received, use `GET http://127.0.0.1:3001/workflow/tasks/${taskId}/run-verification/latest` to fetch the most recent job (this also never starts a new one). If you keep a local file to track verification state, do NOT delete it until `status` resolves to one of `completed`/`failed`/`interrupted`. Always record the `runId` you used in your final summary.\n' +
+          '- **Retrieving the result (GET polling — do NOT re-send the POST)**: poll the response\'s `pollUrl` (`GET http://127.0.0.1:3001<pollUrl>`) every 20 seconds, up to 45 times (900 seconds total). Once `status:"completed"`, check `ok`/`unverifiable`/`checks`/`markdown`; if `"ok":false`, fix the issues and re-run from POST (up to 3 times). If `status:"failed"`, inspect the error and fix it. If it is still `running` after 45 polls, or `status:"interrupted"` (the previous job was interrupted by e.g. a server restart), record verification as unconfirmed in your final summary and exit. **Repeatedly POSTing `run-verification` for the same taskId, or starting a new verification on every disconnect, is FORBIDDEN** — a running job returns the SAME `runId` and no new job is started. If the initial POST response itself was never received, use `GET http://127.0.0.1:3001/workflow/tasks/${taskId}/run-verification/latest` to fetch the most recent job (this also never starts a new one). If you keep a local file to track verification state, do NOT delete it until `status` resolves to one of `completed`/`failed`/`interrupted`. Always record the `runId` you used in your final summary.\n'.replace(
+            '${taskId}',
+            String(taskId),
+          ) +
+          verificationEvidencePrompt(language) +
+          shellExitCodeSafetyRule(language) +
           '- Once implementation is done, leave a short summary (which files changed and why) as your final message and exit. Rapitas auto-generates verify.md downstream.\n' +
           "- **Verify tests PER FILE** (`bun test <one-file>`). Bun's `mock.module` is PROCESS-GLOBAL, so two test files that mock the same module conflict and produce FALSE failures when run together. That is a bun limitation, not a code bug. **Each file passing in isolation is sufficient.** Do NOT keep reordering mocks or moving imports into beforeAll trying to make multiple test files pass together — it is unsolvable and wastes time.",
       },
@@ -255,6 +280,8 @@ export function buildRoleTexts(
         planHeader: '# Implementation Plan (plan.md)',
         diffHeader: '# Changes (git diff)',
         instruction:
+          verificationEvidencePrompt(language) +
+          shellExitCodeSafetyRule(language) +
           'Please verify the implementation plan and results above, and create a report as verify.md in Markdown format.\n\n' +
           'Include the completion status of the plan checklist, test results, and quality metrics.\n\n' +
           '## Verification phase strict rules\n' +

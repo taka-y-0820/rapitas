@@ -556,6 +556,15 @@ describe('mergePullRequest — worktree使用中チェック', () => {
     conflictingWorktreePath = '/other-wt';
     script = [
       { match: /pr view \d+ --json commits/, result: '3\n' },
+      {
+        match: /pr view \d+ --json number,state,mergedAt,baseRefName/,
+        result: JSON.stringify({
+          number: 1,
+          state: 'MERGED',
+          mergedAt: '2026-09-09T00:00:00Z',
+          baseRefName: 'develop',
+        }),
+      },
       { match: /pr merge \d+ --merge --delete-branch/, result: '' },
     ];
 
@@ -572,6 +581,15 @@ describe('mergePullRequest — worktree使用中チェック', () => {
     // conflictingWorktreePath = null (デフォルト) → 競合なし
     script = [
       { match: /pr view \d+ --json commits/, result: '3\n' },
+      {
+        match: /pr view \d+ --json number,state,mergedAt,baseRefName/,
+        result: JSON.stringify({
+          number: 1,
+          state: 'MERGED',
+          mergedAt: '2026-09-09T00:00:00Z',
+          baseRefName: 'develop',
+        }),
+      },
       { match: /pr merge \d+ --merge --delete-branch/, result: '' },
       { match: /git checkout develop$/, result: '' },
       { match: /git pull$/, result: '' },
@@ -587,6 +605,15 @@ describe('mergePullRequest — worktree使用中チェック', () => {
   test('post-merge の checkout は短め、pull は長めのタイムアウトになること (#809)', async () => {
     script = [
       { match: /pr view \d+ --json commits/, result: '3\n' },
+      {
+        match: /pr view \d+ --json number,state,mergedAt,baseRefName/,
+        result: JSON.stringify({
+          number: 1,
+          state: 'MERGED',
+          mergedAt: '2026-09-09T00:00:00Z',
+          baseRefName: 'develop',
+        }),
+      },
       { match: /pr merge \d+ --merge --delete-branch/, result: '' },
       { match: /git checkout develop$/, result: '' },
       { match: /git pull$/, result: '' },

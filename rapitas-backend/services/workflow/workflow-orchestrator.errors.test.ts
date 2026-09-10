@@ -68,7 +68,7 @@ const mockPrisma = {
   },
   workflowRoleConfig: { findUnique: mock(() => Promise.resolve(roleConfig)) },
   systemPrompt: { findUnique: mock(() => Promise.resolve(null)) },
-  workflowTransition: { count: mock(() => Promise.resolve(0)) },
+  workflowTransition: { findFirst: async () => null, count: mock(() => Promise.resolve(0)) },
 };
 
 mock.module('../../config/logger', () => ({
@@ -125,6 +125,8 @@ mock.module('./workflow-agent-executor', () => ({
   ),
 }));
 mock.module('../agents/task-execution-lock', () => ({
+  getTaskExecutionCancellationVersion: () => 0,
+  getTaskExecutionLockOwner: () => Symbol.for('test-workflow-lock'),
   DEFAULT_LOCK_TTL_MS: 30 * 60 * 1000,
   WORKFLOW_LOCK_TTL_MS: 30 * 60 * 1000,
   acquireTaskExecutionLock: mock(() => true),

@@ -17,7 +17,13 @@ import { getWorkflowLockTtlMs } from './execution-timeouts';
 const log = createLogger('task-execution-lock');
 
 /** Tracks currently locked tasks with the time the lock was acquired. */
-const taskExecutionLocks = new Map<number, { lockedAt: Date; expiresAt: number }>();
+const taskExecutionLocks = new Map<number, { lockedAt: Date; expiresAt: number; owner: symbol }>();
+const cancellationVersions = new Map<number, number>();
+
+/** Survives normal lease release so deferred next-phase callbacks can observe a stop. */
+export function getTaskExecutionCancellationVersion(taskId: number): number {
+  return cancellationVersions.get(taskId) ?? 0;
+}
 
 /**
  * Lock TTL must OUTLIVE a phase so a long phase never has its lock stolen
@@ -49,7 +55,11 @@ export function acquireTaskExecutionLock(
     }
     log.warn(`[TaskExecutionLock] Stale lock released for task ${taskId}`);
   }
-  taskExecutionLocks.set(taskId, { lockedAt: new Date(), expiresAt: Date.now() + ttlMs });
+  taskExecutionLocks.set(taskId, {
+    lockedAt: new Date(),
+    expiresAt: Date.now() + ttlMs,
+    owner: Symbol(),
+  });
   return true;
 }
 
@@ -58,10 +68,19 @@ export function acquireTaskExecutionLock(
  *
  * @param taskId - The task ID to unlock / アンロック対象のタスクID
  */
-export function releaseTaskExecutionLock(taskId: number): void {
+export function releaseTaskExecutionLock(taskId: number, owner?: symbol): void {
+  if (owner === undefined) {
+    cancellationVersions.set(taskId, getTaskExecutionCancellationVersion(taskId) + 1);
+  }
+  if (owner !== undefined && taskExecutionLocks.get(taskId)?.owner !== owner) return;
   if (taskExecutionLocks.delete(taskId)) {
     log.info(`[TaskExecutionLock] Lock released for task ${taskId}`);
   }
+}
+
+/** Capture the current lease identity; stopping or replacing it invalidates the identity. */
+export function getTaskExecutionLockOwner(taskId: number): symbol | undefined {
+  return isTaskExecutionLocked(taskId) ? taskExecutionLocks.get(taskId)?.owner : undefined;
 }
 
 /**

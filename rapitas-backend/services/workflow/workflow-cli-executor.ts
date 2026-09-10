@@ -9,6 +9,7 @@
  * workflow-cli-executor-* modules.
  */
 import { prisma } from '../../config';
+import { ExecutionCancelledError } from '../agents/execution-cancelled-error';
 import { AgentOrchestrator } from '../agents/agent-orchestrator';
 import { resolveTaskWithTheme } from '../task/task-resolver';
 import { getAgentTimeoutMs } from '../agents/execution-timeouts';
@@ -38,11 +39,28 @@ export { canReuseWorktree } from '../agents/orchestrator/git-operations/worktree
  * @param sessionId - Session opened for this phase. / このフェーズのセッションID
  * @param success - Whether the phase succeeded. / フェーズが成功したか
  */
-async function finalizeAgentSession(sessionId: number, success: boolean): Promise<void> {
+async function finalizeAgentSession(
+  sessionId: number,
+  success: boolean,
+  cancelled = false,
+): Promise<void> {
   try {
-    await prisma.agentSession.update({
-      where: { id: sessionId },
-      data: { status: success ? 'completed' : 'failed', lastActivityAt: new Date() },
+    await prisma.agentSession.updateMany({
+      where: {
+        id: sessionId,
+        status: { in: ['active', 'running'] },
+        ...(cancelled
+          ? {}
+          : {
+              agentExecutions: {
+                none: { status: { in: ['canceling', 'cancelling', 'cancelled', 'canceled'] } },
+              },
+            }),
+      },
+      data: {
+        status: cancelled ? 'cancelled' : success ? 'completed' : 'failed',
+        lastActivityAt: new Date(),
+      },
     });
   } catch {
     /* session bookkeeping is never worth failing (or delaying) the phase for */
@@ -78,6 +96,7 @@ export async function executeCLIAgent(
   language: 'ja' | 'en',
   advanceWorkflow: (taskId: number, language: 'ja' | 'en') => Promise<WorkflowAdvanceResult>,
   getOrCreateDevConfig: (taskId: number) => Promise<{ id: number }>,
+  assertOwnership?: () => void,
 ): Promise<WorkflowAdvanceResult> {
   const orchestrator = AgentOrchestrator.getInstance(prisma);
 
@@ -100,6 +119,7 @@ export async function executeCLIAgent(
   const agentsMd = readAgentsMdConstraints(effectiveWorkDir);
 
   const devConfig = await getOrCreateDevConfig(taskId);
+  assertOwnership?.();
   const session = await prisma.agentSession.create({
     data: {
       configId: devConfig.id,
@@ -137,7 +157,15 @@ export async function executeCLIAgent(
   // post-processing throws. `finally` performs a side effect only — it never
   // returns or throws, so the original result/exception propagates unchanged.
   let sessionSucceeded = false;
+  let sessionCancelled = false;
   try {
+    const resumeSessionId = await resumeSessionIdFor(
+      taskId,
+      transition.role,
+      effectiveWorkDir,
+      agentConfig.agentType,
+    );
+    assertOwnership?.();
     const result = await orchestrator.executeTask(
       {
         id: taskId,
@@ -148,19 +176,17 @@ export async function executeCLIAgent(
       {
         taskId,
         sessionId: session.id,
+        assertExecutionAllowed: assertOwnership,
         agentConfigId: agentConfig.id,
         workingDirectory: effectiveWorkDir,
         modelIdOverride: agentConfig.modelId || undefined,
         // Repair bounce: continue the CLI session this role already built.
-        resumeSessionId: await resumeSessionIdFor(
-          taskId,
-          transition.role,
-          effectiveWorkDir,
-          agentConfig.agentType,
-        ),
+        resumeSessionId,
         // Role-aware wall-clock cap: implementer gets 2x the base (task 546).
         timeout: getAgentTimeoutMs(transition.role),
         autoCompleteTask: false,
+        // Verifiers need shell access for checks and workflow artifact saves.
+        // Their no-code result policy is selected by the output type below.
         investigationMode: isInvestigationPhase,
         // Phase-specific output type. Drives codex's positional headline
         // (`# 調査レポート` vs `# 実装計画` vs `# レビュー指摘`) so each
@@ -184,6 +210,7 @@ export async function executeCLIAgent(
       },
     );
 
+    assertOwnership?.();
     await harvestInvestigationOutput({
       taskId,
       transition,
@@ -192,7 +219,8 @@ export async function executeCLIAgent(
       phaseStartedAt,
     });
 
-    const { effectiveSuccess, phaseStatus, phaseError } = await runPhaseEpilogue({
+    assertOwnership?.();
+    const { effectiveSuccess, phaseStatus, phaseError, superseded } = await runPhaseEpilogue({
       taskId,
       transition,
       session,
@@ -205,12 +233,14 @@ export async function executeCLIAgent(
     sessionSucceeded = effectiveSuccess;
     const finalResult: WorkflowAdvanceResult = {
       success: effectiveSuccess,
+      ...(superseded ? { superseded: true } : {}),
       role: transition.role,
       status: phaseStatus,
       output: result.output,
       error: effectiveSuccess ? undefined : phaseError,
     };
 
+    assertOwnership?.();
     await runPostProcessing({
       taskId,
       transition,
@@ -223,7 +253,10 @@ export async function executeCLIAgent(
     });
 
     return finalResult;
+  } catch (error) {
+    sessionCancelled = error instanceof ExecutionCancelledError;
+    throw error;
   } finally {
-    await finalizeAgentSession(session.id, sessionSucceeded);
+    await finalizeAgentSession(session.id, sessionSucceeded, sessionCancelled);
   }
 }

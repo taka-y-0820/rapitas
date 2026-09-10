@@ -30,9 +30,8 @@ export interface ConflictPrVerdict {
 /**
  * Whether the PR behind a conflict-resolution task still has merge conflicts.
  *
- * Fails OPEN: a gh error, or a state still UNKNOWN after the retries, returns
- * dirty=false so the pre-existing completion behaviour is kept. Only a
- * definite DIRTY withholds completion.
+ * An unavailable or UNKNOWN state is not proof of conflict resolution.
+ * Callers must inspect state as well as dirty and hold completion if unknown.
  *
  * @param taskId - Task whose theme supplies the git working directory. / 作業ディレクトリを引くタスク
  * @param prNumber - PR number (Task.githubPrId holds the number itself). / PR番号
@@ -66,7 +65,7 @@ export async function readConflictPrVerdict(
   if (state === null) {
     log.warn(
       { taskId, prNumber },
-      '[Workflow] Could not read merge state for the conflict PR — completing on verify.md alone (fail open)',
+      '[Workflow] Could not read merge state for the conflict PR — completion requires a conclusive PR state',
     );
   }
   return { dirty: state === 'DIRTY', state };

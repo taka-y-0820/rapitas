@@ -9,6 +9,16 @@
  */
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 
+const evaluatedAt = new Date('2026-09-08T00:00:00Z');
+let taskWorkflowStatus = 'verify_done';
+const taskRow = () => ({
+  status: 'in-progress',
+  workflowStatus: taskWorkflowStatus,
+  updatedAt: evaluatedAt,
+  themeId: null,
+  acceptanceCriteria: null,
+});
+
 const noopLogger = { info: () => {}, warn: mock(() => {}), error: () => {}, debug: () => {} };
 
 const mockPrisma = {
@@ -31,6 +41,31 @@ const mockPrisma = {
 const readWorkflowFile = mock(() => Promise.resolve(''));
 const writeWorkflowFile = mock(() => Promise.resolve());
 const recordTransition = mock(() => Promise.resolve());
+Object.assign(mockPrisma, {
+  $transaction: async (operation: (tx: typeof mockPrisma) => unknown) => operation(mockPrisma),
+  agentExecution: { findFirst: async () => null },
+  themeAutoRun: { findUnique: async () => null },
+});
+Object.assign(mockPrisma, { workflowFileVersion: { create: async () => undefined } });
+Object.assign(mockPrisma.workflowFile, {
+  findUnique: (args: { where: { taskId_fileType: { fileType: string } } }) =>
+    args.where.taskId_fileType.fileType === 'plan'
+      ? mockPrisma.workflowFile.findFirst()
+      : Promise.resolve(null),
+  upsert: (args: { create: { taskId: number; content: string } }) =>
+    (writeWorkflowFile as (...args: unknown[]) => Promise<void>)(
+      args.create.taskId,
+      'verify',
+      args.create.content,
+    ),
+});
+Object.assign(mockPrisma.workflowTransition, {
+  create: async (args: { data: { metadata: string } }) =>
+    (recordTransition as (...args: unknown[]) => Promise<void>)({
+      ...args.data,
+      metadata: JSON.parse(args.data.metadata),
+    }),
+});
 
 mock.module('../../config/logger', () => ({ createLogger: () => noopLogger }));
 mock.module('../../config/database', () => ({
@@ -53,19 +88,75 @@ mock.module('./blocked-task-escalation', () => ({
   countEscalatedBlocked: () => Promise.resolve(0),
 }));
 
+const resumeAdmission = mock(async () => 'scheduler_owned');
+mock.module('./verify-repair-queue', () => ({ enqueueCommittedRepair: resumeAdmission }));
+
 const { attemptVerifyRepair } = await import('./verify-self-repair');
 
 describe('attemptVerifyRepair — stale-verdict CAS guard', () => {
   beforeEach(() => {
+    resumeAdmission.mockReset().mockResolvedValue('scheduler_owned');
+    taskWorkflowStatus = 'verify_done';
+    mockPrisma.task.findUnique
+      .mockReset()
+      .mockImplementation(async () => taskRow() as unknown as null);
     mockPrisma.userSettings.findFirst.mockReset().mockResolvedValue(null);
     mockPrisma.activityLog.findFirst.mockReset().mockResolvedValue(null);
     mockPrisma.workflowTransition.count.mockReset().mockResolvedValue(0);
     mockPrisma.task.updateMany.mockReset().mockResolvedValue({ count: 1 });
+
     // resolveImplementEntryStatus checks the WorkflowFile row for plan.md
     mockPrisma.workflowFile.findFirst.mockReset().mockResolvedValue({ id: 1 } as unknown as null);
     readWorkflowFile.mockReset().mockResolvedValue('# plan');
     writeWorkflowFile.mockReset().mockResolvedValue(undefined);
     recordTransition.mockReset().mockResolvedValue(undefined);
+  });
+
+  test('stopped task with unchanged workflow status cannot be repaired', async () => {
+    const stopped = { status: 'todo', workflowStatus: 'verify_done' };
+    mockPrisma.task.updateMany.mockImplementation((...args: unknown[]) => {
+      const query = args[0] as { where: { status?: string; workflowStatus: string } };
+      return Promise.resolve({
+        count:
+          (query.where.status === undefined || query.where.status === stopped.status) &&
+          query.where.workflowStatus === stopped.workflowStatus
+            ? 1
+            : 0,
+      });
+    });
+    expect(await attemptVerifyRepair(551, 'verify_done', 'reason', 'verify body')).toEqual({
+      bounced: false,
+      stale: true,
+    });
+    expect(writeWorkflowFile).not.toHaveBeenCalled();
+    expect(recordTransition).not.toHaveBeenCalled();
+  });
+
+  test('unreadable plan cannot select a plan-less implementation entry', async () => {
+    mockPrisma.workflowFile.findFirst.mockRejectedValueOnce(new Error('plan read unavailable'));
+    await expect(attemptVerifyRepair(551, 'verify_done', 'reason', 'verify body')).rejects.toThrow(
+      'plan read unavailable',
+    );
+    expect(mockPrisma.task.updateMany).not.toHaveBeenCalled();
+    expect(writeWorkflowFile).not.toHaveBeenCalled();
+    expect(recordTransition).not.toHaveBeenCalled();
+  });
+
+  test('resume failure is surfaced instead of reporting a successful bounce', async () => {
+    resumeAdmission.mockRejectedValueOnce(new Error('resume read unavailable'));
+    await expect(attemptVerifyRepair(551, 'verify_done', 'reason', 'verify body')).rejects.toThrow(
+      'resume read unavailable',
+    );
+    expect(recordTransition).toHaveBeenCalledTimes(1);
+  });
+
+  test('database failure is not reported as a harmless stale verdict', async () => {
+    mockPrisma.task.updateMany.mockRejectedValue(new Error('database unavailable'));
+    await expect(attemptVerifyRepair(551, 'verify_done', 'reason', 'verify body')).rejects.toThrow(
+      'database unavailable',
+    );
+    expect(writeWorkflowFile).not.toHaveBeenCalled();
+    expect(recordTransition).not.toHaveBeenCalled();
   });
 
   test('CASが一致すれば通常どおり bounce する（plan有→plan_approved）', async () => {
@@ -77,7 +168,12 @@ describe('attemptVerifyRepair — stale-verdict CAS guard', () => {
       where: { id: number; workflowStatus: unknown };
     };
     // ガード条件が評価時点のステータスを固定していること（task 551 の再発防止）。
-    expect(call.where).toEqual({ id: 551, workflowStatus: 'verify_done' });
+    expect(call.where).toEqual({
+      id: 551,
+      status: 'in-progress',
+      workflowStatus: 'verify_done',
+      updatedAt: evaluatedAt,
+    });
     expect(writeWorkflowFile).toHaveBeenCalled();
     expect(recordTransition).toHaveBeenCalled();
   });
@@ -100,12 +196,13 @@ describe('attemptVerifyRepair — stale-verdict CAS guard', () => {
   });
 
   test('スナップショット無し(null)は terminal を除外する notIn ガードで巻き戻す', async () => {
+    taskWorkflowStatus = 'in_progress';
     const result = await attemptVerifyRepair(551, null, 'reason', 'verify body');
     expect(result.bounced).toBe(true);
     const call = mockPrisma.task.updateMany.mock.calls[0]?.[0] as {
       where: { id: number; workflowStatus: unknown };
     };
-    expect(call.where.workflowStatus).toEqual({ notIn: ['completed', 'verify_done'] });
+    expect(call.where.workflowStatus).toBe('in_progress');
   });
 
   test('修復上限到達は従来どおり stale なしの bounced:false（callerがblockしてよい）', async () => {
@@ -140,7 +237,9 @@ describe('attemptVerifyRepair — stale-verdict CAS guard', () => {
       'detectRepeatLoop の phase_completed:* 除外が bounce 回数との対応関係を検証していない';
     const R3 =
       '受入基準1 に対して diff は test-triage.test.ts を一切変更しておらず、元原因にも触れていない';
+    taskWorkflowStatus = 'in_progress';
     mockPrisma.task.findUnique.mockResolvedValue({
+      ...taskRow(),
       themeId: 5,
       title: '対象タスク',
       acceptanceCriteria: CRITERIA_JSON,

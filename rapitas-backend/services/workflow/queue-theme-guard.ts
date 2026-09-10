@@ -3,6 +3,7 @@ import { prisma } from '../../config';
 export async function isQueueThemeRunning(
   taskId: number,
   db: Pick<typeof prisma, 'task' | 'themeAutoRun'> = prisma,
+  validatedRepair = false,
 ): Promise<boolean> {
   try {
     const task = await db.task.findUnique({
@@ -16,7 +17,11 @@ export async function isQueueThemeRunning(
       where: { themeId: task.themeId },
       select: { enabled: true, status: true },
     });
-    return !run || (run.enabled && run.status === 'running');
+    return (
+      !run ||
+      (run.enabled && run.status === 'running') ||
+      (validatedRepair && !run.enabled && run.status === 'idle')
+    );
   } catch {
     return false;
   }

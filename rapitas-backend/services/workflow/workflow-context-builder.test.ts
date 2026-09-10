@@ -120,6 +120,30 @@ const { buildRoleContext, researchModeDirective, applyPlanModeDirective } =
 const TASK = { title: 'Test task', description: 'A test description' };
 
 describe('buildRoleContext', () => {
+  test('every workflow role receives explicit DB acceptance criteria without dropping late items', async () => {
+    const criteria = [
+      'Preserve the existing plan for evidence-only answers',
+      'Measure retry count, elapsed time and cost',
+      'Handle simultaneous answers, stops and stale questions',
+    ];
+    const task = {
+      ...TASK,
+      description: 'A brief that omits the measurable requirements',
+      acceptanceCriteria: JSON.stringify(criteria),
+    };
+    for (const role of [
+      'researcher',
+      'planner',
+      'implementer',
+      'verifier',
+      'auto_verifier',
+    ] as const) {
+      for (const language of ['ja', 'en'] as const) {
+        const context = await buildRoleContext(1, role, task, language);
+        for (const criterion of criteria) expect(context).toContain(criterion);
+      }
+    }
+  });
   describe('auto_verifier role', () => {
     test.each([
       { name: '検証結果サマリ heading in instruction', expected: '検証結果サマリ' },

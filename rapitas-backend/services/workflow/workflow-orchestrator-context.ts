@@ -7,6 +7,7 @@
  * workflow-orchestrator.ts (file-size ratchet, task 627); behavior is unchanged.
  */
 import { prisma } from '../../config';
+import { getDbProvider } from '../../config/db-provider';
 import { createLogger } from '../../config/logger';
 import { buildRoleContext } from './workflow-context-builder';
 import type { RoleTransition, WorkflowMode, WorkflowStatus } from './workflow-types';
@@ -33,6 +34,11 @@ export async function buildExecutionContext(
   workflowMode: WorkflowMode,
 ): Promise<string> {
   let context = await buildRoleContext(taskId, transition.role, task, language, workflowMode);
+  const provider = getDbProvider();
+  context +=
+    language === 'ja'
+      ? `\n\n## 実行環境\n稼働中のRapitasバックエンドのDBプロバイダー: ${provider}\nRapitas自体を変更する場合、この実環境への互換性も検証してください。別の対象プロジェクトのDBはそのプロジェクトの設定から確認してください。`
+      : `\n\n## Runtime environment\nActive Rapitas backend database provider: ${provider}\nWhen changing Rapitas itself, verify compatibility with this running environment. For a different target project, determine its database from that project's configuration.`;
 
   // Human-approved prompt-evolution addendum for this role (proposed by the
   // weekly evolution pipeline, approved on /system-prompts). Appended at the

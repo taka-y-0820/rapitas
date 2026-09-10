@@ -6,7 +6,7 @@
  * Not responsible for route definitions or file persistence.
  */
 
-import { dirname, join } from 'path';
+import { join } from 'path';
 import { prisma, getProjectRoot } from '../../config';
 import { AgentOrchestrator } from '../../services/agents/agent-orchestrator';
 import { createLogger } from '../../config/logger';
@@ -65,6 +65,8 @@ export type AutoCommitPRResult = {
    * the gate already set it `blocked`.
    */
   verificationBlocked?: boolean;
+  /** Infrastructure could not verify correctness; code repair is not justified. */
+  verificationUnverifiable?: boolean;
   error?: string;
 };
 
@@ -181,6 +183,7 @@ export async function performAutoCommitAndPR(
       return {
         ...result,
         verificationBlocked: true,
+        verificationUnverifiable: gate.result?.unverifiable === true || gate.result === null,
         error: `自動検証に失敗しました（${gate.result?.summary ?? 'lint/型エラー'}）。auto-commit/PR を中止し、タスクをブロックしました。`,
       };
     }
@@ -437,41 +440,14 @@ export async function performAutoCommitAndPR(
       );
     }
 
-    // Clean up git worktree after commit/PR/merge is complete.
-    // NOTE: baseDir is the worktree's parent repo, derived from worktreePath
-    // (<root>/.worktrees/<name>). workingDirectory can BE the worktree since
-    // resolveCommitCwd (task 774) — passing it tripped the removal guard.
-    const worktreePath = latestSession?.worktreePath;
-    // Boundary 5/5 — worktree removal is irreversible and destroys the evidence
-    // a stopped run must keep for inspection, so it is withheld too.
-    if (worktreePath && (await publicationAborted(taskId, 'before_worktree_cleanup')))
+    // A verify save is still inside the running CLI and precedes reviewed
+    // completion / CI / merge. Preserve its worktree and session reference.
+    // The existing cleanup scheduler owns eventual cleanup eligibility.
+    if (
+      latestSession?.worktreePath &&
+      (await publicationAborted(taskId, 'before_worktree_cleanup'))
+    )
       return { ...result, error: PUBLICATION_CANCELLED_ERROR };
-    if (worktreePath) {
-      // NOTE: removeError stays undefined only on a confirmed removal — a refusal
-      // (safety guard) and a thrown error both fall through to the same failure
-      // branch, since either way the directory was NOT actually removed.
-      let removeError: string | undefined;
-      try {
-        const baseDir = dirname(dirname(worktreePath));
-        const removed = await orchestrator.removeWorktree(baseDir, worktreePath);
-        if (!removed) removeError = 'removeWorktree refused or failed';
-      } catch (cleanupError) {
-        removeError = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
-      }
-
-      if (removeError) {
-        // NOTE: warn, not error (task 816) — cleanup failure must not fail the workflow; the cleanup scheduler retries and self-heals.
-        log.warn({ err: removeError }, `[Workflow] Worktree cleanup failed: ${worktreePath}`);
-        result.worktreeCleanupResult = { success: false, worktreePath, error: removeError };
-      } else {
-        await prisma.agentSession.update({
-          where: { id: latestSession.id },
-          data: { worktreePath: null },
-        });
-        result.worktreeCleanupResult = { success: true, worktreePath };
-        log.info(`[Workflow] Worktree cleaned up for task ${taskId}: ${worktreePath}`);
-      }
-    }
   } catch (error) {
     log.error({ err: error }, `[Workflow] Auto-commit/PR process failed for task ${taskId}`);
   }

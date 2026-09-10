@@ -11,6 +11,17 @@
  * 別ファイルに分離。
  */
 import { describe, expect, test, mock, beforeEach } from 'bun:test';
+mock.module('../../../../services/workflow/requirement-replan-service', () => ({
+  attemptRequirementReplan: async () => ({
+    committed: false,
+    reason: 'no_mismatch',
+    completionReceipt: { taskId: 715 },
+  }),
+}));
+
+mock.module('../../../../services/workflow/requirement-replan-commit', () => ({
+  advanceReviewedVerify: async (_db: unknown, receipt: unknown) => receipt,
+}));
 
 mock.module('../../../../config/logger', () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
@@ -18,7 +29,10 @@ mock.module('../../../../config/logger', () => ({
 
 const mockTaskUpdate = mock(() => Promise.resolve({})) as any;
 const mockPrisma = {
-  task: { update: mockTaskUpdate, findUnique: mock(() => Promise.resolve(null)) },
+  task: {
+    update: mockTaskUpdate,
+    findUnique: mock(() => Promise.resolve({ updatedAt: new Date(0) })),
+  },
   workflowTransition: { findFirst: mock(() => Promise.resolve(null)) },
 };
 mock.module('../../../../config', () => ({ prisma: mockPrisma }));
@@ -143,7 +157,7 @@ describe('computeAndApplyStatusTransition — 不変条件カットオフの配�
     expect(mockRecordTransition).not.toHaveBeenCalled();
     expect(mockTaskUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 572 },
+        where: { id: 572, updatedAt: new Date(0) },
         data: expect.objectContaining({ status: 'blocked' }),
       }),
     );

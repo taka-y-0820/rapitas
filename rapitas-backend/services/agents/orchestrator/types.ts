@@ -13,6 +13,8 @@ import type { ExecutionFileLogger } from '../execution-file-logger';
 import type { AgentConfigInput } from '../agent-factory';
 
 export type ExecutionOptions = {
+  /** Main-process admission check, repeated after async setup before launching an agent. */
+  assertExecutionAllowed?: () => void;
   taskId: number;
   sessionId: number;
   agentConfigId?: number;

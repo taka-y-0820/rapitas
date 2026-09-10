@@ -28,10 +28,34 @@ let page = null;
 let pageEvents = null;
 
 function resetPageEvents() {
-  pageEvents = { pageErrors: [], consoleErrors: [], serverErrors: [] };
+  pageEvents = {
+    pageErrors: [],
+    consoleErrors: [],
+    serverErrors: [],
+    failedRequests: [],
+    pendingRequests: new Map(),
+  };
 }
 
 function attachListeners(p) {
+  const requestLabel = (request) => {
+    const url = new URL(request.url());
+    return `${request.method()} ${url.origin}${url.pathname}`;
+  };
+  p.on('request', (request) => {
+    if (['xhr', 'fetch'].includes(request.resourceType())) {
+      pageEvents.pendingRequests.set(request, requestLabel(request));
+    }
+  });
+  p.on('requestfinished', (request) => pageEvents.pendingRequests.delete(request));
+  p.on('requestfailed', (request) => {
+    if (pageEvents.pendingRequests.has(request) && pageEvents.failedRequests.length < 20) {
+      pageEvents.failedRequests.push(
+        `${requestLabel(request)}: ${request.failure()?.errorText || 'failed'}`,
+      );
+    }
+    pageEvents.pendingRequests.delete(request);
+  });
   p.on('pageerror', (err) => pageEvents.pageErrors.push(String(err.message).slice(0, 300)));
   p.on('console', (msg) => {
     if (msg.type() === 'error') pageEvents.consoleErrors.push(msg.text().slice(0, 300));
@@ -187,6 +211,19 @@ async function cmdCheckPath(args) {
       timeout: args.timeoutMs || 25_000,
     });
     finding.httpStatus = res ? res.status() : 0;
+    if (args.readySelector) {
+      try {
+        await page
+          .locator(args.readySelector)
+          .first()
+          .waitFor({
+            state: 'visible',
+            timeout: args.readinessTimeoutMs ?? 25_000,
+          });
+      } catch (error) {
+        throw new Error(`Application readiness failed: ${error.message}`);
+      }
+    }
     await page.waitForTimeout(args.settleMs || 2_000);
     if (args.screenshotPath) {
       await page.screenshot({ path: args.screenshotPath, fullPage: false }).catch(() => {});
@@ -196,6 +233,16 @@ async function cmdCheckPath(args) {
     finding.navigationError = (e && e.message ? e.message : String(e)).slice(0, 300);
   }
   finding.pageErrors = pageEvents.pageErrors;
+  finding.failedRequests = pageEvents.failedRequests;
+  finding.pendingRequests = [...pageEvents.pendingRequests.values()].slice(0, 20);
+  if (!finding.screenshotPath && args.screenshotPath) {
+    await page
+      .screenshot({ path: args.screenshotPath, fullPage: false })
+      .then(() => {
+        finding.screenshotPath = args.screenshotPath;
+      })
+      .catch(() => {});
+  }
   finding.consoleErrors = pageEvents.consoleErrors;
   finding.serverErrors = pageEvents.serverErrors;
   await page.close().catch(() => {});
@@ -234,7 +281,9 @@ async function handleLine(line) {
   }
   const handler = HANDLERS[msg.cmd];
   if (!handler) {
-    process.stdout.write(`${JSON.stringify({ id: msg.id, ok: false, error: `unknown cmd: ${msg.cmd}` })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({ id: msg.id, ok: false, error: `unknown cmd: ${msg.cmd}` })}\n`,
+    );
     return;
   }
   try {

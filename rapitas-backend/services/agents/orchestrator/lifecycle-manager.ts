@@ -45,8 +45,11 @@ export async function saveAgentState(
       ? `プロセスが中断されました。\n\n【最後の出力】\n${info.lastOutput.slice(-1000)}`
       : `プロセスが異常終了しました。\n\n【最後の出力】\n${info.lastOutput.slice(-1000)}`;
 
-  await prisma.agentExecution.update({
-    where: { id: executionId },
+  const saved = await prisma.agentExecution.updateMany({
+    where: {
+      id: executionId,
+      status: { in: ['pending', 'running', 'waiting_for_input', 'interrupted'] },
+    },
     data: {
       status,
       output: info.state.output,
@@ -54,10 +57,15 @@ export async function saveAgentState(
       completedAt: new Date(),
     },
   });
+  // A concurrent stop or normal completion owns the terminal state.
+  if (saved.count !== 1) return;
 
   try {
-    await prisma.agentSession.update({
-      where: { id: info.sessionId },
+    await prisma.agentSession.updateMany({
+      where: {
+        id: info.sessionId,
+        status: { in: ['pending', 'active', 'running', 'waiting_for_input', 'interrupted'] },
+      },
       data: {
         status: 'interrupted',
         lastActivityAt: new Date(),
@@ -76,10 +84,11 @@ export async function saveAgentState(
       select: { id: true, status: true, workflowStatus: true },
     });
     if (task && task.status === 'in-progress') {
-      await prisma.task.update({
-        where: { id: info.taskId },
+      const reverted = await prisma.task.updateMany({
+        where: { id: info.taskId, status: 'in-progress', workflowStatus: task.workflowStatus },
         data: { status: 'todo' },
       });
+      if (reverted.count !== 1) return;
       logger.info(`[LifecycleManager] Task ${info.taskId} reverted to 'todo' during shutdown`);
       // Record the revert so isWithinRecoveryGrace (incident-signature-detectors.ts)
       // can grant this deliberate `status='todo'` × advanced `workflowStatus`

@@ -10,9 +10,9 @@
  */
 import { createLogger } from '../../../../config/logger';
 import type { VerificationCheck } from '../automated-verifier';
-import { resolveRuntimeConfig, substitutePort } from './runtime-config';
-import { allocateFreePort, launchApp, waitForHealthy } from './app-launcher';
+import { resolveRuntimeConfig } from './runtime-config';
 import { runBrowserSmoke, type SmokeRunResult } from './browser-smoke';
+import { acquireRuntimeServer, releaseRuntimeServer } from './worktree-server-registry';
 
 const log = createLogger('runtime-smoke');
 
@@ -21,8 +21,8 @@ const log = createLogger('runtime-smoke');
  * the code under test. A backend-only change cannot fix "Turbopack rejects
  * the frontend node_modules symlink", so failing the gate on it sends the
  * implementer into an unfixable verify-repair loop (task 536: two wasted
- * repair cycles on an identical environmental failure). These fail OPEN,
- * matching the module's stated tooling-absence philosophy.
+ * repair cycles on an identical environmental failure). These remain
+ * unverifiable, withholding completion until the environment is repaired.
  */
 export const ENV_FAILURE_RE =
   /points out of the filesystem root|TurbopackInternalError|Cannot find module '.*node_modules|ENOENT.*node_modules|EPERM.*node_modules|command not found|は、内部コマンドまたは外部コマンド/i;
@@ -89,12 +89,16 @@ export function evaluateSmokeFindings(smoke: SmokeRunResult): {
   const lines: string[] = [];
   let errorCount = 0;
   for (const f of smoke.findings) {
+    for (const request of f.failedRequests ?? []) lines.push(`    failed API request: ${request}`);
+    for (const request of f.pendingRequests ?? [])
+      lines.push(`    pending API request: ${request}`);
+    if (f.screenshotPath) lines.push(`    screenshot: ${f.screenshotPath}`);
     if (f.navigationError) {
       errorCount++;
       lines.push(`✗ ${f.path}: ページを開けない — ${f.navigationError}`);
       continue;
     }
-    const hard = f.pageErrors.length + f.serverErrors.length;
+    const hard = f.pageErrors.length + f.serverErrors.length + (f.failedRequests?.length ?? 0);
     if (hard > 0) {
       errorCount += hard;
       lines.push(`✗ ${f.path}: HTTP ${f.httpStatus}`);
@@ -106,7 +110,6 @@ export function evaluateSmokeFindings(smoke: SmokeRunResult): {
     if (f.consoleErrors.length > 0) {
       lines.push(`    (console.error ×${f.consoleErrors.length} — 参考情報、ブロックしません)`);
     }
-    if (f.screenshotPath) lines.push(`    screenshot: ${f.screenshotPath}`);
   }
   return { ok: errorCount === 0, errorCount, lines };
 }
@@ -162,54 +165,69 @@ export async function runRuntimeSmokeCheck(
     };
   }
 
-  const port = await allocateFreePort();
-  const baseUrl = normalizeLocalHost(substitutePort(cfg.url, port));
-  const app = launchApp(substitutePort(cfg.start, port), workdir, port);
-  try {
-    const healthy = await waitForHealthy(
-      `${baseUrl}${cfg.healthPath}`,
-      cfg.readyTimeoutMs,
-      { label },
-      () => app.hasExited(),
-    );
-    if (!healthy) {
-      const logs = app.logs();
-      const tail = logs.slice(-25).join('\n');
-      const exitNote = app.hasExited()
-        ? `（プロセスは exitCode=${app.exitCode()} で終了済み）`
-        : '';
-      // Environment failures (broken worktree symlinks, missing tooling) are
-      // not fixable by the implementer — hold as unverifiable with evidence instead
-      // of bouncing the phase into an unfixable repair loop.
-      if (looksLikeEnvironmentFailure(logs)) {
-        recentEnvFailures.set(workdir, Date.now());
-        log.warn(
-          { workdir, label, exitCode: app.exitCode() },
-          '[runtime-smoke] launch failed with an ENVIRONMENT signature — unverifiable; completion withheld',
-        );
-        return {
-          name: 'runtime',
-          ran: false,
-          ok: false,
-          unverifiable: true,
-          errorCount: 0,
-          details:
-            `runtime検証は環境起因の起動失敗のためスキップしました（worktreeセットアップ問題 — 実装の欠陥ではありません）${exitNote}。` +
-            `\n--- 起動ログ末尾 ---\n${tail}`,
-        };
-      }
+  // acquireRuntimeServer is the single chokepoint for this worktree: it
+  // reuses an already-running compatible server (or waits for one to
+  // drain/finish starting) instead of racing Next's own single-instance
+  // directory lock, which is exactly how task 906's job lost — a second
+  // launchApp() call against a worktree a prior verification pass hadn't
+  // finished tearing down yet.
+  const acquired = await acquireRuntimeServer(workdir, cfg, { label });
+  if (!acquired.ok) {
+    const tail = acquired.logs.slice(-25).join('\n');
+    const exitNote = acquired.hasExited
+      ? `（プロセスは exitCode=${acquired.exitCode} で終了済み）`
+      : '';
+    if (acquired.unverifiable) {
+      log.warn(
+        { workdir, label, reason: acquired.reason },
+        '[runtime-smoke] could not acquire the worktree server — unverifiable; completion withheld',
+      );
       return {
         name: 'runtime',
-        ran: true,
+        ran: false,
         ok: false,
-        errorCount: 1,
+        unverifiable: true,
+        errorCount: 0,
         details:
-          `アプリが ${cfg.readyTimeoutMs / 1000}s 以内に起動しませんでした ` +
-          `(${baseUrl}${cfg.healthPath} 無応答)${exitNote}。\n--- 起動ログ末尾 ---\n${tail}`,
+          `runtime検証はスキップしました: ${acquired.reason}${exitNote}` +
+          (tail ? `\n--- 起動ログ末尾 ---\n${tail}` : ''),
       };
     }
+    // Environment failures (broken worktree symlinks, missing tooling) are
+    // not fixable by the implementer — hold as unverifiable with evidence instead
+    // of bouncing the phase into an unfixable repair loop.
+    if (looksLikeEnvironmentFailure(acquired.logs)) {
+      recentEnvFailures.set(workdir, Date.now());
+      log.warn(
+        { workdir, label, exitCode: acquired.exitCode },
+        '[runtime-smoke] launch failed with an ENVIRONMENT signature — unverifiable; completion withheld',
+      );
+      return {
+        name: 'runtime',
+        ran: false,
+        ok: false,
+        unverifiable: true,
+        errorCount: 0,
+        details:
+          `runtime検証は環境起因の起動失敗のためスキップしました（worktreeセットアップ問題 — 実装の欠陥ではありません）${exitNote}。` +
+          `\n--- 起動ログ末尾 ---\n${tail}`,
+      };
+    }
+    return {
+      name: 'runtime',
+      ran: true,
+      ok: false,
+      errorCount: 1,
+      details: `${acquired.reason}${exitNote}。\n--- 起動ログ末尾 ---\n${tail}`,
+    };
+  }
 
-    const smoke = await runBrowserSmoke(baseUrl, cfg.checkPaths, label);
+  const baseUrl = normalizeLocalHost(acquired.baseUrl);
+  try {
+    const smoke = await runBrowserSmoke(baseUrl, cfg.checkPaths, label, {
+      readySelector: cfg.readySelector,
+      readinessTimeoutMs: cfg.readinessTimeoutMs,
+    });
     if (!smoke.browserAvailable) {
       // HTTP readiness alone does not prove the configured browser checks.
       return {
@@ -223,6 +241,16 @@ export async function runRuntimeSmokeCheck(
     }
 
     const verdict = evaluateSmokeFindings(smoke);
+    if (verdict.ok && !cfg.readySelector) {
+      return {
+        name: 'runtime',
+        ran: true,
+        ok: false,
+        unverifiable: true,
+        errorCount: 0,
+        details: `${verdict.lines.join('\n')}\nApplication readiness is unverified: configure readySelector for the application. HTTP responses alone do not prove that loading finished.`,
+      };
+    }
     return {
       name: 'runtime',
       ran: true,
@@ -231,7 +259,7 @@ export async function runRuntimeSmokeCheck(
       details: verdict.lines.join('\n'),
     };
   } catch (err) {
-    // Harness crash (not app failure) — fail open, never block on our own bug.
+    // Harness failure is not an app verdict; completion still requires verification.
     log.warn({ err, workdir }, '[runtime-smoke] harness error — unverifiable; completion withheld');
     return {
       name: 'runtime',
@@ -242,6 +270,6 @@ export async function runRuntimeSmokeCheck(
       details: `runtime検証ハーネスの内部エラーによりスキップ: ${err instanceof Error ? err.message : err}`,
     };
   } finally {
-    app.stop();
+    releaseRuntimeServer(acquired.lease);
   }
 }

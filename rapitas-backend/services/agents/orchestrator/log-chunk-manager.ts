@@ -17,6 +17,8 @@ export function createLogChunkManager(ctx: LogManagerContext) {
   let logSequenceNumber = ctx.initialSequenceNumber;
   let pendingLogChunks: { chunk: string; isError: boolean; timestamp: Date }[] = [];
   let pendingLogSave = false;
+  const cleanupHandlers: Array<() => Promise<void>> = [];
+  const registerCleanup = (handler: () => Promise<void>) => cleanupHandlers.push(handler);
 
   const flushLogChunks = async () => {
     if (pendingLogSave || pendingLogChunks.length === 0) return;
@@ -52,10 +54,11 @@ export function createLogChunkManager(ctx: LogManagerContext) {
 
   const cleanup = async () => {
     clearInterval(logFlushInterval);
+    await Promise.all(cleanupHandlers.map((handler) => handler()));
     await flushLogChunks();
   };
 
-  return { addChunk, cleanup, flushLogChunks };
+  return { addChunk, cleanup, flushLogChunks, registerCleanup };
 }
 
 export type LogChunkManager = ReturnType<typeof createLogChunkManager>;

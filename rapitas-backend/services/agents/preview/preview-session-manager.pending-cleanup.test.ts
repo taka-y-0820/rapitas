@@ -25,9 +25,9 @@ mock.module('../../../config/database', () => ({
   ensureDatabaseConnection: () => Promise.resolve(),
   prisma: { task: { findUnique: () => Promise.resolve(null) } },
 }));
+let resolveWorktree = () => Promise.resolve({ worktreePath: '/repo', branchName: 'feature/x' });
 mock.module('../agent-session-resolver', () => ({
-  resolveLatestSessionWorktree: () =>
-    Promise.resolve({ worktreePath: '/repo', branchName: 'feature/x' }),
+  resolveLatestSessionWorktree: () => resolveWorktree(),
 }));
 // mock.module is process-global in bun:test — spread the real module so any
 // OTHER export a transitive import needs (e.g. agent-process-tracker's
@@ -48,34 +48,47 @@ mock.module('../verification/runtime-smoke/runtime-config', () => ({
   substitutePort: (template: string, port: number) => template.split('{port}').join(String(port)),
 }));
 
-const mockStop = mock(() => {});
-const mockApp = { pid: 4242, logs: () => [], stop: mockStop };
-const mockLaunchApp = mock(() => mockApp);
-const mockAllocateFreePort = mock(() => Promise.resolve(54321));
-
-/** Controlled by each test — lets startPreview be paused mid-flight. */
+const mockCancel = mock(() => {});
+const mockLaunchApp = mock(() => {});
 let resolveHealthy: (v: boolean) => void = () => {};
 let healthyPromise: Promise<boolean>;
-const mockWaitForHealthy = mock(() => healthyPromise);
-
-mock.module('../verification/runtime-smoke/app-launcher', () => ({
-  allocateFreePort: mockAllocateFreePort,
-  launchApp: mockLaunchApp,
-  waitForHealthy: mockWaitForHealthy,
+mock.module('../verification/runtime-smoke/worktree-server-registry', () => ({
+  acquireRuntimeServer: async (_workdir: string, _cfg: unknown, opts: { signal: AbortSignal }) => {
+    mockLaunchApp();
+    opts.signal.addEventListener('abort', mockCancel, { once: true });
+    await healthyPromise;
+    return { ok: false, reason: 'cancelled or unhealthy', logs: [] };
+  },
+  releaseRuntimeServer: mock(() => {}),
 }));
-
 const { startPreview, stopPreview, getPreviewStatus } = await import('./preview-session-manager');
 
 beforeEach(() => {
-  mockStop.mockClear();
+  resolveWorktree = () => Promise.resolve({ worktreePath: '/repo', branchName: 'feature/x' });
+  mockCancel.mockClear();
   mockLaunchApp.mockClear();
   healthyPromise = new Promise<boolean>((res) => {
     resolveHealthy = res;
   });
 });
 
+it('stop during worktree resolution prevents a late server acquisition', async () => {
+  let complete!: (value: { worktreePath: string; branchName: string }) => void;
+  resolveWorktree = () =>
+    new Promise((resolve) => {
+      complete = resolve;
+    });
+  const starting = startPreview(43);
+  await new Promise((r) => setTimeout(r, 10));
+  expect(getPreviewStatus(43)).toEqual({ active: false, pending: true });
+  await stopPreview(43);
+  complete({ worktreePath: '/repo', branchName: 'feature/x' });
+  expect((await starting).ok).toBe(false);
+  expect(mockLaunchApp).not.toHaveBeenCalled();
+});
+
 describe('stopPreview cancels an in-progress launch', () => {
-  it('kills the dev-server process launched by a still-starting attempt', async () => {
+  it('aborts only the pending registry acquisition', async () => {
     const startResult = startPreview(42); // hangs at waitForHealthy until resolved below
 
     // Let startPreview run far enough to have called launchApp and
@@ -84,10 +97,10 @@ describe('stopPreview cancels an in-progress launch', () => {
     // against the mocks above).
     await new Promise((r) => setTimeout(r, 10));
     expect(mockLaunchApp).toHaveBeenCalledTimes(1);
-    expect(mockStop).not.toHaveBeenCalled();
+    expect(mockCancel).not.toHaveBeenCalled();
 
     await stopPreview(42);
-    expect(mockStop).toHaveBeenCalledTimes(1);
+    expect(mockCancel).toHaveBeenCalledTimes(1);
 
     // Let the stalled startPreview call finish so it doesn't dangle into
     // the next test — its own result no longer matters (app.stop() from
@@ -100,7 +113,7 @@ describe('stopPreview cancels an in-progress launch', () => {
 
   it('is a no-op when nothing is pending or active for the task', async () => {
     await expect(stopPreview(999_999)).resolves.toBeUndefined();
-    expect(mockStop).not.toHaveBeenCalled();
+    expect(mockCancel).not.toHaveBeenCalled();
   });
 });
 

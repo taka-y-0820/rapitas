@@ -51,12 +51,17 @@ const mockSpawn = mock((command: string, args: string[], options: Record<string,
 });
 const mockGetClaudePathAsync = mock(() => Promise.resolve(claudePathImpl()));
 
+// OS containment is exercised with real processes in windows-aux-job.live.test.ts.
+mock.module('./aux-cli-launch', () => ({ prepareAuxCli: async () => null }));
 mock.module('child_process', () => ({
   spawn: mockSpawn,
   // NOTE: agent-process-tracker (imported transitively for process registration)
   // statically imports execSync — must remain a valid named export even though
   // these tests never exercise that path.
   execSync: mock(() => ''),
+  execFile: mock(() => {
+    throw new Error('Unexpected process snapshot in provider unit test');
+  }),
   execFileSync: mock(() => Buffer.from('')),
   spawnSync: mock(() => ({ status: 0, stdout: '', stderr: '' })),
   fork: mock(() => {}),

@@ -10,9 +10,8 @@
 import { prisma } from '../../../config';
 import { createLogger } from '../../../config/logger';
 import { NotFoundError, ValidationError } from '../../../middleware/error-handler';
-import { recordTransition } from '../../../services/workflow/transition-recorder';
 import { readWorkflowFile } from '../../../services/workflow/workflow-file-utils';
-import { PLAN_REVISION_CAUSE } from '../../../services/workflow/workflow-plan-revision-context';
+import { persistPlanRevision } from '../../../services/workflow/plan-revision-persistence';
 
 const log = createLogger('routes:workflow:plan-revision');
 
@@ -42,20 +41,13 @@ interface RevisePlanContext {
  */
 async function triggerPlannerRerun(taskId: number): Promise<void> {
   try {
-    const port = process.env.PORT || '3001';
-    const apiToken = process.env.RAPITAS_API_TOKEN;
-    const res = await fetch(`http://127.0.0.1:${port}/tasks/${taskId}/execute`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(apiToken ? { Authorization: `Bearer ${apiToken}` } : {}),
-      },
-      body: JSON.stringify({}),
-    });
-    if (!res.ok) {
+    const { WorkflowOrchestrator } =
+      await import('../../../services/workflow/workflow-orchestrator');
+    const result = await WorkflowOrchestrator.getInstance().advanceWorkflow(taskId);
+    if (!result.success) {
       log.warn(
-        { taskId, status: res.status },
-        '[plan-revision] auto re-run rejected — task stays at research_done for the scheduler',
+        { taskId, error: result.error },
+        '[plan-revision] planner dispatch did not complete; leaving revision for recovery',
       );
     }
   } catch (err) {
@@ -117,7 +109,7 @@ export async function handleRevisePlan({ params, body, set, headers }: RevisePla
 
   const task = await prisma.task.findUnique({
     where: { id: taskId },
-    select: { id: true, workflowStatus: true },
+    select: { id: true, workflowStatus: true, updatedAt: true },
   });
   if (!task) {
     set.status = 404;
@@ -130,20 +122,7 @@ export async function handleRevisePlan({ params, body, set, headers }: RevisePla
     throw new NotFoundError('plan.md does not exist for this task');
   }
 
-  await prisma.task.update({
-    where: { id: taskId },
-    data: { workflowStatus: 'research_done', status: 'in-progress', updatedAt: new Date() },
-  });
-
-  await recordTransition({
-    taskId,
-    fromStatus: task.workflowStatus,
-    toStatus: 'research_done',
-    actor: 'user',
-    cause: PLAN_REVISION_CAUSE,
-    phase: 'plan',
-    metadata: { instruction, source: REVISION_SOURCE_LABELS[source] },
-  }).catch(() => {});
+  await persistPlanRevision(prisma, task, instruction, REVISION_SOURCE_LABELS[source]);
 
   log.info(
     { taskId, source },

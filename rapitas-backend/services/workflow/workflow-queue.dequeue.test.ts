@@ -179,11 +179,16 @@ describe('WorkflowQueueService.dequeue — concurrency gate', () => {
   test('does not acquire a repair queue item while its task theme is stopped', async () => {
     themeRunning.mockResolvedValue(false);
     prismaMock.workflowQueueItem.findMany.mockResolvedValue([row()]);
+    prismaMock.workflowQueueItem.findUnique.mockResolvedValue(row());
     expect(await new WorkflowQueueService().dequeue()).toBeNull();
-    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    expect(prismaMock.workflowQueueItem.update).not.toHaveBeenCalled();
+    expect(themeRunning).toHaveBeenCalledWith(10, prismaMock, false);
   });
   test('rechecks a stop that arrives during queue acquisition', async () => {
-    themeRunning.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    prismaMock.$transaction.mockImplementation((cb: (tx: FakePrisma) => unknown) => {
+      themeRunning.mockResolvedValue(false);
+      return cb(prismaMock);
+    });
     prismaMock.workflowQueueItem.findMany.mockResolvedValue([row()]);
     prismaMock.workflowQueueItem.findUnique.mockResolvedValue(row());
     expect(await new WorkflowQueueService().dequeue()).toBeNull();
@@ -407,6 +412,25 @@ describe('WorkflowQueueService.dequeue — sibling subtask serialization', () =>
 });
 
 describe('WorkflowQueueService.dequeue — transactional race protection', () => {
+  test('invalid repair receipt cancels the item before acquiring execution', async () => {
+    const svc = new WorkflowQueueService();
+    const candidate = row({ id: 1, taskId: 10 });
+    primeToTransaction(candidate);
+    prismaMock.workflowQueueItem.findUnique.mockResolvedValueOnce({
+      ...candidate,
+      result: JSON.stringify({ repairResume: { updatedAt: 'invalid' } }),
+    });
+    expect(await svc.dequeue()).toBeNull();
+    expect(prismaMock.workflowQueueItem.update).toHaveBeenCalledWith({
+      where: { id: 1 },
+      data: {
+        status: 'cancelled',
+        completedAt: expect.any(Date),
+        errorMessage: 'Repair admission expired or was stopped before dispatch',
+      },
+    });
+  });
+
   function primeToTransaction(candidate: WorkflowQueueItemRow): void {
     prismaMock.workflowQueueItem.findMany.mockResolvedValueOnce([candidate]);
     prismaMock.workflowQueueItem.count.mockResolvedValueOnce(0); // running count gate

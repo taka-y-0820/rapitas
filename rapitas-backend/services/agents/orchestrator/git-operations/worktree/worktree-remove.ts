@@ -20,6 +20,7 @@ import {
   awaitWorktreeDependencies,
 } from './dependency-installer';
 import { rmDirWithRetry } from './dir-remove-retry';
+import { isWorktreeContentPreserved } from './worktree-preservation';
 
 // NOTE: execFile (array-args, no shell) instead of exec (shell string) — branch
 // names, paths, and other caller-controlled values are passed as literal argv
@@ -49,6 +50,7 @@ export async function removeWorktree(
   baseDir: string,
   worktreePath: string,
   deleteBranch: boolean = true,
+  preservedSnapshotTag?: string,
 ): Promise<boolean> {
   // NOTE: Validate path before any destructive operation — prevents accidental deletion of .git/ or main repo.
   // isPathSafeForWorktreeOperation already logs the rejection reason via git-operations/safety;
@@ -56,6 +58,31 @@ export async function removeWorktree(
   if (!isPathSafeForWorktreeOperation(worktreePath, baseDir)) {
     return false;
   }
+
+  // Refuse before teardown: force removal also destroys uncommitted and new files.
+  // Recovery may remove a dirty tree only when its durable snapshot still matches.
+  const contentIsSafe = async (): Promise<boolean> => {
+    if (!existsSync(worktreePath)) return true;
+    // Without local metadata, Git can silently inspect the parent checkout.
+    if (!existsSync(join(worktreePath, '.git'))) {
+      logger.warn({ worktreePath }, '[removeWorktree] Missing Git metadata; preserving directory');
+      return false;
+    }
+    try {
+      if (!(await isWorktreeContentPreserved(worktreePath, preservedSnapshotTag))) {
+        logger.warn({ worktreePath }, '[removeWorktree] Preserving uncommitted work');
+        return false;
+      }
+      return true;
+    } catch (error) {
+      logger.warn(
+        { err: error, worktreePath },
+        '[removeWorktree] Cannot prove work is preserved; refusing removal',
+      );
+      return false;
+    }
+  };
+  if (!(await contentIsSafe())) return false;
 
   // NOTE: Wait for any in-flight dependency setup (setup-worktree.cjs) to complete before
   // tearing down the directory. On Windows a running node process holds handles inside
@@ -141,6 +168,9 @@ export async function removeWorktree(
     logger.debug({ err: preErr }, '[removeWorktree] pre-prune failed (non-fatal)');
   }
 
+  // Dependency setup and teardown may take time; do not rely on the earlier snapshot.
+  if (!(await contentIsSafe())) return false;
+
   let removed = false;
   try {
     await execFileAsync('git', ['worktree', 'remove', worktreePath, '--force'], {
@@ -176,6 +206,7 @@ export async function removeWorktree(
         }
       }
 
+      if (!(await contentIsSafe())) return false;
       removed = await rmDirWithRetry(worktreePath);
       if (removed) {
         logger.info(`[removeWorktree] Cleaned up directory: ${worktreePath}`);

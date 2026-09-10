@@ -103,6 +103,30 @@ describe('SystemStatusPanel', () => {
     expect(screen.getByText('systemStatus.pill.interrupted')).toBeInTheDocument();
   });
 
+  // Counter-example from task 913: a failed resumable-interrupted computation on
+  // the backend must never render as the healthy pill, even when raw counts are 0.
+  it("shows the 'unknown' pill when interruptedExecutionsDegraded is true, even with status='healthy' and interruptedExecutions=0", async () => {
+    mockFetch.mockResolvedValue({
+      json: async () => ({
+        status: 'healthy',
+        uptimeSeconds: 10,
+        activeExecutions: 0,
+        runningExecutions: 0,
+        interruptedExecutions: 0,
+        interruptedExecutionsDegraded: true,
+        queueDepth: 0,
+      }),
+    });
+
+    render(<SystemStatusPanel />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(screen.getByText('systemStatus.pill.unknown')).toBeInTheDocument();
+    expect(screen.queryByText('systemStatus.pill.healthy')).not.toBeInTheDocument();
+  });
+
   it('shows an unhealthy pill when the fetch throws', async () => {
     mockFetch.mockRejectedValue(new Error('network error'));
 
@@ -112,6 +136,25 @@ describe('SystemStatusPanel', () => {
     });
 
     expect(screen.getByText('systemStatus.pill.unhealthy')).toBeInTheDocument();
+  });
+
+  it.each([0, 1])('shows unknown when live ownership is unavailable, count=%s', async (count) => {
+    mockFetch.mockResolvedValue({
+      json: async () => ({
+        status: 'healthy',
+        activeExecutions: count,
+        runningExecutions: count,
+        activeExecutionsDegraded: true,
+        interruptedExecutions: 0,
+      }),
+    });
+    render(<SystemStatusPanel />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText('systemStatus.pill.unknown')).toBeInTheDocument();
+    expect(screen.queryByText('systemStatus.pill.healthy')).not.toBeInTheDocument();
+    expect(screen.queryByText('systemStatus.pill.busy')).not.toBeInTheDocument();
   });
 
   it('re-polls every 10s but skips the request while the tab is hidden', async () => {

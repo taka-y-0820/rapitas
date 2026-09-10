@@ -11,6 +11,18 @@ import { ClaudeCodeAgent } from './agent-core';
 import { buildClaudeArgs, buildSpawnEnv } from './claude-execution-runner';
 
 describe('buildClaudeArgs', () => {
+  test('verifier can execute checks and save evidence while recursive tools remain denied', () => {
+    const agent = new ClaudeCodeAgent('verifier', 'verifier', {
+      investigationMode: false,
+      investigationOutputType: 'verify',
+    });
+    const { args } = buildClaudeArgs(agent);
+    const denied = args[args.indexOf('--disallowedTools') + 1].split(',');
+    expect(denied).not.toContain('Bash');
+    expect(denied).toContain('Task');
+    expect(denied).toContain('EnterWorktree');
+    expect(args).toContain('--strict-mcp-config');
+  });
   test('dangerouslySkipPermissions=true のとき bypass 系フラグが両方付与される', () => {
     const agent = new ClaudeCodeAgent('t1', 'test-agent', {
       dangerouslySkipPermissions: true,
@@ -132,4 +144,25 @@ describe('buildSpawnEnv', () => {
       else process.env.GITHUB_TOKEN = originalGithubToken;
     }
   });
+});
+
+describe('autonomous reasoning effort', () => {
+  test.each([undefined, 'invalid', 'high', ' medium '])(
+    'bounds effort and records the selected value',
+    (configured) => {
+      const previous = process.env.RAPITAS_CLAUDE_EFFORT;
+      try {
+        if (configured === undefined) delete process.env.RAPITAS_CLAUDE_EFFORT;
+        else process.env.RAPITAS_CLAUDE_EFFORT = configured;
+        const agent = new ClaudeCodeAgent('effort', 'test-agent', {});
+        const { args, logExtras } = buildClaudeArgs(agent);
+        const expected = configured === 'high' ? 'high' : 'medium';
+        expect(args[args.indexOf('--effort') + 1]).toBe(expected);
+        expect(logExtras.some((line) => line.endsWith('Effort: ' + expected))).toBe(true);
+      } finally {
+        if (previous === undefined) delete process.env.RAPITAS_CLAUDE_EFFORT;
+        else process.env.RAPITAS_CLAUDE_EFFORT = previous;
+      }
+    },
+  );
 });

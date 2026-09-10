@@ -1,3 +1,4 @@
+import { canAcquireRepairQueue, clearAcquiredRepairReceipt } from './repair-queue-acquire';
 /**
  * queue-dequeue-candidate
  *
@@ -133,30 +134,53 @@ export async function tryDequeueCandidate(
   }
 
   // Start execution (transaction prevents race conditions)
-  if (!(await isQueueThemeRunning(candidate.taskId))) return null;
-  const updated = await prisma.$transaction(async (tx) => {
-    // Re-check status (another worker may have acquired it)
-    const current = await tx.workflowQueueItem.findUnique({
-      where: { id: candidate.id },
-    });
-    if (!current || current.status !== 'queued') {
-      return null; // Already acquired by another worker
-    }
-    if (!(await isQueueThemeRunning(candidate.taskId, tx))) return null;
+  const updated = await prisma.$transaction(
+    async (tx) => {
+      // Re-check status (another worker may have acquired it)
+      const current = await tx.workflowQueueItem.findUnique({
+        where: { id: candidate.id },
+      });
+      if (!current || current.status !== 'queued') {
+        return null; // Already acquired by another worker
+      }
+      if (!(await canAcquireRepairQueue(tx, current))) {
+        await tx.workflowQueueItem.update({
+          where: { id: current.id },
+          data: {
+            status: 'cancelled',
+            completedAt: new Date(),
+            errorMessage: 'Repair admission expired or was stopped before dispatch',
+          },
+        });
+        return null;
+      }
+      // Only a receipt just validated against the current task/execution/stop
+      // can continue a single task while the theme scheduler is disabled.
+      const validatedRepair =
+        !!current.result && clearAcquiredRepairReceipt(current.result) === null;
+      if (!(await isQueueThemeRunning(candidate.taskId, tx, validatedRepair))) return null;
 
-    // Re-check concurrency limit
-    const currentRunning = await tx.workflowQueueItem.count({
-      where: { status: 'running' },
-    });
-    if (currentRunning >= maxConcurrency) {
-      return null; // Concurrency limit reached
-    }
+      // Re-check concurrency limit
+      const currentRunning = await tx.workflowQueueItem.count({
+        where: { status: 'running' },
+      });
+      if (currentRunning >= maxConcurrency) {
+        return null; // Concurrency limit reached
+      }
 
-    return tx.workflowQueueItem.update({
-      where: { id: candidate.id },
-      data: { status: 'running', startedAt: new Date() },
-    });
-  });
+      return tx.workflowQueueItem.update({
+        where: { id: candidate.id },
+        data: {
+          status: 'running',
+          startedAt: new Date(),
+          ...(current.result && clearAcquiredRepairReceipt(current.result) === null
+            ? { result: null }
+            : {}),
+        },
+      });
+    },
+    { isolationLevel: 'Serializable' },
+  );
 
   if (updated) {
     log.info(`[WorkflowQueue] Dequeued task ${candidate.taskId} (item ${candidate.id})`);

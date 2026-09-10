@@ -9,7 +9,7 @@
  */
 import { prisma } from '../../config';
 import { createLogger } from '../../config/logger';
-import { cleanupRootWorkflowFiles, readWorkflowFile } from './workflow-file-utils';
+import { cleanupRootWorkflowFiles } from './workflow-file-utils';
 import type { RoleTransition, WorkflowAdvanceResult } from './workflow-types';
 
 // NOTE: Same logger name as the executor body — keeps the observed log `name`
@@ -147,42 +147,24 @@ export async function runPostProcessing(params: {
     );
   }
 
-  // Research concluded no change (auto-run path). The HTTP-save and dev-mode
-  // routes already complete directly from this verdict, but THIS flow — the
-  // one auto-run actually uses — advanced to the implementer regardless:
-  // 27 of 31 no-change tasks in the week to 2026-08-30 burned
-  // plan/implement/verify/jury on work research had already ruled out.
-  if (effectiveSuccess && transition.role === 'researcher') {
+  const canAutoAdvance =
+    effectiveSuccess &&
+    (transition.role === 'implementer' ||
+      (phaseStatus === 'plan_approved' &&
+        transition.role !== 'verifier' &&
+        transition.role !== 'auto_verifier'));
+  if (canAutoAdvance) {
     try {
-      const research = await readWorkflowFile(taskId, 'research').catch(() => null);
-      const { researchConcludesNoChange } = await import('./completion-gate');
-      if (research && researchConcludesNoChange(research)) {
-        await prisma.task.update({
-          where: { id: taskId },
-          data: { status: 'done', workflowStatus: 'completed', completedAt: new Date() },
-        });
-        const { recordTransition } = await import('./transition-recorder');
-        await recordTransition({
-          taskId,
-          fromStatus: phaseStatus ?? 'research_done',
-          toStatus: 'completed',
-          actor: 'system',
-          cause: 'research_no_change_complete',
-          phase: 'research',
-          metadata: { via: 'cli_executor' },
-        }).catch(() => {});
-        log.info(
-          { taskId },
-          '[WorkflowCLIExecutor] Research concluded no change — completed without implement/verify',
-        );
-        return;
-      }
-    } catch (err) {
-      // Fail open: a broken check must not stop the normal phase advance.
-      log.warn(
-        { err, taskId },
-        '[WorkflowCLIExecutor] no-change check failed — advancing normally',
-      );
+      const queueOwner = await prisma.workflowQueueItem.findFirst({
+        where: { taskId, status: 'running' },
+        select: { id: true },
+      });
+      // WorkflowRunner already loops through phases for its acquired item.
+      // A second timer competes for the execution lock and requeues that owner.
+      if (queueOwner) return;
+    } catch (error) {
+      log.error({ err: error, taskId }, '[WorkflowCLIExecutor] Cannot determine next-phase owner');
+      return;
     }
   }
   // Auto-start verification phase after implementer completes

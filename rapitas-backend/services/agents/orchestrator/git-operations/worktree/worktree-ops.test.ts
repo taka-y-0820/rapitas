@@ -3,6 +3,7 @@
  */
 
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { join } from 'node:path';
 
 const mockPrisma = {
   agentSession: {
@@ -88,6 +89,7 @@ mock.module('node:fs', () => ({
 }));
 mock.module('node:fs/promises', () => ({
   rm: mockFsRm,
+  rmdir: mockFsRm,
   readdir: mockReaddir,
   stat: mockStat,
   mkdir: mock(() => Promise.resolve()),
@@ -281,7 +283,9 @@ describe('removeWorktree', () => {
     );
 
     // Only the worktree root exists (no .git sub-directory)
-    mockExistsSync.mockImplementation((p: string) => p === mockWorktreePath);
+    mockExistsSync.mockImplementation(
+      (p: string) => p === mockWorktreePath || p === join(mockWorktreePath, '.git'),
+    );
 
     await removeWorktree(mockBaseDir, mockWorktreePath, false);
 
@@ -328,7 +332,9 @@ describe('removeWorktree', () => {
     );
 
     // Only the worktree root exists (no .git sub-directory)
-    mockExistsSync.mockImplementation((p: string) => p === mockWorktreePath);
+    mockExistsSync.mockImplementation(
+      (p: string) => p === mockWorktreePath || p === join(mockWorktreePath, '.git'),
+    );
 
     await removeWorktree(mockBaseDir, mockWorktreePath, false);
 
@@ -532,50 +538,53 @@ branch refs/heads/feature/task-123
     expect(mockPrisma.agentSession.updateMany).toHaveBeenCalledTimes(1);
   });
 
-  test('filesystem orphan: EBUSY all attempts does not throw and cleanup loop continues', async () => {
-    const ebusyErr = Object.assign(new Error('EBUSY: resource busy or locked'), {
-      code: 'EBUSY',
-    });
-    // NOTE: Inject a no-op sleepFn so retries do not incur real 1-4s waits.
-    const noopSleep = () => Promise.resolve();
+  test.each(['EBUSY', 'ENOTEMPTY'])(
+    'filesystem orphan: %s preserves contents and cleanup continues',
+    async (code) => {
+      const ebusyErr = Object.assign(new Error(code), {
+        code,
+      });
+      // NOTE: Inject a no-op sleepFn so retries do not incur real 1-4s waits.
+      const noopSleep = () => Promise.resolve();
 
-    // NOTE: Set all mocks inline so this test doesn't depend on beforeEach residue.
-    // Return true for all existsSync paths — no DB sessions, so removeWorktree is never called.
-    mockPrisma.agentSession.findMany.mockImplementation(() => Promise.resolve([]));
-    mockFsRm.mockImplementation(() => Promise.reject(ebusyErr));
-    mockExistsSync.mockImplementation(() => true);
-    // Shape depends on the caller: worktree-ops.ts asks for Dirent objects
-    // (withFileTypes: true) to sweep the filesystem; computeWorktreeKeepPaths
-    // (the new liveness guard) does a bare readdir expecting plain name
-    // strings. Both hit this same mocked module, so return the shape the
-    // caller actually asked for instead of always Dirent-like objects.
-    mockReaddir.mockImplementation((..._args: unknown[]) => {
-      const opts = _args[1] as { withFileTypes?: boolean } | undefined;
-      if (opts?.withFileTypes) {
-        return Promise.resolve([
-          { name: 'task-9001-aaa', isDirectory: () => true },
-          { name: 'task-9002-bbb', isDirectory: () => true },
-        ]);
+      // NOTE: Set all mocks inline so this test doesn't depend on beforeEach residue.
+      // Return true for all existsSync paths — no DB sessions, so removeWorktree is never called.
+      mockPrisma.agentSession.findMany.mockImplementation(() => Promise.resolve([]));
+      mockFsRm.mockImplementation(() => Promise.reject(ebusyErr));
+      mockExistsSync.mockImplementation(() => true);
+      // Shape depends on the caller: worktree-ops.ts asks for Dirent objects
+      // (withFileTypes: true) to sweep the filesystem; computeWorktreeKeepPaths
+      // (the new liveness guard) does a bare readdir expecting plain name
+      // strings. Both hit this same mocked module, so return the shape the
+      // caller actually asked for instead of always Dirent-like objects.
+      mockReaddir.mockImplementation((..._args: unknown[]) => {
+        const opts = _args[1] as { withFileTypes?: boolean } | undefined;
+        if (opts?.withFileTypes) {
+          return Promise.resolve([
+            { name: 'task-9001-aaa', isDirectory: () => true },
+            { name: 'task-9002-bbb', isDirectory: () => true },
+          ]);
+        }
+        return Promise.resolve(['task-9001-aaa', 'task-9002-bbb']);
+      });
+      // Both orphan paths are NOT in the git tracked list (worktreeListStdout only has task-123-abc123)
+
+      let thrownError: unknown;
+      let result: number | undefined;
+      try {
+        result = await cleanupOrphanedWorktrees(mockBaseDir, { sleepFn: noopSleep });
+      } catch (err) {
+        thrownError = err;
       }
-      return Promise.resolve(['task-9001-aaa', 'task-9002-bbb']);
-    });
-    // Both orphan paths are NOT in the git tracked list (worktreeListStdout only has task-123-abc123)
 
-    let thrownError: unknown;
-    let result: number | undefined;
-    try {
-      result = await cleanupOrphanedWorktrees(mockBaseDir, { sleepFn: noopSleep });
-    } catch (err) {
-      thrownError = err;
-    }
-
-    // Must not throw
-    expect(thrownError).toBeUndefined();
-    // Orphans that failed are not counted
-    expect(result).toBe(0);
-    // rm was attempted (exact path is platform-specific; just verify it was invoked)
-    expect(mockFsRm).toHaveBeenCalled();
-  });
+      // Must not throw
+      expect(thrownError).toBeUndefined();
+      // Orphans that failed are not counted
+      expect(result).toBe(0);
+      // rm was attempted (exact path is platform-specific; just verify it was invoked)
+      expect(mockFsRm).toHaveBeenCalled();
+    },
+  );
 
   test('filesystem orphan: successful rm increments count', async () => {
     // NOTE: Inject a no-op sleepFn to avoid real waits on any retry path.
@@ -597,10 +606,8 @@ branch refs/heads/feature/task-123
     const result = await cleanupOrphanedWorktrees(mockBaseDir, { sleepFn: noopSleep });
 
     expect(result).toBe(1);
-    expect(mockFsRm).toHaveBeenCalledWith(expect.stringContaining('task-9003-xyz'), {
-      recursive: true,
-      force: true,
-    });
+    expect(mockFsRm).toHaveBeenCalledWith(expect.stringContaining('task-9003-xyz'));
+    expect(mockFsRm.mock.calls.every((call) => call.length === 1)).toBe(true);
   });
 });
 

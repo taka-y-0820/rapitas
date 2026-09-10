@@ -33,21 +33,34 @@ function normalize(msg: string): string {
   return msg.replace(/\d+/g, '#');
 }
 
-/** Force the next N Date.now() reads to jump forward, simulating an event-loop stall without a real-time wait. */
-function withForcedLag<T>(jumpMs: number, fn: () => Promise<T>): Promise<T> {
+/** Advance the real watchdog callback with an exact, controlled clock. */
+function triggerLag(lagMs: number): void {
   const realNow = Date.now;
-  let calls = 0;
-  Date.now = (() => {
-    calls += 1;
-    // 1st call: startEventLoopLagWatchdog's initial `expected` baseline (no jump).
-    // subsequent calls: interval tick reads `now` — jump forward to force lag.
-    return calls === 1 ? realNow() : realNow() + jumpMs;
-  }) as typeof Date.now;
-  return fn().finally(() => {
+  const realInterval = globalThis.setInterval;
+  const realClear = globalThis.clearInterval;
+  let clockMs = 10_000;
+  let tick: (() => void) | undefined;
+  let intervalMs = 0;
+  Date.now = () => clockMs;
+  globalThis.setInterval = ((callback: () => void, ms: number) => {
+    tick = callback;
+    intervalMs = ms;
+    return 1;
+  }) as unknown as typeof setInterval;
+  globalThis.clearInterval = (() => {}) as typeof clearInterval;
+  try {
+    startEventLoopLagWatchdog();
+    expect(intervalMs).toBe(500);
+    expect(tick).toBeDefined();
+    clockMs += intervalMs + lagMs;
+    tick!();
+  } finally {
+    stopEventLoopLagWatchdog();
     Date.now = realNow;
-  });
+    globalThis.setInterval = realInterval;
+    globalThis.clearInterval = realClear;
+  }
 }
-
 describe('formatEventLoopLagMessage', () => {
   it('formats a fractional-second lag with one decimal place', () => {
     expect(formatEventLoopLagMessage(2161)).toBe('Event loop stalled ~2.2s');
@@ -75,11 +88,16 @@ describe('event-loop-lag-watchdog', () => {
     warnCalls.length = 0;
   });
 
+  test('does not warn at the threshold and warns immediately above it', () => {
+    triggerLag(2000);
+    expect(warnCalls).toHaveLength(0);
+    triggerLag(2001);
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0][0].lagMs).toBe(2001);
+  });
+
   test('閾値超過時にWARNが発火し、lagMsは構造化フィールドとして保持される', async () => {
-    await withForcedLag(5000, async () => {
-      startEventLoopLagWatchdog();
-      await new Promise((resolve) => setTimeout(resolve, 600));
-    });
+    triggerLag(5000);
 
     expect(warnCalls.length).toBeGreaterThan(0);
     const [fields, msg] = warnCalls[0];
@@ -89,18 +107,12 @@ describe('event-loop-lag-watchdog', () => {
   });
 
   test('lagMsの値(整数秒/小数秒)によらずメッセージのシグネチャは同一になる', async () => {
-    await withForcedLag(2001, async () => {
-      startEventLoopLagWatchdog();
-      await new Promise((resolve) => setTimeout(resolve, 600));
-    });
+    triggerLag(2001);
     stopEventLoopLagWatchdog();
     const firstMsg = warnCalls[0]?.[1];
     warnCalls.length = 0;
 
-    await withForcedLag(2700, async () => {
-      startEventLoopLagWatchdog();
-      await new Promise((resolve) => setTimeout(resolve, 600));
-    });
+    triggerLag(2700);
     const secondMsg = warnCalls[0]?.[1];
 
     expect(firstMsg).toBeDefined();

@@ -5,6 +5,13 @@ mock.module('../../config', () => ({
   prisma: { task: { findUnique: task }, themeAutoRun: { findUnique: run } },
 }));
 const { isQueueThemeRunning } = await import('./queue-theme-guard');
+test('validated single-task repairs can run with an idle disabled scheduler, never a paused or stopping one', async () => {
+  expect(await isQueueThemeRunning(913, undefined, true)).toBe(true);
+  run.mockResolvedValueOnce({ enabled: false, status: 'paused' });
+  expect(await isQueueThemeRunning(913, undefined, true)).toBe(false);
+  run.mockResolvedValueOnce({ enabled: false, status: 'stopping' });
+  expect(await isQueueThemeRunning(913, undefined, true)).toBe(false);
+});
 test('theme-less repair queue items still honor the owning task stop', async () => {
   expect(await isQueueThemeRunning(894)).toBe(false);
   expect(run).toHaveBeenCalledWith({

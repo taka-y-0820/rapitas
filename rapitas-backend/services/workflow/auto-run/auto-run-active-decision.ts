@@ -1,3 +1,4 @@
+import { writeBlockedTask } from '../blocked-task-write';
 /**
  * auto-run-advance-active
  *
@@ -161,9 +162,7 @@ export async function advanceActiveTaskLocked(
       // carry the pre-stop task.status (resolveTaskWorkflowState is the
       // existing task-resolver helper; it returns null on a DB miss).
       const wallBudgetState = await resolveTaskWorkflowState(currentTaskId);
-      await prisma.task
-        .update({ where: { id: currentTaskId }, data: { status: 'blocked' } })
-        .catch(() => {});
+      await writeBlockedTask(prisma, currentTaskId).catch(() => {});
       // Task 793: this write left no WorkflowTransition row, so downstream
       // retro analysis (retro-evidence.ts) could not tell why a task went
       // blocked here versus any other blocked path.
@@ -385,9 +384,7 @@ export async function advanceActiveTaskLocked(
     const errMsg = terminalItem?.errorMessage ?? `Task ${currentTaskId} failed or was blocked`;
     // Mark the task blocked so selection skips it next time.
     if (task?.status !== 'blocked') {
-      await prisma.task
-        .update({ where: { id: currentTaskId }, data: { status: 'blocked' } })
-        .catch(() => {});
+      await writeBlockedTask(prisma, currentTaskId).catch(() => {});
     }
     await onTaskFailed(themeId, errMsg);
     await notifyTaskSkipped(themeId, currentTaskId, errMsg);

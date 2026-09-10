@@ -74,13 +74,18 @@ mock.module('../../services/workflow/automation-policy', () => ({
     Promise.resolve({ autoCommit: true, autoCreatePR: true, autoMergePR: false }),
 }));
 
+const verificationGateMock = mock(
+  async (): Promise<
+    import('../../services/agents/verification/verification-gate').GateOutcome
+  > => ({ ok: true, result: null }),
+);
 mock.module('../../services/agents/verification/verification-gate', () => ({
-  runVerificationGate: () => Promise.resolve({ ok: true }),
+  runVerificationGate: verificationGateMock,
 }));
 
 // One mutable fixture per test drives createPullRequest's outcome and the
 // commit's filesChanged count (both feed isNoChangeCompletion's classifier).
-let prResultFixture: { success: false; error: string } = {
+let prResultFixture: { success: boolean; error: string; prNumber?: number } = {
   success: false,
   error: 'no commits between develop and feature/t687',
 };
@@ -221,83 +226,37 @@ describe('performAutoCommitAndPR — base より進んだコミットが無け�
   });
 });
 
-describe('performAutoCommitAndPR — removeWorktree の戻り値を worktreeCleanupResult に反映する (task 790 / K-8046)', () => {
-  const worktreePath = 'C:\\work\\project\\.worktrees\\task-687';
-
-  test('removeWorktree が false を返す場合、success:false を記録しDBを更新しない', async () => {
-    filesChangedFixture = 1;
+describe('publication preserves the verifier worktree until completion is settled', () => {
+  test.each([
+    { success: false, error: 'gh: authentication failed' },
+    { success: false, error: 'no commits between develop and feature/t687' },
+    { success: true, error: '', prNumber: 687 },
+  ])('retains worktree and session after PR outcome %j', async (outcome) => {
+    filesChangedFixture = outcome.success ? 1 : 0;
     revListFixture = '1';
-    prResultFixture = { success: false, error: 'gh: authentication failed' };
-    removeWorktreeFixture = false;
+    prResultFixture = outcome;
+    removeWorktreeCalls = 0;
     mockPrisma.agentSession.update.mockClear();
     mockPrisma.task.findUnique.mockResolvedValueOnce({
       id: 687,
-      title: 'テストタスク',
+      title: 'verifier still running',
       theme: { workingDirectory: 'C:\\work\\project', defaultBranch: 'develop' },
       developerModeConfig: {
-        agentSessions: [{ id: 1, branchName: 'feature/t687', worktreePath }],
+        agentSessions: [
+          {
+            id: 1,
+            branchName: 'feature/t687',
+            worktreePath: 'C:\\work\\project\\.worktrees\\task-687',
+          },
+        ],
       },
     });
-
-    const result = await performAutoCommitAndPR(687, '# 検証結果');
-
-    expect(result.worktreeCleanupResult).toEqual({
-      success: false,
-      worktreePath,
-      error: 'removeWorktree refused or failed',
-    });
+    const result = await performAutoCommitAndPR(687, '# verification');
+    expect(removeWorktreeCalls).toBe(0);
     expect(mockPrisma.agentSession.update).not.toHaveBeenCalled();
-    removeWorktreeFixture = true;
-  });
-
-  test('worktree削除失敗はwarnで記録されerrorでは記録されない (task 816 / K-8326)', async () => {
-    filesChangedFixture = 1;
-    revListFixture = '1';
-    prResultFixture = { success: false, error: 'gh: authentication failed' };
-    removeWorktreeFixture = false;
-    mockPrisma.task.findUnique.mockResolvedValueOnce({
-      id: 687,
-      title: 'テストタスク',
-      theme: { workingDirectory: 'C:\\work\\project', defaultBranch: 'develop' },
-      developerModeConfig: {
-        agentSessions: [{ id: 1, branchName: 'feature/t687', worktreePath }],
-      },
-    });
-    warnLogCalls.length = 0;
-    errorLogCalls.length = 0;
-
-    await performAutoCommitAndPR(687, '# 検証結果');
-
-    expect(warnLogCalls.some(([, msg]) => msg.includes('Worktree cleanup failed'))).toBe(true);
-    expect(errorLogCalls.some(([, msg]) => msg.includes('Worktree cleanup failed'))).toBe(false);
-    removeWorktreeFixture = true;
-  });
-
-  test('removeWorktree が true を返す場合、success:true を記録しDBを更新する', async () => {
-    filesChangedFixture = 1;
-    revListFixture = '1';
-    prResultFixture = { success: false, error: 'gh: authentication failed' };
-    removeWorktreeFixture = true;
-    mockPrisma.agentSession.update.mockClear();
-    mockPrisma.task.findUnique.mockResolvedValueOnce({
-      id: 687,
-      title: 'テストタスク',
-      theme: { workingDirectory: 'C:\\work\\project', defaultBranch: 'develop' },
-      developerModeConfig: {
-        agentSessions: [{ id: 1, branchName: 'feature/t687', worktreePath }],
-      },
-    });
-
-    const result = await performAutoCommitAndPR(687, '# 検証結果');
-
-    expect(result.worktreeCleanupResult).toEqual({ success: true, worktreePath });
-    expect(mockPrisma.agentSession.update).toHaveBeenCalledWith({
-      where: { id: 1 },
-      data: { worktreePath: null },
-    });
+    expect(result.worktreeCleanupResult).toBeUndefined();
   });
 });
-
 describe('performAutoCommitAndPR — 停止後は後続の公開処理を一切行わない (task 895)', () => {
   const worktreePath = 'C:\\work\\project\\.worktrees\\task-895';
   const CANCELLED = 'タスクが停止されたため、公開処理を中断しました。';
@@ -369,14 +328,14 @@ describe('performAutoCommitAndPR — 停止後は後続の公開処理を一切�
     expect(mockPrisma.agentSession.update).not.toHaveBeenCalled();
   });
 
-  test('停止が無ければ全境界を通過し、従来どおり commit/PR/削除まで進む', async () => {
+  test('停止が無ければ commit/PR へ進むが、完了前の worktree は削除しない', async () => {
     arm(null);
     prResultFixture = { success: false, error: 'gh: authentication failed' };
     const result = await performAutoCommitAndPR(895, '# 検証結果');
     expect(result.error).toBeUndefined();
     expect(createCommitCalls).toBe(1);
     expect(createPullRequestCalls).toBe(1);
-    expect(removeWorktreeCalls).toBe(1);
+    expect(removeWorktreeCalls).toBe(0);
     expect(publicationAbortedCalls).toEqual([
       'entry',
       'after_verification_gate',
@@ -386,4 +345,24 @@ describe('performAutoCommitAndPR — 停止後は後続の公開処理を一切�
     ]);
     cancelAtStep = null;
   });
+});
+
+test('unverifiable gate exposes the infrastructure outcome without committing', async () => {
+  cancelAtStep = null;
+  const before = createCommitCalls;
+  verificationGateMock.mockResolvedValueOnce({
+    ok: false,
+    result: {
+      ok: false,
+      unverifiable: true,
+      summary: 'runtime quarantined',
+      checks: [],
+      changedFiles: [],
+    },
+  });
+  const outcome = await performAutoCommitAndPR(687, 'PASS');
+  expect(outcome.verificationBlocked).toBe(true);
+  expect(outcome.verificationUnverifiable).toBe(true);
+  expect(outcome.error).toContain('runtime quarantined');
+  expect(createCommitCalls).toBe(before);
 });

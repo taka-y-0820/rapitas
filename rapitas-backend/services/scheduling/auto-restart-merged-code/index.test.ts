@@ -19,6 +19,7 @@ let changedPaths: string[] = ['rapitas-backend/services/workflow/workflow-runner
 let clean = true;
 let ffOk = true;
 let snapshots: Array<{
+  activeExecutionsDegraded?: boolean;
   isShuttingDown: boolean;
   activeExecutions: number;
   runningExecutions: number;
@@ -287,6 +288,7 @@ describe('evaluateBoundaryRestart — task-boundary path', () => {
       'getAgentSystemSnapshot',
       'isWorkingTreeClean',
       'fastForwardToRemote:develop',
+      'getAgentSystemSnapshot',
       'createNotification:system',
       'writeLastRestartAt',
       'writeDeferCount:0',
@@ -392,3 +394,26 @@ describe('start() guards', () => {
     else process.env.TAURI_BUILD = originalTauri;
   });
 });
+
+for (const mode of ['poll', 'boundary'] as const) {
+  for (const stage of ['initial', 'final'] as const) {
+    test(`${mode} restart refuses unknown ownership at ${stage} observation`, async () => {
+      const unknown = { ...idleSnapshot, activeExecutionsDegraded: true };
+      snapshots = stage === 'initial' ? [unknown] : [idleSnapshot, unknown];
+      const scheduler = makeScheduler();
+      const result =
+        mode === 'poll' ? await scheduler.runOnce() : await scheduler.evaluateBoundaryRestart();
+      expect(result).toBe(false);
+      expect(callOrder.some((c) => c.startsWith('scheduleShutdownSequence'))).toBe(false);
+      expect(callOrder.some((c) => c.startsWith('createNotification'))).toBe(false);
+    });
+  }
+}
+
+for (const field of ['activeExecutions', 'runningExecutions', 'queueDepth'] as const) {
+  test(`boundary rechecks ${field} after pull before shutdown`, async () => {
+    snapshots = [idleSnapshot, { ...idleSnapshot, [field]: 1 }];
+    expect(await makeScheduler().evaluateBoundaryRestart()).toBe(false);
+    expect(callOrder.some((c) => c.startsWith('scheduleShutdownSequence'))).toBe(false);
+  });
+}
