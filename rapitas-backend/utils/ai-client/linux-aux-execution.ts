@@ -40,7 +40,6 @@ export function createLinuxAuxExecutionManager(
       let confirmation: Promise<void> | undefined;
       let completion: Promise<void> | undefined;
       const finish = (stop: boolean) => {
-        live.delete(token);
         if (stop) log.info({ executionToken: token }, 'Auxiliary CLI stop requested');
         if (stop && child && child.exitCode === null && child.signalCode === null) child.kill();
         completion ??= (async () => {
@@ -69,7 +68,10 @@ export function createLinuxAuxExecutionManager(
             await new Promise((resolve) => setTimeout(resolve, 20));
           }
           throw new Error(`Auxiliary Linux cleanup remains unresolved: ${token}`);
-        })();
+        })().finally(() => {
+          // Keep local ownership through final reconciliation, including failure.
+          live.delete(token);
+        });
         return completion;
       };
       const helperArgs = [join(import.meta.dir, 'linux-aux-launcher.ts')];
