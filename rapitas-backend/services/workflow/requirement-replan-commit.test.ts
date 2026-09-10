@@ -223,6 +223,19 @@ test('server entry point reviews the stored source and commits the verdict', asy
   expect(result.committed).toBe(true);
 });
 
+test('unknown review keeps task and artifacts unchanged and issues no completion receipt', async () => {
+  const before = await db.$queryRawUnsafe('SELECT * FROM Task WHERE id=1');
+  const artifacts = await db.$queryRawUnsafe('SELECT * FROM WorkflowFile ORDER BY id');
+  const result = await attemptRequirementReplan(db as unknown as PostgresClient, 1, async () => ({
+    ...review,
+    verdict: { kind: 'unknown', reason: 'UI and cost comparison evidence is missing' },
+  }));
+  expect(result).toEqual({ committed: false, reason: 'unknown' });
+  expect(await db.$queryRawUnsafe('SELECT * FROM Task WHERE id=1')).toEqual(before);
+  expect(await db.$queryRawUnsafe('SELECT * FROM WorkflowFile ORDER BY id')).toEqual(artifacts);
+  expect(await db.$queryRawUnsafe('SELECT * FROM WorkflowTransition')).toEqual([]);
+});
+
 test('requirement edited during independent review is never replaced by an old verdict', async () => {
   const result = await attemptRequirementReplan(db as unknown as PostgresClient, 1, async () => {
     await db.$executeRawUnsafe('UPDATE Task SET acceptanceCriteria = \'["new requirement"]\'');
