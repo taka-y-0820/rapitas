@@ -3,7 +3,42 @@
 
 // A quality guard for the observed verification pipeline mistake, not a shell
 // sandbox. Keep ordinary log-reading pipelines available.
+function withoutLiteralHereDocs(command) {
+  const pending = [];
+  return command
+    .split(/\r?\n/)
+    .map((line) => {
+      if (pending.length) {
+        const doc = pending[0];
+        if ((doc.tabs ? line.replace(/^\t+/, '') : line) === doc.end) pending.shift();
+        return '';
+      }
+      // Only quoted delimiters: unquoted heredocs can execute substitutions.
+      // Scan the header outside strings so echo "<< 'DOC'" is not a redirect.
+      let quote = '';
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '\\' && quote !== "'") {
+          i++;
+          continue;
+        }
+        if (quote) {
+          if (ch === quote) quote = '';
+          continue;
+        }
+        const match = line.slice(i).match(/^<<(-?)\s*(?:'([^']+)'|"([^"$`]+)")/);
+        if (match) {
+          pending.push({ end: match[2] ?? match[3], tabs: match[1] === '-' });
+          i += match[0].length - 1;
+        } else if (ch === "'" || ch === '"') quote = ch;
+      }
+      return line;
+    })
+    .join('\n');
+}
+
 function unsafeVerification(command) {
+  command = withoutLiteralHereDocs(command);
   const verification =
     /(?:^|[\s/\\])(?:run-checked\.cjs|tsc|vitest|eslint|prettier)(?=[\s;|&"']|$)|\b(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?(?:test|typecheck|lint|build)(?=[\s;|&"']|$)/i;
   const hidesExit =
