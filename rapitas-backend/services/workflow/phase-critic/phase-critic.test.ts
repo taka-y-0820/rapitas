@@ -43,6 +43,19 @@ const v = (over: Partial<CriticVerdict>): CriticVerdict => ({
   ...over,
 });
 
+describe('live evaluation control fixtures', () => {
+  it('keeps the short control intact and actually truncates the long control', async () => {
+    const { FIXTURES } = await import('../../../scripts/eval-phase-critic');
+    const short = FIXTURES.find((f) => f.name === 'adequate-plan-short')!;
+    const full = FIXTURES.find((f) => f.name === 'adequate-plan-full-truncated')!;
+    expect(buildCriticUserMessage(short.content, short.context).truncated).toBe(false);
+    expect(buildCriticUserMessage(full.content, full.context).truncated).toBe(true);
+    expect(short.expectedVerdict).toBe('pass');
+    expect(full.expectedVerdict).toBe('unknown');
+    expect(full.context).toEqual(short.context);
+  });
+});
+
 describe('aggregateCritiques', () => {
   it('returns unknown with no verdicts (fail-open)', () => {
     expect(aggregateCritiques([])).toEqual({ verdict: 'unknown', severity: 0, reasons: [] });

@@ -198,7 +198,7 @@ interface Fixture {
   context?: CriticContext;
 }
 
-const FIXTURES: Fixture[] = [
+export const FIXTURES: Fixture[] = [
   {
     name: 'narrow-task909',
     expectedVerdict: 'fail',
@@ -317,4 +317,4 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+if (import.meta.main) void main();
