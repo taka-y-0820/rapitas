@@ -25,7 +25,7 @@ const readWorkflowFile = mock(() => Promise.resolve('plan content'));
 mock.module('../../services/agents/orchestrator/git-operations/diff-structured', () => ({
   getDiff,
 }));
-mock.module('../../utils/ai-client', () => ({ sendAIMessage }));
+mock.module('../../utils/ai-client', () => ({ sendAIMessage, getAuxAiMode: () => 'api' }));
 mock.module('../../services/workflow/workflow-file-utils', () => ({
   resolveWorkflowDir,
   readWorkflowFile,
