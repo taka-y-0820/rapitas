@@ -28,6 +28,7 @@ import { createLogger } from '../../../../config/logger';
 import { extendOwnedRuntimeTree, inspectOwnedRuntimeTree } from './runtime-process-identity';
 import { readRuntimeProcessSnapshot, ownsRuntimePort } from './runtime-process-snapshot';
 import { inspectRuntimeDirectory } from './runtime-directory-occupancy';
+import { readRuntimeBootId, isPriorRuntimeBoot } from './runtime-boot-identity';
 import type { RuntimeConfig } from './runtime-config';
 import {
   cancelIdleTimer,
@@ -338,7 +339,22 @@ async function recoverRegistryInternal(): Promise<void> {
   const entries = await ownershipStore.read();
   if (entries.length === 0) return;
   const snapshot = await readRuntimeProcessSnapshot();
+  const bootId = await readRuntimeBootId();
   for (const persisted of entries) {
+    const priorBoot = isPriorRuntimeBoot(persisted.bootId, bootId);
+    if (priorBoot) {
+      // No process from that boot can survive. Still refuse a currently occupied
+      // port/directory, and never signal a PID that may have been reused.
+      if (
+        snapshot.listeners &&
+        !snapshot.listeners.some((listener) => listener.port === persisted.port) &&
+        (await inspectRuntimeDirectory(persisted.workdir, snapshot.processes)).free
+      ) {
+        await persistRemoval(persisted.key);
+        log.info({ key: persisted.key }, '[registry] prior OS boot ownership released');
+        continue;
+      }
+    }
     const identities = extendOwnedRuntimeTree(persisted.identities ?? [], snapshot.processes);
     const inspected = inspectOwnedRuntimeTree(
       identities,
@@ -347,6 +363,7 @@ async function recoverRegistryInternal(): Promise<void> {
     );
     let healthy = false;
     if (
+      !priorBoot &&
       inspected.safe &&
       inspected.alive.length > 0 &&
       persisted.state === 'active' &&
@@ -368,6 +385,8 @@ async function recoverRegistryInternal(): Promise<void> {
     // Missing root identity (including a crash before capture) is not absence.
     // Retain failed/unhealthy records; never start over a possible survivor.
     const entry: RegistryEntry = {
+      // Legacy records are anchored to this observed boot, never cleared on first sight.
+      bootId: persisted.bootId ?? bootId,
       key: persisted.key,
       workdir: persisted.workdir,
       state: healthy ? 'active' : 'quarantined',
@@ -385,7 +404,7 @@ async function recoverRegistryInternal(): Promise<void> {
     await persistActive(entry, persisted.pid);
     if (healthy) {
       scheduleIdleStop(entry);
-    } else if (inspected.safe) {
+    } else if (!priorBoot && inspected.safe) {
       // No leases survive a backend restart. An identified unhealthy tree
       // can be stopped; a proven absent tree can release its durable record.
       // Unknown identities and occupied ports remain quarantined.

@@ -8,10 +8,12 @@
  * update can never be clobbered by a slower first one finishing later).
  */
 import { RuntimeRegistryStore } from './runtime-registry-store';
+import { isRuntimeBootId } from './runtime-boot-identity';
 import { isRuntimeProcessIdentity, type RuntimeProcessIdentity } from './runtime-process-identity';
 import { PERSIST_PATH, type RegistryEntry } from './runtime-server-registry-types';
 
 export interface PersistedEntry {
+  bootId?: string;
   key: string;
   workdir: string;
   state: 'starting' | 'active' | 'quarantined';
@@ -33,6 +35,7 @@ function validPersistedEntry(value: unknown): value is PersistedEntry {
     typeof v.configFingerprint === 'string' &&
     ['starting', 'active', 'quarantined'].includes(v.state) &&
     typeof v.startedAt === 'string' &&
+    (v.bootId === undefined || isRuntimeBootId(v.bootId)) &&
     Number.isFinite(Date.parse(v.startedAt)) &&
     (v.pid === undefined || (Number.isInteger(v.pid) && v.pid > 0)) &&
     (v.port === undefined || (Number.isInteger(v.port) && v.port > 0 && v.port < 65536)) &&
@@ -58,8 +61,14 @@ function removePersisted(key: string): Promise<void> {
   return ownershipStore.update((entries) => entries.filter((entry) => entry.key !== key));
 }
 
-export function persistStartingIntent(key: string, workdir: string, fp: string): Promise<void> {
+export function persistStartingIntent(
+  key: string,
+  workdir: string,
+  fp: string,
+  bootId?: string,
+): Promise<void> {
   return upsertPersisted({
+    bootId,
     key,
     workdir,
     state: 'starting',
@@ -70,6 +79,7 @@ export function persistStartingIntent(key: string, workdir: string, fp: string):
 
 export function persistActive(entry: RegistryEntry, pid: number | undefined): Promise<void> {
   return upsertPersisted({
+    bootId: entry.bootId,
     key: entry.key,
     workdir: entry.workdir,
     state: entry.state === 'stopping' ? 'quarantined' : entry.state,
@@ -84,6 +94,7 @@ export function persistActive(entry: RegistryEntry, pid: number | undefined): Pr
 
 export function persistQuarantine(entry: RegistryEntry): Promise<void> {
   return upsertPersisted({
+    bootId: entry.bootId,
     key: entry.key,
     workdir: entry.workdir,
     state: 'quarantined',

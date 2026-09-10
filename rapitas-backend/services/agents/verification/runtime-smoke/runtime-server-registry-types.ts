@@ -28,6 +28,7 @@ export const POLL_INTERVAL_MS = 250;
 export type RegistryState = 'starting' | 'active' | 'stopping' | 'quarantined';
 
 export interface RegistryEntry {
+  bootId?: string;
   key: string;
   workdir: string;
   state: RegistryState;
