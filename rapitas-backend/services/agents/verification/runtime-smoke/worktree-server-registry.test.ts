@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -92,6 +92,24 @@ async function quarantineAfterUnconfirmedStop() {
   await stopOwnedAndVerify(entry, 'test-timeout');
   expect(entry.state).toBe('quarantined');
 }
+
+test('missing npm script releases the reservation without spawning and permits a corrected retry', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'runtime-preflight-'));
+  temporaryWorkdirs.push(dir);
+  await mkdir(join(dir, 'rapitas-frontend'));
+  const manifest = join(dir, 'rapitas-frontend', 'package.json');
+  await writeFile(manifest, JSON.stringify({ scripts: {} }));
+  const config = { ...cfg, start: 'cd rapitas-frontend && npm run dev:runtime -- -p {port}' };
+  const rejected = await acquireRuntimeServer(dir, config);
+  expect(rejected.ok).toBe(false);
+  expect(JSON.stringify(rejected)).toContain('missing script');
+  expect(spawnCount).toBe(0);
+  expect(rows).toHaveLength(0);
+  expect(_debugSnapshotForTests()).toHaveLength(0);
+  await writeFile(manifest, JSON.stringify({ scripts: { 'dev:runtime': 'next dev' } }));
+  expect((await acquireRuntimeServer(dir, config)).ok).toBe(true);
+  expect(spawnCount).toBe(1);
+});
 
 test('fresh exit proof clears a transient quarantine and concurrent borrowers share one new server', async () => {
   await quarantineAfterUnconfirmedStop();
