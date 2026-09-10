@@ -92,7 +92,11 @@ function pushRawStart(
 
 describe('getJobByRunId', () => {
   it('running: 開始イベントのみ・同一プロセス・stale未満', async () => {
-    await recordJobStart(1, 'run-1', 'fp-1');
+    await recordJobStart(1, 'run-1', 'fp-1', {
+      operation: 'POST /workflow/tasks/1/run-verification',
+      worktreePath: '/tmp/worktree-1',
+      revision: 'abc123',
+    });
     const record = await getJobByRunId(1, 'run-1');
     expect(record).toMatchObject({ status: 'running', runId: 'run-1', taskId: 1 });
     expect(record?.startedAt).toBeTruthy();
@@ -111,13 +115,18 @@ describe('getJobByRunId', () => {
   });
 
   it('completed: 開始＋完了イベントで checks/ok/unverifiable を含めて返す', async () => {
-    await recordJobStart(4, 'run-4', 'fp-4');
+    await recordJobStart(4, 'run-4', 'fp-4', {
+      operation: 'POST /workflow/tasks/4/run-verification',
+      worktreePath: '/tmp/worktree-4',
+      revision: 'def456',
+    });
     await recordJobFinish(4, 'run-4', {
       status: 'completed',
       ok: true,
       unverifiable: false,
       checks: [{ name: 'lint', ran: true, ok: true, errorCount: 0, details: 'no issues' }],
       summary: 'all green',
+      commands: [],
     });
     const record = await getJobByRunId(4, 'run-4');
     expect(record).toMatchObject({
@@ -125,20 +134,96 @@ describe('getJobByRunId', () => {
       ok: true,
       unverifiable: false,
       summary: 'all green',
+      commands: [],
     });
     expect(record?.checks).toHaveLength(1);
     expect(record?.finishedAt).toBeTruthy();
   });
 
   it('failed: 開始＋失敗イベントで error を含めて返す', async () => {
-    await recordJobStart(5, 'run-5', 'fp-5');
-    await recordJobFinish(5, 'run-5', { status: 'failed', error: 'gate threw' });
+    await recordJobStart(5, 'run-5', 'fp-5', {
+      operation: 'POST /workflow/tasks/5/run-verification',
+      worktreePath: '/tmp/worktree-5',
+      revision: null,
+    });
+    await recordJobFinish(5, 'run-5', {
+      status: 'failed',
+      error: 'gate threw',
+      commands: [
+        {
+          command: 'bun test',
+          cwd: '/tmp/worktree-9',
+          exitCode: 23,
+          signal: null,
+          status: 'exited',
+        },
+      ],
+    });
     const record = await getJobByRunId(5, 'run-5');
-    expect(record).toMatchObject({ status: 'failed', error: 'gate threw' });
+    expect(record).toMatchObject({
+      status: 'failed',
+      error: 'gate threw',
+      commands: [
+        {
+          command: 'bun test',
+          cwd: '/tmp/worktree-9',
+          exitCode: 23,
+          signal: null,
+          status: 'exited',
+        },
+      ],
+    });
+  });
+
+  it('構造化ログ: command/worktreePath/revision が開始・完了両方の派生結果に含まれる（受入条件6）', async () => {
+    await recordJobStart(9, 'run-9', 'fp-9', {
+      operation: 'POST /workflow/tasks/9/run-verification',
+      worktreePath: '/tmp/worktree-9',
+      revision: 'rev-9',
+    });
+    const running = await getJobByRunId(9, 'run-9');
+    expect(running).toMatchObject({
+      operation: 'POST /workflow/tasks/9/run-verification',
+      worktreePath: '/tmp/worktree-9',
+      revision: 'rev-9',
+    });
+    await recordJobFinish(9, 'run-9', {
+      status: 'completed',
+      ok: false,
+      commands: [
+        {
+          command: 'bun test',
+          cwd: '/tmp/worktree-9',
+          exitCode: 23,
+          signal: null,
+          status: 'exited',
+        },
+      ],
+    });
+    const finished = await getJobByRunId(9, 'run-9');
+    expect(finished).toMatchObject({
+      operation: 'POST /workflow/tasks/9/run-verification',
+      worktreePath: '/tmp/worktree-9',
+      revision: 'rev-9',
+      commands: [
+        {
+          command: 'bun test',
+          cwd: '/tmp/worktree-9',
+          exitCode: 23,
+          signal: null,
+          status: 'exited',
+        },
+      ],
+      ok: false,
+    });
   });
 
   it('存在しない runId は null を返す', async () => {
-    await recordJobStart(6, 'run-6', 'fp-6');
+    await recordJobStart(6, 'run-6', 'fp-6', {
+      operation: 'POST /workflow/tasks/6/run-verification',
+      worktreePath: '/tmp/worktree-6',
+      revision: null,
+    });
     const record = await getJobByRunId(6, 'run-does-not-exist');
     expect(record).toBeNull();
   });

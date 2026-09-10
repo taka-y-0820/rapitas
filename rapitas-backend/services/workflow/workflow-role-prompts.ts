@@ -1,4 +1,7 @@
-import { verificationEvidencePrompt } from './workflow-verification-evidence-prompt';
+import {
+  verificationEvidencePrompt,
+  shellExitCodeSafetyRule,
+} from './workflow-verification-evidence-prompt';
 /**
  * Workflow Role Prompts
  *
@@ -160,6 +163,7 @@ export function buildRoleTexts(
             String(taskId),
           ) +
           verificationEvidencePrompt(language) +
+          shellExitCodeSafetyRule(language) +
           '- **受入基準の自己照合（完了宣言の条件）**: 自己検証の応答に `acceptance=NG` が含まれる場合、差分が受入基準に対応していない（または受入基準・タスク本文と無関係な差分である）可能性が高い。各受入基準に「この差分のどのファイル/変更が満たすか」を対応付けて確認し、対応付けられない基準が1つでも残る間は完了を宣言せず、差分を修正して自己検証を再実行してください。機械照合の誤検出（対応済みなのに NG）と判断した場合のみ、どの変更がどの基準を満たすかを最終サマリで明示した上で終了してよい。同様に `coverage=NG`（ソース変更にテスト非同伴）も、テストを追加してから完了してください。\n' +
           '- 実装が完了したら、変更内容のサマリ (どのファイルを何のために変えたか) を最後のメッセージに残して終了してください。Rapitas が後段で verify.md を自動生成します。\n' +
           '- **テスト検証はファイル単位** (`bun test <1ファイル>`) で行ってください。bun の `mock.module` は**プロセスグローバル**なので、同じモジュールを mock する複数のテストファイルを**同時実行すると mock が衝突して偽の失敗**になります。これは bun の制約でありコードのバグではありません。**各ファイルが単体で通れば十分**です。複数テストファイルを「同時に通す」ためにモックの順序変更や beforeAll 化を延々と試みないでください（解決不能であり、時間を浪費します）。',
@@ -169,6 +173,7 @@ export function buildRoleTexts(
         diffHeader: '# 変更差分 (git diff)',
         instruction:
           verificationEvidencePrompt(language) +
+          shellExitCodeSafetyRule(language) +
           '上記の計画と実装結果を検証し、verify.mdとしてMarkdown形式でレポートを作成してください。\n\n' +
           '計画チェックリストの消化状況、テスト結果、品質メトリクスを含めてください。\n\n' +
           '## 検証フェーズの厳守事項\n' +
@@ -267,6 +272,7 @@ export function buildRoleTexts(
             String(taskId),
           ) +
           verificationEvidencePrompt(language) +
+          shellExitCodeSafetyRule(language) +
           '- Once implementation is done, leave a short summary (which files changed and why) as your final message and exit. Rapitas auto-generates verify.md downstream.\n' +
           "- **Verify tests PER FILE** (`bun test <one-file>`). Bun's `mock.module` is PROCESS-GLOBAL, so two test files that mock the same module conflict and produce FALSE failures when run together. That is a bun limitation, not a code bug. **Each file passing in isolation is sufficient.** Do NOT keep reordering mocks or moving imports into beforeAll trying to make multiple test files pass together — it is unsolvable and wastes time.",
       },
@@ -275,6 +281,7 @@ export function buildRoleTexts(
         diffHeader: '# Changes (git diff)',
         instruction:
           verificationEvidencePrompt(language) +
+          shellExitCodeSafetyRule(language) +
           'Please verify the implementation plan and results above, and create a report as verify.md in Markdown format.\n\n' +
           'Include the completion status of the plan checklist, test results, and quality metrics.\n\n' +
           '## Verification phase strict rules\n' +

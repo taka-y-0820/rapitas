@@ -27,6 +27,7 @@ import { readWorkflowFile } from './workflow-file-utils';
 import { resolvePreferredBaseBranch } from '../task/task-resolver';
 import { runGitCommand } from '../github/git-exec';
 import { recordJobStart, recordJobFinish } from './verification-job-store';
+import { withCommandEvidence, type CommandEvidence } from '../agents/verification/command-evidence';
 
 const log = createLogger('services:workflow:verification-job-runner');
 
@@ -204,7 +205,17 @@ export async function beginVerificationRun(
   const cacheInputsBefore = await buildCacheInputs(taskId, worktreePath);
   const keyBefore = await computeVerificationCacheKey(cacheInputsBefore);
   const runId = randomUUID();
-  await recordJobStart(taskId, runId, keyBefore);
+  const revision = (
+    await runGitCommand(['rev-parse', 'HEAD'], worktreePath, {
+      timeoutMs: 5_000,
+      skipLog: true,
+    }).catch(() => '')
+  ).trim();
+  await recordJobStart(taskId, runId, keyBefore, {
+    operation: `POST /workflow/tasks/${taskId}/run-verification`,
+    worktreePath,
+    revision: revision || null,
+  });
   return { runId, cacheInputsBefore, keyBefore };
 }
 
@@ -229,6 +240,7 @@ export async function runVerificationGateAndRecord(
   keyBefore: string | null,
 ): Promise<void> {
   const startedAt = Date.now();
+  const commands: CommandEvidence[] = [];
   try {
     const verificationOptions = {
       planContent: cacheInputsBefore.planContent,
@@ -238,7 +250,9 @@ export async function runVerificationGateAndRecord(
       acceptanceCriteria: cacheInputsBefore.acceptanceCriteria,
       taskText: cacheInputsBefore.taskText,
     };
-    const result = await runAutomatedVerification(worktreePath, verificationOptions);
+    const result = await withCommandEvidence(commands, () =>
+      runAutomatedVerification(worktreePath, verificationOptions),
+    );
     log.info(
       { taskId, runId, ok: result.ok, checks: result.checks.length },
       '[self-verification] gate run complete',
@@ -269,6 +283,7 @@ export async function runVerificationGateAndRecord(
           markdown,
         durationMs,
         fingerprintAtFinish: keyAfter,
+        commands,
       });
       return;
     }
@@ -281,6 +296,7 @@ export async function runVerificationGateAndRecord(
       markdown,
       durationMs,
       fingerprintAtFinish: keyAfter,
+      commands,
     });
   } catch (err) {
     log.warn({ err, taskId, runId }, '[self-verification] gate run failed');
@@ -288,6 +304,7 @@ export async function runVerificationGateAndRecord(
       status: 'failed',
       error: err instanceof Error ? err.message : String(err),
       durationMs: Date.now() - startedAt,
+      commands,
     }).catch((finishErr) => {
       log.warn(
         { err: finishErr, taskId, runId },
