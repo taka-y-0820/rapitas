@@ -74,8 +74,13 @@ mock.module('../../services/workflow/automation-policy', () => ({
     Promise.resolve({ autoCommit: true, autoCreatePR: true, autoMergePR: false }),
 }));
 
+const verificationGateMock = mock(
+  async (): Promise<
+    import('../../services/agents/verification/verification-gate').GateOutcome
+  > => ({ ok: true, result: null }),
+);
 mock.module('../../services/agents/verification/verification-gate', () => ({
-  runVerificationGate: () => Promise.resolve({ ok: true }),
+  runVerificationGate: verificationGateMock,
 }));
 
 // One mutable fixture per test drives createPullRequest's outcome and the
@@ -340,4 +345,24 @@ describe('performAutoCommitAndPR — 停止後は後続の公開処理を一切�
     ]);
     cancelAtStep = null;
   });
+});
+
+test('unverifiable gate exposes the infrastructure outcome without committing', async () => {
+  cancelAtStep = null;
+  const before = createCommitCalls;
+  verificationGateMock.mockResolvedValueOnce({
+    ok: false,
+    result: {
+      ok: false,
+      unverifiable: true,
+      summary: 'runtime quarantined',
+      checks: [],
+      changedFiles: [],
+    },
+  });
+  const outcome = await performAutoCommitAndPR(687, 'PASS');
+  expect(outcome.verificationBlocked).toBe(true);
+  expect(outcome.verificationUnverifiable).toBe(true);
+  expect(outcome.error).toContain('runtime quarantined');
+  expect(createCommitCalls).toBe(before);
 });

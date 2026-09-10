@@ -65,6 +65,8 @@ export type AutoCommitPRResult = {
    * the gate already set it `blocked`.
    */
   verificationBlocked?: boolean;
+  /** Infrastructure could not verify correctness; code repair is not justified. */
+  verificationUnverifiable?: boolean;
   error?: string;
 };
 
@@ -181,6 +183,7 @@ export async function performAutoCommitAndPR(
       return {
         ...result,
         verificationBlocked: true,
+        verificationUnverifiable: gate.result?.unverifiable === true || gate.result === null,
         error: `自動検証に失敗しました（${gate.result?.summary ?? 'lint/型エラー'}）。auto-commit/PR を中止し、タスクをブロックしました。`,
       };
     }
