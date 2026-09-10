@@ -234,3 +234,30 @@ test('a stopped preflight prevents any commit or PR attempt', async () => {
   ).rejects.toThrow('stop_not_resumed');
   expect(performAutoCommitAndPRMock.mock.calls.length).toBe(before);
 });
+
+test('unverifiable gate retains its original evidence without recovery or a stale second receipt check', async () => {
+  const checksBefore = preflight.mock.calls.length;
+  const completeBefore = completeReview.mock.calls.length;
+  const effectsBefore = sideEffectsCalls.length;
+  const callsBefore = performAutoCommitAndPRMock.mock.calls.length;
+  performAutoCommitAndPRMock.mockImplementationOnce(() =>
+    Promise.resolve({
+      verificationBlocked: true,
+      verificationUnverifiable: true,
+      error: 'runtime quarantined: exit-not-confirmed',
+    }),
+  );
+  const outcome = await runVerifyCommitPrPipeline({
+    taskId: 653,
+    completionReceipt: receipt,
+    savedContent: 'PASS',
+    preferredBaseBranchForVerify: null,
+  });
+  expect(outcome.taskMarkedDone).toBe(false);
+  expect(outcome.newStatus).toBe('verify_done');
+  expect(outcome.autoCommitPRResult.error).toBe('runtime quarantined: exit-not-confirmed');
+  expect(preflight.mock.calls.length).toBe(checksBefore + 1);
+  expect(performAutoCommitAndPRMock.mock.calls.length).toBe(callsBefore + 1);
+  expect(completeReview.mock.calls.length).toBe(completeBefore);
+  expect(sideEffectsCalls.length).toBe(effectsBefore);
+});
