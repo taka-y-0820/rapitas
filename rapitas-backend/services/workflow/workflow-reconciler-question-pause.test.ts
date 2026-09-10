@@ -127,6 +127,35 @@ describe('healOrphanedQuestionPause', () => {
     expect(taskUpdateMock).not.toHaveBeenCalled();
   });
 
+  // task 902: without this, an answer landing after the heal always falls
+  // back to the default kind derivation, which can disagree with the kind
+  // actually recorded when the question was first raised.
+  test('carries the original pause kind forward into the restored transition metadata', async () => {
+    armHappyPath();
+    transitionFindFirstMock.mockResolvedValue({
+      toStatus: 'awaiting_question',
+      metadata: JSON.stringify({ kind: 'completion_confirmation' }),
+    });
+
+    const restored = await healOrphanedQuestionPause(NOW);
+
+    expect(restored).toBe(1);
+    const t = recordTransitionMock.mock.calls[0]?.[0] as {
+      metadata: { kind?: string };
+    };
+    expect(t.metadata.kind).toBe('completion_confirmation');
+  });
+
+  test('omits kind from the restored metadata when the original pause had none', async () => {
+    armHappyPath();
+    transitionFindFirstMock.mockResolvedValue({ toStatus: 'awaiting_question', metadata: {} });
+
+    await healOrphanedQuestionPause(NOW);
+
+    const t = recordTransitionMock.mock.calls[0]?.[0] as { metadata: Record<string, unknown> };
+    expect(t.metadata).not.toHaveProperty('kind');
+  });
+
   test('returns 0 without querying tasks when nothing is pending', async () => {
     fileFindManyMock.mockResolvedValue([]);
 

@@ -196,3 +196,60 @@ test('stop history read failure fails closed', async () => {
   expect(updateMany).not.toHaveBeenCalled();
   expect(recordTransition).not.toHaveBeenCalled();
 });
+
+// task 902: question raise-time kind computation (metadata.kind).
+test('records kind=execution_continuation for a non-verify_done question pause', async () => {
+  workflowStatus = 'in_progress';
+  status = 'in-progress';
+  expect((await save()).newStatus).toBe('awaiting_question');
+  expect(recordTransition).toHaveBeenCalledWith(
+    expect.objectContaining({
+      metadata: expect.objectContaining({ kind: 'execution_continuation' }),
+    }),
+  );
+});
+
+test('records kind=completion_confirmation for a question pause raised from verify_done (task 902: previously excluded from pausing at all)', async () => {
+  workflowStatus = 'verify_done';
+  status = 'in-progress';
+  const result = await computeAndApplyStatusTransition({
+    taskId: 901,
+    fileType: 'question',
+    currentStatus: 'verify_done',
+    savedContent: 'Q',
+  });
+  expect(result.newStatus).toBe('awaiting_question');
+  expect(recordTransition).toHaveBeenCalledWith(
+    expect.objectContaining({
+      fromStatus: 'verify_done',
+      metadata: expect.objectContaining({
+        previousStatus: 'verify_done',
+        kind: 'completion_confirmation',
+      }),
+    }),
+  );
+});
+
+test('an explicit kind embedded in question.md json:options is honored over the status-derived default', async () => {
+  workflowStatus = 'verify_done';
+  status = 'in-progress';
+  const savedContent =
+    '# 質問\n```json:options\n' +
+    JSON.stringify({
+      kind: 'execution_continuation',
+      questions: [{ id: 'Q1', summary: 'x', options: [{ key: 'A', label: 'a' }] }],
+    }) +
+    '\n```';
+  const result = await computeAndApplyStatusTransition({
+    taskId: 901,
+    fileType: 'question',
+    currentStatus: 'verify_done',
+    savedContent,
+  });
+  expect(result.newStatus).toBe('awaiting_question');
+  expect(recordTransition).toHaveBeenCalledWith(
+    expect.objectContaining({
+      metadata: expect.objectContaining({ kind: 'execution_continuation' }),
+    }),
+  );
+});

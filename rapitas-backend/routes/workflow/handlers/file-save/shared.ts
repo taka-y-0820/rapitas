@@ -115,6 +115,13 @@ export const ALLOWED_FILE_TYPES_BY_STATUS: Record<WorkflowStatus, ReadonlySet<Wo
   in_progress: new Set(['verify', 'question']),
   // 質問待ち中も同じファイルが書ける（質問解消は別 API か question.md 削除で行う）
   awaiting_question: new Set(['research', 'plan', 'verify', 'question']),
-  verify_done: new Set([]),
+  // 'question' only (never 'verify' — see retry-rollback-contract.test.ts /
+  // guards.ts for why verify_done must stay unable to record a verify.md).
+  // A question raised while sitting at verify_done resolves to
+  // completion_confirmation (question-kind-resolver.ts) and pauses to
+  // awaiting_question without discarding the passing verify.md (task 902 —
+  // without this entry the save was rejected here before kind resolution
+  // ever ran, so completion_confirmation was unreachable via the real API).
+  verify_done: new Set(['question']),
   completed: new Set([]),
 };

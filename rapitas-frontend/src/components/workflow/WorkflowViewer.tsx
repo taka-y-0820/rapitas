@@ -83,6 +83,7 @@ export default function WorkflowViewer({
     error,
     refetch,
     effectiveStatus,
+    applyResolvedQuestionStatus,
     isAdvancing,
     advanceError,
     setAdvanceError,
@@ -182,13 +183,18 @@ export default function WorkflowViewer({
   };
 
   /**
-   * POST an answer to a workflow QUESTION FILE (the intake gate's question.md),
-   * which has no live session to respond to. The backend folds the answer into
-   * the spec and re-runs from draft; refetch so the resolved question.md (now
-   * archived) disappears. `selections` is the optional audit payload from a
-   * structured `json:options` question (see StructuredQuestionFlow) —
-   * omitted for legacy intake/free-text answers, which existing callers pass
-   * as a single string.
+   * POST an answer to a workflow QUESTION FILE (the intake gate's question.md,
+   * or any other kind-based pause — see workflow-handlers-resume-dispatch.ts).
+   * The backend resolves the recorded kind (spec_change/execution_continuation/
+   * completion_confirmation) and returns the confirmed `toStatus` it applied;
+   * this is read and applied immediately (task 902 AC3) via
+   * `applyResolvedQuestionStatus` (pins `effectiveStatus`, sidestepping any
+   * stale `workflowStatus` prop) and `onStatusChange` (propagates the same
+   * value to the parent so the prop itself catches up), alongside the normal
+   * `refetch()` so the resolved question.md (archived only for spec_change)
+   * disappears. `selections` is the optional audit payload from a structured
+   * `json:options` question (see StructuredQuestionFlow) — omitted for legacy
+   * intake/free-text answers, which existing callers pass as a single string.
    */
   const handleAnswerIntakeQuestion = async (answer: string, selections?: StructuredSelection[]) => {
     setSubmittingAnswer(true);
@@ -201,7 +207,14 @@ export default function WorkflowViewer({
         headers: { 'Content-Type': 'application/json', 'X-Rapitas-Source': 'ui' },
         body: JSON.stringify(selections ? { answer, selections } : { answer }),
       });
-      if (res.ok) refetch();
+      if (res.ok) {
+        const data = (await res.json().catch(() => null)) as { toStatus?: WorkflowStatus } | null;
+        if (data?.toStatus) {
+          applyResolvedQuestionStatus(data.toStatus);
+          onStatusChange?.(data.toStatus);
+        }
+        refetch();
+      }
     } catch {
       /* leave the question visible so the user can retry */
     } finally {

@@ -16,6 +16,8 @@ import { checkWorkflowInvariants } from '../../../../services/workflow/workflow-
 import { attemptInvariantCutoff } from '../../../../services/workflow/verify-invariant-repair';
 import { markLatestExecutionFailed, wasNonConvergenceCutoffJustRecorded } from './shared';
 import type { CompletionReviewReceipt } from '../../../../services/workflow/requirement-replan-commit';
+import { parseQuestionOptionsBlock } from '../../../../services/workflow/question-options-parser';
+import { resolveExplicitOrDefaultKind } from '../../../../services/workflow/question-kind-resolver';
 
 const log = createLogger('routes:workflow:handlers:files');
 
@@ -129,13 +131,16 @@ export async function computeAndApplyStatusTransition(params: {
     fileType === 'question' &&
     currentStatus &&
     currentStatus !== 'awaiting_question' &&
-    currentStatus !== 'completed' &&
-    currentStatus !== 'verify_done'
+    currentStatus !== 'completed'
   ) {
     // 質問.md が保存されたらユーザー回答待ち状態に遷移する。
     // 復帰先 status は transition log の metadata.previousStatus に保存しておき、
     // 回答後に呼ばれる resume API（routes/workflow/handlers/workflow-handlers-resume.ts）が
     // この値を読み出して元状態に戻す。
+    // NOTE: verify_done は以前ここで除外されていた（完了確認の質問という概念が
+    // 無かったため、質問raise=常にdraftリセットで危険だった）。kindベースの
+    // 振り分け導入(task 902)により、verify_done由来の質問はcompletion_confirmation
+    // と判定されplan保持のままverify_doneへ復帰するため、除外を維持する理由がない。
     log.info(`[Workflow] Question saved: transitioning ${currentStatus} → awaiting_question`);
     newStatus = 'awaiting_question';
   } else if (fileType === 'verify') {
@@ -332,6 +337,17 @@ export async function computeAndApplyStatusTransition(params: {
     };
     if (newStatus === 'awaiting_question' && currentStatus) {
       transitionMetadata.previousStatus = currentStatus;
+      // file_saved:question is the only cause reaching this branch (intake
+      // questions raise via intake-gate.ts directly, never through here) —
+      // an explicit kind may be embedded in the saved question.md's
+      // json:options block; absent one, resolveExplicitOrDefaultKind derives
+      // the default from currentStatus (see question-kind-resolver.ts).
+      const explicitKind = parseQuestionOptionsBlock(savedContent)?.kind;
+      transitionMetadata.kind = resolveExplicitOrDefaultKind({
+        cause: `file_saved:${fileType}`,
+        explicitKind,
+        currentStatus,
+      });
     }
     // Skip the generic transition when the cutoff above already recorded its
     // OWN terminal transition for this save — recording both would duplicate

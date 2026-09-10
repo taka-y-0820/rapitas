@@ -9,6 +9,7 @@ import { prisma } from '../../config';
 import { createLogger } from '../../config/logger';
 import { recordTransition } from './transition-recorder';
 import type { WorkflowStatus } from './workflow-types';
+import { readQuestionMetadata } from './question-kind-resolver';
 
 const log = createLogger('workflow-reconciler');
 
@@ -82,12 +83,19 @@ export async function healOrphanedQuestionPause(nowMs: number): Promise<number> 
       .findFirst({
         where: { taskId },
         orderBy: { createdAt: 'desc' },
-        select: { toStatus: true },
+        select: { toStatus: true, metadata: true },
       })
       .catch(() => null);
     // Anything newer than the pause means the workflow moved on for a reason we
     // must not second-guess; only an unbroken pause is safe to restore.
     if (latest?.toStatus !== 'awaiting_question') continue;
+
+    // Carry the original pause's kind forward (task 902) — without this, an
+    // answer after this heal always falls back to the default derivation,
+    // which can disagree with the kind actually recorded when the question
+    // was first raised (e.g. an explicit kind embedded in question.md).
+    const latestMeta = readQuestionMetadata(latest.metadata);
+    const inheritedKind = typeof latestMeta?.kind === 'string' ? latestMeta.kind : undefined;
 
     const attempts = await prisma.workflowTransition
       .count({ where: { taskId, cause: RESTORE_QUESTION_PAUSE_CAUSE } })
@@ -112,7 +120,11 @@ export async function healOrphanedQuestionPause(nowMs: number): Promise<number> 
       toStatus: 'awaiting_question',
       actor: 'system',
       cause: RESTORE_QUESTION_PAUSE_CAUSE,
-      metadata: { reason: 'live_question_md_without_awaiting_status', attempt: attempts + 1 },
+      metadata: {
+        reason: 'live_question_md_without_awaiting_status',
+        attempt: attempts + 1,
+        ...(inheritedKind ? { kind: inheritedKind } : {}),
+      },
     }).catch(() => {});
     restored++;
     log.info(
