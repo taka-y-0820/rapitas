@@ -15,8 +15,13 @@ import { join } from 'path';
 export interface PhaseCriticEvalCaseResult {
   /** Fixture name (from scripts/eval-phase-critic.ts FIXTURES) / フィクスチャ名 */
   name: string;
-  /** Verdict the fixture was labelled with / 期待される判定 */
-  expectedVerdict: 'pass' | 'fail';
+  /**
+   * Verdict the fixture was labelled with / 期待される判定. 'unknown' covers
+   * a forced-truncation fixture whose content would satisfy every criterion —
+   * the truncated&&pass→unknown safety rule (phase-critic.ts) makes 'pass'
+   * unreachable there by design, so 'unknown' is the correct expectation.
+   */
+  expectedVerdict: 'pass' | 'fail' | 'unknown';
   /** Verdict the critic actually returned / 実際の判定 */
   gotVerdict: 'pass' | 'fail' | 'unknown';
   /** Whether gotVerdict === expectedVerdict / 一致したか */
