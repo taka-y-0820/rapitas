@@ -24,9 +24,11 @@ export function shellExitCodeSafetyRule(language: 'ja' | 'en'): string {
     ? '\n### シェル検証コマンドの終了コード保持（重要）\n' +
         '- `tsc`/`vitest`/`test` 等を手動でシェル実行する際、`| tail` / `| head` / `; echo $?` のような後処理を絶対に付けないでください。Git Bash はパイプの終了コードが最後のコマンド（tail等）のものになり、元コマンドが失敗していても 0 になります（`false | tail -1` の `$?` は 0）。\n' +
         '- 代わりに `node scripts/run-checked.cjs -- <command>` を経由してください。全出力は `.verification-logs/` に保存されつつ、コンソールには末尾のみ表示され、ラッパー自身の終了コードが元コマンドの終了コードと常に一致します。`echo $?`/`echo $LASTEXITCODE` での再取得は不要です。\n' +
-        '- `run-checked.cjs` はパイプ・`;`・`&&`・`||` を含むコマンドを exit 2 で拒否します（回避不可）。複数コマンドが必要な場合はスクリプトファイルに切り出し、そのファイルパスを渡してください。\n'
+        '- ラッパーの外側にも後処理を付けないでください。`node ../scripts/run-checked.cjs -- "bunx tsc --noEmit" 2>&1 | tail -40` は禁止です。出力量を減らす場合は `node ../scripts/run-checked.cjs --tail-lines 40 -- "bunx tsc --noEmit"` をそのまま実行してください。\n' +
+        '- `run-checked.cjs` が exit 2 で拒否できるのは、引数として渡されたコマンド内のパイプ・`;`・`&&`・`||` だけです。外側のシェルによるパイプは検出できません。パイプ付きで実行してしまった場合、成功の証拠には使わず、元の処理が終了したことを確認してからパイプなしで再検証してください。複数ステップが必要なら各コマンドを個別に実行し、すべての終了コードを確認してください。\n'
     : '\n### Preserve the shell exit code (important)\n' +
         "- When running `tsc`/`vitest`/`test` manually from a shell, never append `| tail` / `| head` / `; echo $?`. Under Git Bash a pipe reports the LAST command's exit code (e.g. `tail`), which is 0 even when the original command failed (`false | tail -1` exits 0).\n" +
         "- Use `node scripts/run-checked.cjs -- <command>` instead. Full output is saved under `.verification-logs/`, the console shows only the tail, and the wrapper's own exit code always equals the original command's exit code — no need to re-read `$?`/`$LASTEXITCODE`.\n" +
-        '- `run-checked.cjs` refuses (exit 2) any command containing a pipe, `;`, `&&`, or `||`. If you need multiple steps, put them in a script file and pass its path instead.\n';
+        '- Never append post-processing outside the wrapper either. `node ../scripts/run-checked.cjs -- "bunx tsc --noEmit" 2>&1 | tail -40` is forbidden. To reduce output, run `node ../scripts/run-checked.cjs --tail-lines 40 -- "bunx tsc --noEmit"` directly.\n' +
+        '- `run-checked.cjs` can reject (exit 2) pipes, `;`, `&&`, or `||` only inside its command argument. It cannot detect an outer shell pipeline. If you already used a pipeline, do not use it as success evidence: confirm the original process has exited, then verify again without a pipe. For multiple steps, run each command separately and check every exit code.\n';
 }
