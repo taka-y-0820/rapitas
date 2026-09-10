@@ -1,10 +1,19 @@
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isPriorRuntimeBoot, isRuntimeBootId } from './runtime-boot-identity';
+const priorBoot = isPriorRuntimeBoot;
+let observedBoot: string | undefined = 'linux:00000000-0000-0000-0000-000000000001';
+mock.module('./runtime-boot-identity', () => ({
+  readRuntimeBootId: async () => observedBoot,
+  isPriorRuntimeBoot: priorBoot,
+  isRuntimeBootId,
+}));
 
 let rows: any[] = [];
 let storeFailed = false;
+let removalFailed = false;
 let spawnCount = 0;
 let birth = '100';
 let ready: () => Promise<boolean> = async () => true;
@@ -33,7 +42,9 @@ mock.module('./runtime-registry-store', () => ({
     }
     async update(change: (rows: any[]) => any[]) {
       if (storeFailed) throw new Error('disk failure');
-      rows = change(rows);
+      const next = change(rows);
+      if (removalFailed && next.length < rows.length) throw new Error('removal failed');
+      rows = next;
     }
   },
 }));
@@ -93,6 +104,24 @@ async function quarantineAfterUnconfirmedStop() {
   expect(entry.state).toBe('quarantined');
 }
 
+test('missing npm script releases the reservation without spawning and permits a corrected retry', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'runtime-preflight-'));
+  temporaryWorkdirs.push(dir);
+  await mkdir(join(dir, 'rapitas-frontend'));
+  const manifest = join(dir, 'rapitas-frontend', 'package.json');
+  await writeFile(manifest, JSON.stringify({ scripts: {} }));
+  const config = { ...cfg, start: 'cd rapitas-frontend && npm run dev:runtime -- -p {port}' };
+  const rejected = await acquireRuntimeServer(dir, config);
+  expect(rejected.ok).toBe(false);
+  expect(JSON.stringify(rejected)).toContain('missing script');
+  expect(spawnCount).toBe(0);
+  expect(rows).toHaveLength(0);
+  expect(_debugSnapshotForTests()).toHaveLength(0);
+  await writeFile(manifest, JSON.stringify({ scripts: { 'dev:runtime': 'next dev' } }));
+  expect((await acquireRuntimeServer(dir, config)).ok).toBe(true);
+  expect(spawnCount).toBe(1);
+});
+
 test('fresh exit proof clears a transient quarantine and concurrent borrowers share one new server', async () => {
   await quarantineAfterUnconfirmedStop();
   rootPresent = false;
@@ -131,6 +160,8 @@ test.each(['alive', 'port', 'reused', 'persistence', 'snapshot'])(
   },
 );
 beforeEach(() => {
+  observedBoot = 'linux:00000000-0000-0000-0000-000000000001';
+  removalFailed = false;
   _resetForTests();
   rows = [];
   storeFailed = false;
@@ -212,6 +243,58 @@ test('restart preserves unknown ownership without spawning or stopping anything'
   expect((await acquireRuntimeServer(process.cwd(), cfg)).ok).toBe(false);
   expect(_debugSnapshotForTests()[0].state).toBe('quarantined');
   expect(rows[0].state).toBe('quarantined');
+  expect(spawnCount).toBe(0);
+  expect(stopCount).toBe(0);
+});
+
+test('legacy unknown ownership stays blocked until a different OS boot is observed', async () => {
+  rows = [{ ...persistedServer(), identities: undefined, state: 'starting' }];
+  rootPresent = false;
+  listenerOccupied = false;
+  await recoverRuntimeServerRegistry();
+  expect(rows).toHaveLength(1);
+  expect(rows[0].bootId).toBe('linux:00000000-0000-0000-0000-000000000001');
+  _resetForTests();
+  await recoverRuntimeServerRegistry();
+  expect(rows).toHaveLength(1);
+  _resetForTests();
+  observedBoot = undefined;
+  await recoverRuntimeServerRegistry();
+  expect(rows).toHaveLength(1);
+  _resetForTests();
+  observedBoot = 'linux:00000000-0000-0000-0000-000000000002';
+  try {
+    await recoverRuntimeServerRegistry();
+    expect(rows).toEqual([]);
+    expect(spawnCount).toBe(0);
+    expect(stopCount).toBe(0);
+  } finally {
+    observedBoot = 'linux:00000000-0000-0000-0000-000000000001';
+  }
+});
+
+test('a changed OS boot does not release an occupied runtime port', async () => {
+  rows = [{ ...persistedServer(), bootId: 'linux:00000000-0000-0000-0000-000000000003' }];
+  listenerOccupied = true;
+  await recoverRuntimeServerRegistry();
+  expect(rows).toHaveLength(1);
+  expect(stopCount).toBe(0);
+});
+
+test('reboot proof cannot bypass a failed durable removal', async () => {
+  rows = [
+    {
+      ...persistedServer(),
+      identities: undefined,
+      bootId: 'linux:00000000-0000-0000-0000-000000000003',
+    },
+  ];
+  rootPresent = false;
+  listenerOccupied = false;
+  removalFailed = true;
+  await expect(recoverRuntimeServerRegistry()).rejects.toThrow('removal failed');
+  expect((await acquireRuntimeServer(process.cwd(), cfg)).ok).toBe(false);
+  expect(rows).toHaveLength(1);
   expect(spawnCount).toBe(0);
   expect(stopCount).toBe(0);
 });
