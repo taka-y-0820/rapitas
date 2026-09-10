@@ -1,3 +1,4 @@
+import { parseAcceptanceCriteria } from './review-acceptance-criteria';
 /**
  * Adversarial Diff Review — jury edition
  *
@@ -552,18 +553,4 @@ export async function reviewDiffAdversarially(params: {
     log.warn({ err, taskId }, '[adversarial-review] Review errored — failing open');
     return { verdict: 'unknown', severity: 0, reasons: [], judged: false };
   }
-}
-
-/** Parse the task's acceptanceCriteria JSON-string column into a string[]. */
-function parseAcceptanceCriteria(raw: unknown): string[] {
-  if (Array.isArray(raw)) return raw.filter((x): x is string => typeof x === 'string');
-  if (typeof raw === 'string' && raw.trim()) {
-    try {
-      const p: unknown = JSON.parse(raw);
-      return Array.isArray(p) ? p.filter((x): x is string => typeof x === 'string') : [];
-    } catch {
-      return [];
-    }
-  }
-  return [];
 }
