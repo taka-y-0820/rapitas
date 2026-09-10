@@ -127,3 +127,60 @@ test('one vanished child does not leave other verified siblings running', async 
   ).toBe(true);
   expect(killed).toEqual([root.pid, sibling.pid]);
 });
+
+test('batch stops all eight captured processes and confirms exit after its deadline', async () => {
+  const rows = [root, ...Array.from({ length: 7 }, (_, i) => ({ ...child, pid: 11 + i }))];
+  const { deps, killed } = fixture(rows);
+  let time = 0;
+  let persisted = false;
+  let snapshots = 0;
+  deps.now = () => time;
+  deps.snapshot = async () => ({
+    processes: snapshots++ === 0 ? rows : [],
+    protectedPids: new Set(),
+  });
+  deps.terminateMany = async (identities) => {
+    expect(persisted).toBe(true);
+    expect(identities).toEqual(rows);
+    killed.push(...identities.map((identity) => identity.pid));
+    time = 25;
+  };
+  const result = await stopRuntimeProcesses(
+    [root],
+    async () => {
+      persisted = true;
+    },
+    20,
+    deps,
+  );
+  expect(result.stopped).toBe(true);
+  expect(killed).toHaveLength(8);
+  expect(snapshots).toBe(2);
+});
+
+test('batch failure with a surviving child retains ownership', async () => {
+  const { deps } = fixture([root, child]);
+  let signals = 0;
+  deps.terminateMany = async () => {
+    signals++;
+    throw new Error('access denied');
+  };
+  deps.snapshot = async () => ({
+    processes: signals ? [child] : [root, child],
+    protectedPids: new Set(),
+  });
+  const result = await stopRuntimeProcesses([root, child], async () => {}, 20, deps);
+  expect(result.stopped).toBe(false);
+  expect(result.reason).toContain('access denied');
+});
+
+test('protected backend prevents dispatching a batch', async () => {
+  const { deps } = fixture([root, child]);
+  let calls = 0;
+  deps.snapshot = async () => ({ processes: [root, child], protectedPids: new Set([child.pid]) });
+  deps.terminateMany = async () => {
+    calls++;
+  };
+  expect((await stopRuntimeProcesses([root, child], async () => {}, 20, deps)).stopped).toBe(false);
+  expect(calls).toBe(0);
+});

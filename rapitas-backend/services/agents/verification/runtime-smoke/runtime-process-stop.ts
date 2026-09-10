@@ -13,25 +13,47 @@ import {
 
 const exec = promisify(execFile);
 
-async function terminateIdentity(identity: RuntimeProcessIdentity): Promise<void> {
-  if (!Number.isInteger(identity.pid) || identity.pid <= 0 || !/^\d+$/.test(identity.birth)) {
-    throw new Error('Invalid stop identity');
+/** One helper and listener query for the whole tree, with an OS handle per identity. */
+export async function terminateRuntimeIdentities(
+  identities: RuntimeProcessIdentity[],
+): Promise<void> {
+  for (const identity of identities) {
+    if (!Number.isInteger(identity.pid) || identity.pid <= 0 || !/^\d+$/.test(identity.birth)) {
+      throw new Error('Invalid stop identity');
+    }
   }
+  if (identities.length === 0) return;
   if (process.platform !== 'win32') throw new Error('Handle-based runtime termination unavailable');
-  // Open a process handle before checking its creation time. Kill uses this
-  // handle, rather than resolving a PID again after the identity check.
+  const targets = identities
+    .map((identity) => `@{pid=${identity.pid}; birth='${identity.birth}'}`)
+    .join(',');
+  // Hold all verified handles before signalling the root. A disappearing child
+  // must not prevent stopping its siblings; a fresh snapshot decides success.
   const script = `
 $ErrorActionPreference='Stop'
-$targetProcess = [System.Diagnostics.Process]::GetProcessById(${identity.pid})
+$handles = New-Object System.Collections.Generic.List[System.Diagnostics.Process]
+$failures = New-Object System.Collections.Generic.List[string]
 try {
-  $null = $targetProcess.Handle
-  $birthTicks = $targetProcess.StartTime.ToUniversalTime().Ticks
-  $birthTicks -= $birthTicks % 10 # CIM timestamps have microsecond precision
-  if ([string]$birthTicks -ne '${identity.birth}') { throw 'Process identity changed' }
   $listeners = @(Get-NetTCPConnection -State Listen | Where-Object LocalPort -eq 3001)
-  if ($listeners.OwningProcess -contains ${identity.pid}) { throw 'Backend process is protected' }
-  $targetProcess.Kill()
-} finally { $targetProcess.Dispose() }
+  foreach ($target in @(${targets})) {
+    $targetProcess = $null
+    try {
+      $targetProcess = [System.Diagnostics.Process]::GetProcessById($target.pid)
+      $null = $targetProcess.Handle
+      $birthTicks = $targetProcess.StartTime.ToUniversalTime().Ticks
+      $birthTicks -= $birthTicks % 10 # CIM timestamps have microsecond precision
+      if ([string]$birthTicks -ne $target.birth) { throw 'Process identity changed' }
+      if ($listeners.OwningProcess -contains $target.pid) { throw 'Backend process is protected' }
+      $handles.Add($targetProcess)
+      $targetProcess = $null
+    } catch { $failures.Add([string]$_) }
+    finally { if ($null -ne $targetProcess) { $targetProcess.Dispose() } }
+  }
+  foreach ($targetProcess in $handles) {
+    try { $targetProcess.Kill() } catch { $failures.Add([string]$_) }
+  }
+  if ($failures.Count -gt 0) { throw ($failures -join '; ') }
+} finally { foreach ($targetProcess in $handles) { $targetProcess.Dispose() } }
 `;
   await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
     windowsHide: true,
@@ -43,12 +65,14 @@ try {
 export interface RuntimeStopDependencies {
   snapshot(): Promise<RuntimeProcessSnapshot>;
   terminate(identity: RuntimeProcessIdentity): Promise<void>;
+  terminateMany?(identities: RuntimeProcessIdentity[]): Promise<void>;
   wait(): Promise<void>;
   now(): number;
 }
 const defaults: RuntimeStopDependencies = {
   snapshot: readRuntimeProcessSnapshot,
-  terminate: terminateIdentity,
+  terminate: (identity) => terminateRuntimeIdentities([identity]),
+  terminateMany: terminateRuntimeIdentities,
   wait: () => new Promise((resolve) => setTimeout(resolve, 250)),
   now: Date.now,
 };
@@ -64,7 +88,7 @@ export async function stopRuntimeProcesses(
   let persistenceError: string | undefined;
   const deadline = deps.now() + timeoutMs;
   try {
-    do {
+    while (true) {
       const snapshot = await deps.snapshot();
       identities = extendOwnedRuntimeTree(identities, snapshot.processes);
       const inspection = inspectOwnedRuntimeTree(
@@ -76,6 +100,8 @@ export async function stopRuntimeProcesses(
       if (inspection.alive.length === 0)
         return { stopped: true, identities, reason: persistenceError };
       if (signalError) return { stopped: false, identities, reason: signalError };
+      if (deps.now() >= deadline)
+        return { stopped: false, identities, reason: 'exit-not-confirmed' };
       // Remember newly captured descendants before the parent links disappear.
       // Recording failure must not prevent an explicitly requested stop of
       // positively identified processes. The caller retains its exclusion
@@ -85,22 +111,26 @@ export async function stopRuntimeProcesses(
       } catch (error) {
         persistenceError = String(error);
       }
-      // Root first prevents further child creation. Every individual kill
-      // independently rechecks OS identity and backend protection.
-      for (const identity of inspection.alive) {
-        if (deps.now() >= deadline) break;
+      // Production sends the entire captured tree through one helper so shell
+      // startup and listener queries cannot exhaust the budget between children.
+      if (deps.terminateMany) {
         try {
-          await deps.terminate(identity);
+          await deps.terminateMany(inspection.alive);
         } catch (error) {
           signalError = String(error);
-          // A child may disappear after the parent exits. Continue stopping
-          // other independently verified children, then let a fresh snapshot
-          // distinguish successful exit from a real signalling failure.
+        }
+      } else {
+        for (const identity of inspection.alive) {
+          if (deps.now() >= deadline) break;
+          try {
+            await deps.terminate(identity);
+          } catch (error) {
+            signalError = String(error);
+          }
         }
       }
       await deps.wait();
-    } while (deps.now() < deadline);
-    return { stopped: false, identities, reason: 'exit-not-confirmed' };
+    }
   } catch (error) {
     return { stopped: false, identities, reason: String(error) };
   }
