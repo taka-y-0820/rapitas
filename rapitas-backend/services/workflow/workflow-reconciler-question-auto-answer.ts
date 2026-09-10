@@ -18,10 +18,7 @@ import {
   isQuestionBlockEligibleForAutoAnswer,
   composeAutoAnswerText,
 } from './question-options-parser';
-import {
-  applyIntakeQuestionAnswer,
-  applyResumeFromQuestionAnswer,
-} from '../../routes/workflow/handlers/workflow-handlers-resume';
+import { applyQuestionAnswerByKind } from '../../routes/workflow/handlers/workflow-handlers-resume-dispatch';
 import { writeWorkflowFile } from './workflow-file-utils';
 import { notifyQuestionAutoAnswered } from '../communication/notification-service';
 
@@ -218,18 +215,18 @@ async function tryAutoAnswerOne(
 
   const { answerText, selections } = composeAutoAnswerText(block);
 
-  if (cause === 'intake_question') {
-    await applyIntakeQuestionAnswer({
-      taskId: task.id,
-      answer: answerText,
-      actor: 'system',
-      sourceLabel: '推奨案の自動採用（無応答タイムアウト）',
-      selections,
-      extraMetadata,
-    });
-  } else {
-    await applyResumeFromQuestionAnswer({ taskId: task.id, actor: 'system', extraMetadata });
-  }
+  // kindベースの単一ディスパッチに統一（task 902）— cause文字列による2値分岐
+  // (intake_question/file_saved:question)をここで再実装せず、answer-question
+  // ハンドラと同じ resolveExplicitOrDefaultKind/resolveQuestionAnswerStrategy を
+  // 共有する。
+  await applyQuestionAnswerByKind({
+    taskId: task.id,
+    answer: answerText,
+    actor: 'system',
+    sourceLabel: '推奨案の自動採用（無応答タイムアウト）',
+    selections,
+    extraMetadata,
+  });
 
   await notifyQuestionAutoAnswered(task.id, task.title, recommendedLabel, elapsedMinutes).catch(
     (err) => {

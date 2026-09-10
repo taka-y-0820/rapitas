@@ -45,6 +45,15 @@ export interface ParsedQuestion {
 /** Parsed content of a `json:options` fenced block. */
 export interface ParsedQuestionBlock {
   questions: ParsedQuestion[];
+  /**
+   * Optional explicit question kind at the TOP LEVEL of the block (sibling of
+   * `questions`), e.g. `"kind": "execution_continuation"`. Only
+   * `execution_continuation`/`completion_confirmation` are meaningful here —
+   * `spec_change` is reserved for intake questions and is never read from
+   * this field (see question-kind-resolver.ts). Absent/invalid values parse
+   * as `undefined`, never an error. / 明示指定されたkind
+   */
+  kind?: string;
 }
 
 const OPTIONS_BLOCK_RE = /```json:options\s*\n([\s\S]*?)```/;
@@ -105,7 +114,11 @@ export function parseQuestionOptionsBlock(content: string): ParsedQuestionBlock 
         recommendedReason: typeof q.recommendedReason === 'string' ? q.recommendedReason : '',
       });
     }
-    return { questions };
+    const topLevelKind = (parsed as { kind?: unknown }).kind;
+    return {
+      questions,
+      ...(typeof topLevelKind === 'string' ? { kind: topLevelKind } : {}),
+    };
   } catch {
     return null;
   }

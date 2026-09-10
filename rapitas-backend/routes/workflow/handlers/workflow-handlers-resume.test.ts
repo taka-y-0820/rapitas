@@ -2,10 +2,11 @@
  * workflow-handlers-resume.test
  *
  * Tests for handleAnswerWorkflowQuestion (intake question.md answer -> reset to
- * draft, plus clearing a stale task.status='blocked') and handleResumeFromQuestion
- * (awaiting_question -> recorded previousStatus). The auto re-trigger/re-dispatch
+ * draft, plus clearing a stale task.status='blocked'). The auto re-trigger/re-dispatch
  * helpers themselves are covered by workflow-handlers-resume-redispatch.test.ts —
- * here they are mocked as a single collaborator boundary.
+ * here they are mocked as a single collaborator boundary. handleResumeFromQuestion
+ * (task 902: now a thin delegator to applyQuestionAnswerByKind) is covered in
+ * workflow-handlers-resume-continuation.test.ts, where it is implemented.
  */
 import { describe, expect, test, mock, beforeEach } from 'bun:test';
 
@@ -53,6 +54,12 @@ mock.module('../../../services/task/task-resolver', () => ({
   resolveTaskWorkflowState: mockResolveTaskWorkflowState,
 }));
 
+// ---- publication-cancellation-guard mock (task 902 dispatcher's stop check) ----
+const mockIsLatestExecutionCancelled = mock(() => Promise.resolve(false));
+mock.module('../../../services/workflow/publication-cancellation-guard', () => ({
+  isLatestExecutionCancelled: mockIsLatestExecutionCancelled,
+}));
+
 // ---- redispatch collaborator mock (task 830; see workflow-handlers-resume-redispatch.test.ts) ----
 const mockTriggerReExecutionAfterAnswer = mock(() => Promise.resolve());
 const mockTriggerRedispatchAfterResume = mock(() => Promise.resolve());
@@ -75,16 +82,30 @@ mock.module('../../../middleware/error-handler', () => ({
       this.name = 'NotFoundError';
     }
   },
+  ConflictError: class ConflictError extends Error {
+    code?: string;
+    constructor(msg: string, code?: string) {
+      super(msg);
+      this.name = 'ConflictError';
+      this.code = code;
+    }
+  },
 }));
 
-const { handleAnswerWorkflowQuestion, handleResumeFromQuestion } =
-  await import('./workflow-handlers-resume');
+const { handleAnswerWorkflowQuestion } = await import('./workflow-handlers-resume');
 
 beforeEach(() => {
   mockFindUnique.mockReset();
   mockUpdate.mockReset().mockResolvedValue({});
-  mockUpdateMany.mockReset().mockResolvedValue({ count: 0 });
-  mockFindFirstTransition.mockReset();
+  // Default: the dispatcher's compare-and-swap "claim" touch succeeds. Tests
+  // covering the competing-answer conflict override this to { count: 0 }.
+  mockUpdateMany.mockReset().mockResolvedValue({ count: 1 });
+  // Default: a single intake_question pause with no explicit kind — resolves
+  // to kind=spec_change (matching the pre-902 always-reset_draft behavior)
+  // via workflow-handlers-resume-dispatch.ts's target/staleness lookups.
+  mockFindFirstTransition
+    .mockReset()
+    .mockResolvedValue({ id: 1, cause: 'intake_question', fromStatus: 'draft', metadata: {} });
   mockRecordTransition.mockReset().mockResolvedValue(undefined);
   mockArchiveWorkflowFile.mockReset().mockResolvedValue(undefined);
   mockReadWorkflowFile.mockReset().mockResolvedValue(null);
@@ -92,6 +113,7 @@ beforeEach(() => {
   mockResolveTaskWorkflowState.mockReset();
   mockTriggerReExecutionAfterAnswer.mockReset().mockResolvedValue(undefined);
   mockTriggerRedispatchAfterResume.mockReset().mockResolvedValue(undefined);
+  mockIsLatestExecutionCancelled.mockReset().mockResolvedValue(false);
 });
 
 describe('handleAnswerWorkflowQuestion', () => {
@@ -111,7 +133,12 @@ describe('handleAnswerWorkflowQuestion', () => {
       headers: { 'x-rapitas-source': 'ui' },
     });
 
-    expect(result).toEqual({ taskId: 503, ok: true, toStatus: 'draft' });
+    expect(result).toEqual({
+      taskId: 503,
+      ok: true,
+      toStatus: 'draft',
+      resolvedKind: 'spec_change',
+    });
     const updateArgs = mockUpdate.mock.calls[0][0] as { data: Record<string, unknown> };
     expect(updateArgs.data.workflowStatus).toBe('draft');
     expect(updateArgs.data.status).toBeUndefined();
@@ -235,7 +262,10 @@ describe('handleAnswerWorkflowQuestion', () => {
     expect(mockRecordTransition).toHaveBeenCalledWith(
       expect.objectContaining({
         taskId: 10,
-        metadata: { selections: [{ questionId: 'Q1', selectedKey: 'B' }] },
+        metadata: {
+          selections: [{ questionId: 'Q1', selectedKey: 'B' }],
+          kind: 'spec_change',
+        },
       }),
     );
   });
@@ -257,7 +287,7 @@ describe('handleAnswerWorkflowQuestion', () => {
     });
 
     expect(mockRecordTransition).toHaveBeenCalledWith(
-      expect.objectContaining({ taskId: 11, metadata: {} }),
+      expect.objectContaining({ taskId: 11, metadata: { kind: 'spec_change' } }),
     );
   });
 
@@ -284,7 +314,12 @@ describe('handleAnswerWorkflowQuestion', () => {
     });
 
     expect(mockTriggerReExecutionAfterAnswer).toHaveBeenCalledWith(512);
-    expect(result).toEqual({ taskId: 512, ok: true, toStatus: 'draft' });
+    expect(result).toEqual({
+      taskId: 512,
+      ok: true,
+      toStatus: 'draft',
+      resolvedKind: 'spec_change',
+    });
   });
 
   test('does not throw when triggerReExecutionAfterAnswer itself rejects', async () => {
@@ -430,124 +465,15 @@ describe('handleAnswerWorkflowQuestion', () => {
   });
 });
 
-describe('handleResumeFromQuestion', () => {
-  test('uses the recorded source phase even when metadata is null', async () => {
-    mockResolveTaskWorkflowState.mockResolvedValue({
-      id: 503,
-      workflowStatus: 'awaiting_question',
-    });
-    mockFindFirstTransition.mockResolvedValue({ metadata: null, fromStatus: 'research_done' });
-    const result = await handleResumeFromQuestion({ params: { taskId: '503' }, set: {} });
-    expect(result.toStatus).toBe('research_done');
-    expect(result.source).toBe('transition_metadata');
-  });
-
-  test('does not resume back into a question self-transition', async () => {
-    mockResolveTaskWorkflowState.mockResolvedValue({
-      id: 503,
-      workflowStatus: 'awaiting_question',
-    });
-    mockFindFirstTransition.mockResolvedValue({ metadata: {}, fromStatus: 'awaiting_question' });
-    const result = await handleResumeFromQuestion({ params: { taskId: '503' }, set: {} });
-    expect(result.toStatus).toBe('in_progress');
-    expect(result.source).toBe('fallback');
-  });
-  test('resumes to the previousStatus recorded in the awaiting_question transition metadata', async () => {
-    mockResolveTaskWorkflowState.mockResolvedValue({
-      id: 503,
-      workflowStatus: 'awaiting_question',
-    });
-    mockFindFirstTransition.mockResolvedValue({
-      metadata: { previousStatus: 'research_done' },
-      fromStatus: 'research_done',
-    });
-
-    const result = await handleResumeFromQuestion({ params: { taskId: '503' }, set: {} });
-
-    expect(result).toEqual({
-      taskId: 503,
-      fromStatus: 'awaiting_question',
-      toStatus: 'research_done',
-      source: 'transition_metadata',
-    });
-  });
-
-  test('rejects when the task is not currently awaiting_question', async () => {
-    mockResolveTaskWorkflowState.mockResolvedValue({ id: 503, workflowStatus: 'draft' });
-    const set: { status?: number } = {};
-    await expect(handleResumeFromQuestion({ params: { taskId: '503' }, set })).rejects.toThrow(
-      /expected "awaiting_question"/,
-    );
-    expect(set.status).toBe(400);
-  });
-
-  // Regression test (task #804, reproduces the tri-state desync also fixed
-  // once before under #706/#6825): execution-lease-sweep can revert
-  // task.status to 'todo' on a stale heartbeat while the process is actually
-  // still alive and later resolves the question. Without the backstop below,
-  // resuming only advanced workflowStatus (e.g. to 'plan_approved'), leaving
-  // status='todo' desynced from it.
-  test('syncs a stale task.status="todo" to "in-progress" when resuming (task #804 desync backstop)', async () => {
-    mockResolveTaskWorkflowState.mockResolvedValue({
-      id: 803,
-      workflowStatus: 'awaiting_question',
-    });
-    mockFindFirstTransition.mockResolvedValue({
-      metadata: { previousStatus: 'plan_approved' },
-      fromStatus: 'plan_approved',
-    });
-
-    await handleResumeFromQuestion({ params: { taskId: '803' }, set: {} });
-
-    expect(mockUpdateMany).toHaveBeenCalledWith({
-      where: { id: 803, status: 'todo' },
-      data: { status: 'in-progress' },
-    });
-  });
-
-  // Regression test (task 830): task #829 sat at status='todo' with an
-  // advanced workflowStatus for 24+ minutes after its question was resolved
-  // because nothing re-dispatched it. The re-dispatch decision logic itself
-  // is covered by workflow-handlers-resume-redispatch.test.ts; here we only
-  // assert the handler delegates to it with the resolved taskId, AFTER the
-  // transition has already been durably recorded.
-  test('delegates the post-resume re-dispatch nudge to triggerRedispatchAfterResume', async () => {
-    mockResolveTaskWorkflowState.mockResolvedValue({
-      id: 829,
-      workflowStatus: 'awaiting_question',
-    });
-    mockFindFirstTransition.mockResolvedValue({
-      metadata: { previousStatus: 'plan_approved' },
-      fromStatus: 'plan_approved',
-    });
-
-    await handleResumeFromQuestion({ params: { taskId: '829' }, set: {} });
-
-    expect(mockTriggerRedispatchAfterResume).toHaveBeenCalledWith(829);
-    const recordOrder = mockRecordTransition.mock.invocationCallOrder[0];
-    const nudgeOrder = mockTriggerRedispatchAfterResume.mock.invocationCallOrder[0];
-    expect(recordOrder).toBeLessThan(nudgeOrder);
-  });
-
-  test('does not throw when triggerRedispatchAfterResume itself rejects', async () => {
-    mockResolveTaskWorkflowState.mockResolvedValue({
-      id: 829,
-      workflowStatus: 'awaiting_question',
-    });
-    mockFindFirstTransition.mockResolvedValue({
-      metadata: { previousStatus: 'plan_approved' },
-      fromStatus: 'plan_approved',
-    });
-    mockTriggerRedispatchAfterResume.mockRejectedValue(new Error('boom'));
-
-    // triggerRedispatchAfterResume never throws in production (it swallows
-    // its own errors internally) — this only guards the caller in case that
-    // contract is ever violated.
-    await expect(handleResumeFromQuestion({ params: { taskId: '829' }, set: {} })).rejects.toThrow(
-      'boom',
-    );
-  });
-});
+// task 902 (revised plan): handleResumeFromQuestion no longer runs its own
+// independent previousStatus/backstop/redispatch logic directly — it now
+// delegates to applyQuestionAnswerByKind (workflow-handlers-resume-dispatch.ts),
+// which in turn calls applyResumeFromQuestionAnswerLocked for
+// execution_continuation/completion_confirmation kinds. That underlying
+// logic (previousStatus resolution, the #804 desync backstop, and the
+// redispatch-nudge ordering) is now covered directly in
+// workflow-handlers-resume-continuation.test.ts; handleResumeFromQuestion's
+// own delegation/error-mapping is covered there too.
 
 test('the actual answer handler holds lifecycle ownership until its persistence finishes', async () => {
   const { withTaskLifecycleLock } = await import('../../../services/workflow/task-lifecycle-lock');
