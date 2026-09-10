@@ -46,7 +46,14 @@ function unsafeVerification(command) {
   // Quoted search patterns and log text are not verification invocations.
   // This intentionally does not interpret scripts passed to sh -c or eval.
   const executableText = command.replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, ' ');
-  return verification.test(executableText) && hidesExit.test(command);
+  // Repository quality gates are also run directly, outside package-manager
+  // scripts. Require a runtime invocation so reading these files stays allowed.
+  const scriptVerification =
+    /\b(?:node|bun)(?:\.exe)?\s+(?:--test\b|(?:run\s+)?(?:[^\s"';&|]*[/\\])?(?:check-[\w.-]+|verify-[\w.-]+|preflight-check|pre-commit-check)\.[cm]?[jt]s\b)/i;
+  return (
+    (verification.test(executableText) || scriptVerification.test(executableText)) &&
+    hidesExit.test(command)
+  );
 }
 
 function decision(input) {

@@ -17,6 +17,10 @@ for (const command of [
   'pnpm exec tsc --noEmit | Select-Object -Last 40',
   'echo "<< \'DOC\'"\nbun test | tail -1',
   'cat << DOC\n$(bun test | tail -1)\nDOC',
+  'wc -l example.ts && node rapitas-backend/../scripts/check-large-files.cjs 2>&1 | tail -60',
+  'node scripts/check-large-files.cjs; echo "exit=$?"',
+  'node scripts/verify-env.cjs | tail -20',
+  'node --test scripts/check-large-files.test.cjs | tee result.log',
 ]) {
   test(`denies before execution: ${command}`, () => {
     for (const tool_name of ['Bash', 'PowerShell']) {
@@ -35,6 +39,9 @@ for (const command of [
   'git status --short',
   'rg "bun test" backend.log | tail -40',
   'rg "run-checked.cjs" backend.log | head -20',
+  'cat scripts/check-large-files.cjs | head -20',
+  'node scripts/check-large-files.cjs',
+  'node scripts/verify-env.cjs',
   "cat > report.md << 'MDEOF'\nRejected example: bunx tsc --noEmit | tail -40\nMDEOF",
   'cat <<-"DOC"\n\tbun test | head -1\n\tDOC',
 ]) {
