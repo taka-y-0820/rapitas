@@ -92,9 +92,58 @@ export function useWorkflowViewer({
   const prevWorkflowStatusPropRef = useRef<WorkflowStatus | null | undefined>(workflowStatus);
   const prevFetchedStatusRef = useRef<WorkflowStatus | null>(null);
 
+  // A confirmed answer can move backwards. Once fetching catches up, ignore
+  // the pre-answer parent prop until it also changes; otherwise unpinning
+  // immediately resurrects the stale higher-ranked state (task 902).
+  const [questionResolution, setQuestionResolution] = useState<{
+    taskId: number;
+    status: WorkflowStatus;
+    fetchedBefore: WorkflowStatus | null;
+    propBefore: WorkflowStatus | null | undefined;
+    pendingFetch: boolean;
+  } | null>(null);
+
+  const applyResolvedQuestionStatus = useCallback(
+    (toStatus: WorkflowStatus) => {
+      setQuestionResolution({
+        taskId,
+        status: toStatus,
+        fetchedBefore: fetchedStatus ?? null,
+        propBefore: workflowStatus,
+        pendingFetch: true,
+      });
+    },
+    [taskId, fetchedStatus, workflowStatus],
+  );
+
+  useEffect(() => {
+    if (!questionResolution) return;
+    if (questionResolution.taskId !== taskId) {
+      setQuestionResolution(null);
+    } else if (
+      questionResolution.pendingFetch &&
+      fetchedStatus &&
+      (fetchedStatus === questionResolution.status ||
+        fetchedStatus !== questionResolution.fetchedBefore)
+    ) {
+      setQuestionResolution({ ...questionResolution, pendingFetch: false });
+    } else if (
+      !questionResolution.pendingFetch &&
+      workflowStatus !== questionResolution.propBefore
+    ) {
+      setQuestionResolution(null);
+    }
+  }, [taskId, fetchedStatus, workflowStatus, questionResolution]);
+
   // Effective status: reflects prop updates immediately without waiting for fetch to catch up
   // Uses prop when it's ahead based on StatusOrder comparison
   const effectiveStatus = (() => {
+    if (questionResolution?.taskId === taskId) {
+      if (questionResolution.pendingFetch) return questionResolution.status;
+      if (workflowStatus === questionResolution.propBefore) {
+        return fetchedStatus ?? questionResolution.status;
+      }
+    }
     if (!fetchedStatus && !workflowStatus) return null;
     if (!fetchedStatus) return workflowStatus || null;
     if (!workflowStatus) return fetchedStatus;
@@ -329,6 +378,7 @@ export function useWorkflowViewer({
     refetch,
     workflowPath,
     effectiveStatus,
+    applyResolvedQuestionStatus,
     isAdvancing,
     advanceError,
     setAdvanceError,

@@ -125,4 +125,27 @@ describe('guardStatusTransition — verify_done 中の in-flight 再送分岐', 
     }
     expect(mockRecordTransition).not.toHaveBeenCalled();
   });
+
+  // task 902 (revised plan, AC2): verify_done previously rejected EVERY file
+  // type including question.md, so completion_confirmation could never be
+  // raised via the real PUT /files/question API — computeAndApplyStatusTransition
+  // was never reached. This is the gate-level fix, tested at the actual guard
+  // (not bypassing it via computeAndApplyStatusTransition directly).
+  test('verify_done での question.md 保存は ok:true を返すこと（AC2: completion_confirmation の到達性）', async () => {
+    const result = await guardStatusTransition(828, 'question', buildResolved('verify_done'));
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.status).toBe('verify_done');
+    }
+    expect(mockRecordTransition).not.toHaveBeenCalled();
+  });
+
+  test('verify_done での verify.md 保存は引き続き拒否されること（task 632のretry契約を維持）', async () => {
+    mockHasVerifyCompletionInFlight.mockReturnValue(false);
+
+    await expect(
+      guardStatusTransition(828, 'verify', buildResolved('verify_done')),
+    ).rejects.toThrow();
+  });
 });
