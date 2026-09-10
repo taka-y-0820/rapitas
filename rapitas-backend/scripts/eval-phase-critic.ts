@@ -156,7 +156,7 @@ AC3の自動再計画経路が実装されれば、検証者が「別の懸念�
 
 ## AC5: 自動再計画経路の検証観点（末尾の重要条件）
 
-新規再計画経路は以下の3点を満たすことをテストで直接検証する。(1) 境界: \`MAX_REQUIREMENT_REPLANS=3\`、60分ウィンドウでの\`countWithFailClosed\`を用いた上限管理。DBエラー時はfail-closedで上限扱いとし進行させない。(2) 監査: \`recordTransition\`のmetadataに不整合の具体的な受入条件文字列を記録する。(3) 出所偽装の禁止: 新規cause \`requirement_plan_mismatch_replan\`は人間発の\`plan_revision_requested\`と明確に区別し、\`revise-plan\`エンドポイントやその\`X-Rapitas-Source\`ヘッダ検査には一切触れない。停止状態ガード（\`manual_execution_stop_revert\`/\`manual_execution_stop_withdraw\`/\`auto_run_stop_revert\`）は\`status-transition.ts\`の既存パターンをそのまま踏襲し、停止中のテーマを誤って再開しない。
+新規再計画経路は以下の3点を満たすことをテストで直接検証する。(1) 境界: \`MAX_REQUIREMENT_REPLANS=3\`、60分ウィンドウでの\`countWithFailClosed\`を用いた上限管理。DBエラー時はfail-closedで上限扱いとし進行させない。(2) 監査: \`recordTransition\`のmetadataに不整合の具体的な受入条件文字列を記録する。(3) 出所偽装の禁止: 新規cause \`requirement_plan_mismatch_replan\`は人間発の\`plan_revision_requested\`と明確に区別し、\`revise-plan\`エンドポイントやその\`X-Rapitas-Source\`ヘッダ検査には一切触れない。停止状態ガード（\`manual_execution_stop_revert\`/\`manual_execution_stop_withdraw\`/\`auto_run_stop_revert\`）は\`status-transition.ts\`の既存パターンを安全性の根拠にせず、後述するCASと停止競合テストで停止中のテーマを誤って再開しないことを確認する。
 
 ## 完了条件 (DoD)
 
@@ -167,7 +167,11 @@ AC3の自動再計画経路が実装されれば、検証者が「別の懸念�
 
 ## 実装者への申し送り事項
 
-停止状態ガードのcause判定はstatus-transition.ts:62-77のロジックを正確に再現すること。3つの停止系causeいずれかで停止中と判定された場合は\`{replanned:false}\`を返し、再開しないことを個別にテストする。
+既存ガードのコピーを安全性の根拠にしない。\`status-transition.ts\`の質問待ち更新・再計画更新では、読取時のstatus/workflowStatus/updatedAtと実行IDを条件にした\`updateMany\`のCASを使う。completed/done/canceled/cancelingおよび停止要求済みは更新対象から除外し、CASの件数が0なら副作用なしで終了する。task901の実測に対応するcompleted→awaiting_question上書き防止も本計画の変更対象とし、完了直前に読み取った古い検証結果が後から届くケースを回帰テストする。
+
+\`attemptRequirementPlanReplan\`では、同一タスクのCAS、回数上限の確認・消費、system由来の遷移記録を同一トランザクションで確定する。勝者だけが計画をアーカイブしてplannerを一度dispatchし、敗者は記録もdispatchも行わない。同時要求2件をバリアで競合させ、遷移1件・回数消費1回・dispatch1回であることを検証する。DB障害・監査保存失敗時はトランザクションを戻し、成功や完了へ進めない。既存停止cause3種に加え、現在のテーマ停止状態・タスク終端状態を独立に検証し、処理中に停止された場合にも後続commit/PR/mergeが走らないことを確認する。
+
+再計画の実施主体は通常のplannerである。plannerには元の明示受入条件・不整合の根拠・以前のplanを渡し、条件を削らず新しいplan.mdをAPI保存して承認ゲートを通す。例えばstatus-transition.tsが誤って対象外だった場合はその必要なガードと回帰テストを新planに追加する。未修正の矛盾を別の懸念に移して完了してはならず、修正・再検証・設定上必要なcommit/PR/mergeの成功まで完了を保留する。
 `;
 
 /**
