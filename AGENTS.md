@@ -30,17 +30,25 @@
 
 作業範囲に応じて必要なものだけ実行する。
 
+**`| tail` / `| head` / `; echo $?` を検証コマンドに付けない。** Git Bash はパイプの終了コードが最後のコマンド（tail 等）のものになり、元コマンドが失敗していても `$?` が 0 になる（`false | tail -1` の `$?` は 0）。長い出力を末尾だけ確認したい場合やログをファイルに残したい場合は、リポジトリルートの `node scripts/run-checked.cjs -- <command>` を経由する。全出力は `.verification-logs/` に保存されつつコンソールには末尾のみ表示され、ラッパー自身の終了コードが元コマンドの終了コードと常に一致する（`echo $?`/`echo $LASTEXITCODE` の再取得は不要）。パイプ・`;`・`&&`・`||` を含むコマンドは exit 2 で拒否される。
+
 ```powershell
 cd rapitas-backend
-bunx tsc --noEmit
+node ../scripts/run-checked.cjs -- "bunx tsc --noEmit"
 bun test --isolate <test-file>
 ```
 
 ```powershell
 cd rapitas-frontend
-pnpm test -- --run
-pnpm exec tsc --noEmit
+node ../scripts/run-checked.cjs -- "pnpm test -- --run"
+node ../scripts/run-checked.cjs -- "pnpm exec tsc --noEmit"
 pnpm exec prettier --check .
+```
+
+特定のテストファイルだけを実行したい場合、`pnpm test -- --run <filter>` は `vitest run -- --run <filter>` に展開され `--run` が二重指定になり `filter` が空になる（全件実行になる）。対象ファイルを絞るときは代わりに対象ファイルパスを直接渡す:
+
+```powershell
+pnpm exec vitest run src/path/to/target.test.ts
 ```
 
 ```powershell
