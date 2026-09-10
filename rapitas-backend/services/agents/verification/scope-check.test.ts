@@ -11,6 +11,16 @@ import { describe, it, expect } from 'bun:test';
 import { parsePlanFiles, evaluateScopeCheck } from './scope-check';
 
 describe('parsePlanFiles', () => {
+  it('recognizes explicitly planned hidden files without allowing unrelated root files', () => {
+    const files = parsePlanFiles('Edit `.gitignore`, `.npmrc`, and `config/.env.example`.');
+    expect(files).toContain('.gitignore');
+    expect(files).toContain('.npmrc');
+    expect(files).toContain('config/.env.example');
+    expect(files).not.toContain('/');
+    expect(evaluateScopeCheck(['.gitignore'], files).ok).toBe(true);
+    expect(evaluateScopeCheck(['unplanned.ts'], files).ok).toBe(false);
+    expect(parsePlanFiles('Ignore `.` and `..`')).toEqual([]);
+  });
   it('extracts a bare backtick-quoted file path', () => {
     const plan = 'Edit `services/foo/bar.ts` to add the new field.';
     expect(parsePlanFiles(plan)).toContain('services/foo/bar.ts');
