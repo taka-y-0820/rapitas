@@ -7,6 +7,7 @@
  * down before releasing the workdir — live in one focused module.
  */
 import { inspectRuntimeDirectory } from './runtime-directory-occupancy';
+import { readRuntimeBootId } from './runtime-boot-identity';
 import { checkRuntimeStartScript } from './runtime-start-preflight';
 import { withRuntimeLaunchLock } from './runtime-launch-lock';
 import { stopRuntimeProcesses } from './runtime-process-stop';
@@ -154,7 +155,8 @@ export async function spawnNewEntry(
   let launchAttempted = false;
 
   const run = (async (): Promise<AcquireResult> => {
-    await persistStartingIntent(key, workdir, fp);
+    entry.bootId = await readRuntimeBootId();
+    await persistStartingIntent(key, workdir, fp, entry.bootId);
     await checkRuntimeStartScript(cfg.start, workdir);
     const beforeStart = await readRuntimeProcessSnapshot();
     const directory = await inspectRuntimeDirectory(workdir, beforeStart.processes);
