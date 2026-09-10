@@ -6,6 +6,9 @@ import { reviewRequirementReplan } from './requirement-replan-review';
 import { replanSnapshotDigest } from './requirement-replan-evidence';
 import { shareInflightReplanReview } from './requirement-replan-inflight';
 import type { CompletionReviewReceipt } from './requirement-replan-commit';
+import { createLogger } from '../../config/logger';
+
+const log = createLogger('workflow:requirement-replan');
 
 export async function attemptRequirementReplan(
   db: PrismaClient,
@@ -69,6 +72,21 @@ export async function attemptRequirementReplan(
   if (!source) return { committed: false, reason: 'not_reviewable' };
   // No DB transaction or lifecycle lock is held during potentially slow AI evaluation.
   const result = await shareInflightReplanReview(source.snapshot, review);
+  if (result.verdict.kind === 'unknown') {
+    // Keep the admission decision fail-closed, but retain the review's actual
+    // explanation. Otherwise callers only see "held: unknown" and repeat an
+    // expensive review without learning which evidence is missing (task 902).
+    log.warn(
+      {
+        taskId,
+        executionId: source.executionId,
+        reason: result.verdict.reason,
+        snapshotDigest: result.snapshotDigest,
+        durationMs: result.durationMs,
+      },
+      'Requirement review held; inspect the reason before retrying unchanged evidence',
+    );
+  }
   if (result.verdict.kind === 'no_mismatch') {
     const fresh = await readSource();
     if (!fresh || fresh.updatedAt.getTime() !== source.updatedAt.getTime()) {
