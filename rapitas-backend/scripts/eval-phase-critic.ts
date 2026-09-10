@@ -274,6 +274,7 @@ async function main(): Promise<void> {
       gotVerdict: got,
       ok,
       severity: result.severity,
+      reasons: result.reasons,
       inputTruncated: result.inputTruncated ?? false,
       evaluationComplete: result.evaluationComplete === true,
       requestedModel,
@@ -284,6 +285,7 @@ async function main(): Promise<void> {
     console.log(
       `${ok ? '✅' : '❌'} ${f.name} → got=${got}, expected=${f.expectedVerdict}, severity=${result.severity}, inputTruncated=${result.inputTruncated ?? false}, ${elapsedMs}ms`,
     );
+    for (const reason of result.reasons) console.log(`  - ${reason}`);
   }
 
   const narrowCases = cases.filter(

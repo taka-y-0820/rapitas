@@ -28,6 +28,8 @@ export interface PhaseCriticEvalCaseResult {
   ok: boolean;
   /** Highest lens severity reported / 最大深刻度 */
   severity: number;
+  /** Actual critic findings; absent only on historical snapshots. */
+  reasons?: string[];
   /** Whether the critic's input was head+tail truncated for this fixture / 入力が切断されたか */
   inputTruncated: boolean;
   /** Whether every lens returned a verdict (missing on historical snapshots). */
