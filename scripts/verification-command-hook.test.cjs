@@ -12,6 +12,8 @@ for (const command of [
   'bun test; echo $?',
   'pnpm test\necho "$LASTEXITCODE"',
   'pnpm exec tsc --noEmit | Select-Object -Last 40',
+  'echo "<< \'DOC\'"\nbun test | tail -1',
+  'cat << DOC\n$(bun test | tail -1)\nDOC',
 ]) {
   test(`denies before execution: ${command}`, () => {
     for (const tool_name of ['Bash', 'PowerShell']) {
@@ -30,11 +32,21 @@ for (const command of [
   'git status --short',
   'rg "bun test" backend.log | tail -40',
   'rg "run-checked.cjs" backend.log | head -20',
+  "cat > report.md << 'MDEOF'\nRejected example: bunx tsc --noEmit | tail -40\nMDEOF",
+  'cat <<-"DOC"\n\tbun test | head -1\n\tDOC',
 ]) {
   test(`leaves normal permission flow intact: ${command}`, () => {
     assert.equal(decision({ tool_name: 'Bash', tool_input: { command } }), undefined);
   });
 }
+
+test('commands following a literal heredoc are still checked', () => {
+  const command = "cat << 'DOC'\nbun test | tail -1\nDOC\nbun test | tail -1";
+  assert.equal(
+    decision({ tool_name: 'Bash', tool_input: { command } }).hookSpecificOutput.permissionDecision,
+    'deny',
+  );
+});
 
 test('hook executable emits the Claude PreToolUse protocol', () => {
   const result = spawnSync(
