@@ -136,7 +136,7 @@ export function segmentPhases(
   const sorted = executions
     .filter((e) => e.phaseType !== null)
     .map((e) => ({ ...e, time: toTime(e.startedAt ?? e.createdAt) }))
-    .sort((a, b) => a.time - b.time);
+    .sort((a, b) => a.time - b.time || a.id - b.id);
 
   const byPhase = new Map<PhaseType, typeof sorted>();
   for (const type of PHASE_ORDER) byPhase.set(type, []);
@@ -167,9 +167,11 @@ export function segmentPhases(
         const first = group[0];
         const last = group[group.length - 1];
         const completedAt = last.completedAt ? toIso(last.completedAt) : null;
-        const status: PhaseRunStatus = group.some((g) => isRunStatus(g.status))
+        // Retries retain their logs, but the latest execution determines the
+        // current outcome, just as it determines completedAt below.
+        const status: PhaseRunStatus = isRunStatus(last.status)
           ? 'running'
-          : group.some((g) => isFailedStatus(g.status))
+          : isFailedStatus(last.status)
             ? 'failed'
             : 'completed';
         const boundaryUncertain =
