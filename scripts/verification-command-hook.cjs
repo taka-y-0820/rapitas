@@ -42,7 +42,7 @@ function unsafeVerification(command) {
   const verification =
     /(?:^|[\s/\\])(?:run-checked\.cjs|tsc|vitest|eslint|prettier)(?=[\s;|&"']|$)|\b(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?(?:test|typecheck|lint|build)(?=[\s;|&"']|$)/i;
   const hidesExit =
-    /\|\s*(?:&\s*)?(?:tail|head|tee|Select-Object|Out-String|Out-File)\b|(?:;|\r?\n|&&|\|\|)\s*(?:echo|Write-Output)\s+["']?\$(?:\?|LASTEXITCODE\b)/i;
+    /\|\s*(?:&\s*)?(?:tail|head|tee|Select-Object|Out-String|Out-File)\b|(?:;|\r?\n|&&|\|\|)\s*(?:echo|Write-Output|printf)\s+[^\r\n;]*\$(?:\?|LASTEXITCODE\b)/i;
   // Quoted search patterns and log text are not verification invocations.
   // This intentionally does not interpret scripts passed to sh -c or eval.
   const executableText = command.replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, ' ');
