@@ -5,6 +5,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { deduplicateBackendResources } = require('./backend-resource-dedup');
 
 // Get the target from environment or command line
 const target = process.env.TARGET || process.argv[2] || 'x86_64-unknown-linux-gnu';
@@ -107,7 +108,9 @@ if (fs.existsSync(binariesDir)) {
     // In CI/CD, create a placeholder to allow build to proceed
     if (process.env.CI) {
       console.log('CI environment detected - creating placeholder binary');
-      const placeholderName = isWindows ? 'rapitas-backend-x86_64-pc-windows-msvc.exe' : `rapitas-backend-${target}`;
+      const placeholderName = isWindows
+        ? 'rapitas-backend-x86_64-pc-windows-msvc.exe'
+        : `rapitas-backend-${target}`;
       const placeholderPath = path.join(binariesDir, placeholderName);
 
       if (!fs.existsSync(binariesDir)) {
@@ -130,7 +133,7 @@ if (fs.existsSync(binariesDir)) {
   }
 }
 
-const resourceFiles = fs
+const candidateFiles = fs
   .readdirSync(binariesDir)
   .filter((file) => {
     return isUsableBackendBinary(file);
@@ -142,8 +145,14 @@ const resourceFiles = fs
       return 1;
     };
     return score(right) - score(left) || left.localeCompare(right);
-  })
-  .map((file) => `binaries/${file}`);
+  });
+
+// CI creates generic and target-specific copies of the same large executable.
+// Preserve the preferred target filename and all distinct contents; only the
+// bundle manifest changes, so build inputs remain available to other steps.
+const resourceFiles = deduplicateBackendResources(candidateFiles, binariesDir).map(
+  (file) => `binaries/${file}`,
+);
 
 if (resourceFiles.length === 0) {
   console.error(`No backend resource files found in ${binariesDir}`);

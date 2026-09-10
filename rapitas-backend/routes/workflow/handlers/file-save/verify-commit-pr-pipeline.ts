@@ -87,7 +87,7 @@ export async function runVerifyCommitPrPipeline(params: {
   // history, rebuild the worktree and retry ONCE. performAutoCommitAndPR
   // re-reads the latest session's worktreePath, which the recovery updates.
   let gateRecoveryBlocked: 'recovery_already_used' | 'patch_apply_conflict' | null = null;
-  if (autoCommitPRResult.verificationBlocked) {
+  if (autoCommitPRResult.verificationBlocked && !autoCommitPRResult.verificationUnverifiable) {
     const { tryRecoverFromHistoryContamination } =
       await import('../../../../services/workflow/worktree-rebuild-recovery');
     const gateWorktreeSession = await prisma.agentSession
@@ -129,6 +129,16 @@ export async function runVerifyCommitPrPipeline(params: {
   const merge = autoCommitPRResult.autoMergeResult;
 
   if (autoCommitPRResult.verificationBlocked) {
+    if (autoCommitPRResult.verificationUnverifiable) {
+      // The gate already persisted the blocked task and original evidence.
+      // No rebuild, repair budget, receipt refresh or completion is justified
+      // when the verification infrastructure could not establish correctness.
+      log.warn(
+        { taskId, reason: autoCommitPRResult.error },
+        '[Workflow] Verification unavailable; retaining blocked task and worktree',
+      );
+      return { newStatus, taskMarkedDone: false, autoCommitPRResult };
+    }
     // The automated gate (lint/typecheck/test/scope) found problems, so
     // commit/PR were withheld. Bounce to the implementer for self-repair
     // (bounded by RAPITAS_MAX_VERIFY_REPAIRS) rather than dead-ending at
