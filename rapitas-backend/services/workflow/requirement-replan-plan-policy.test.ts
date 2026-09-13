@@ -59,6 +59,10 @@ beforeEach(async () => {
     'CREATE TABLE AgentSession (id INTEGER PRIMARY KEY, configId INTEGER)',
     'CREATE TABLE AgentExecution (id INTEGER PRIMARY KEY, sessionId INTEGER, status TEXT, startedAt DATETIME)',
     'CREATE TABLE ThemeAutoRun (id INTEGER PRIMARY KEY, themeId INTEGER UNIQUE, status TEXT)',
+    // The service acquires a durable review claim before any AI call (task 901
+    // claim tables) — the isolated schema must carry them like the commit test.
+    'CREATE TABLE RequirementReviewClaim (id INTEGER PRIMARY KEY AUTOINCREMENT, taskId INTEGER, snapshotDigest TEXT, requestKey TEXT, status TEXT, claimToken TEXT, ownerInstanceId TEXT, heartbeatAt DATETIME, resultJson TEXT, reason TEXT, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME, UNIQUE(taskId,snapshotDigest))',
+    'CREATE TABLE RequirementReviewRetryRequest (id INTEGER PRIMARY KEY AUTOINCREMENT, requestId TEXT UNIQUE, taskId INTEGER, consumedAt DATETIME, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP)',
     'CREATE TABLE WorkflowTransition (id INTEGER PRIMARY KEY AUTOINCREMENT, taskId INTEGER, fromStatus TEXT, toStatus TEXT, actor TEXT, cause TEXT, phase TEXT, executionId INTEGER, sessionId INTEGER, metadata TEXT DEFAULT "{}", invariantViolation BOOLEAN DEFAULT 0, invariantMessage TEXT, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP)',
   ])
     await db.$executeRawUnsafe(sql);
@@ -219,4 +223,29 @@ test('description evidence survives transactional replan without rewriting requi
     select: { metadata: true },
   });
   expect(JSON.parse(audit!.metadata).evidence.criterionSource).toBe('description');
+});
+
+test('undecidable reviewer verdict is inconclusive, never parks the task, and yields a receipt', async () => {
+  await prepareCompletion();
+  const client = db as unknown as PostgresClient;
+  const result = await attemptRequirementReplan(client, 1, async (source) => ({
+    ...review,
+    snapshotDigest: replanSnapshotDigest(source),
+    verdict: { kind: 'unknown', reason: 'verify shows no concrete failing criterion' },
+  }));
+  // The reviewer could not establish a mismatch → treated as "no mismatch
+  // established" so the ordinary verify gates decide (task 901 deadlock fix).
+  expect(result.committed).toBe(false);
+  expect(result.reason).toBe('no_mismatch');
+  expect(result.completionReceipt?.review.verdict.kind).toBe('no_mismatch');
+  expect(result.completionReceipt?.review.verdict.reason).toContain('review_inconclusive');
+  expect(await db.task.findUnique({ where: { id: 1 }, select: { status: true } })).toEqual({
+    status: 'in-progress',
+  });
+  // The claim keeps the reviewer's original explanation for the audit trail.
+  const claim = await db.$queryRawUnsafe<Array<{ status: string; reason: string | null }>>(
+    'SELECT status, reason FROM RequirementReviewClaim WHERE taskId = 1',
+  );
+  expect(claim[0]?.status).toBe('unknown');
+  expect(claim[0]?.reason).toContain('no concrete failing criterion');
 });

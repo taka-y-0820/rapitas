@@ -156,7 +156,11 @@ export async function computeAndApplyStatusTransition(params: {
       };
     }
     if (replan.reason !== 'no_mismatch') {
-      // Unknown/stale evidence cannot authorize either repair or completion.
+      // Stale evidence / an in-flight review cannot authorize either repair or
+      // completion; the queue policy re-queues and the next save re-reviews.
+      // (An undecidable reviewer verdict no longer lands here — the service
+      // converts it into an inconclusive no-mismatch receipt, see
+      // requirement-replan-service.ts.)
       throw new Error(`Requirement replan review held: ${replan.reason}`);
     }
     completionReceipt = replan.completionReceipt;

@@ -10,7 +10,6 @@ import type { CompletionReviewReceipt } from './requirement-replan-commit';
 import { createLogger } from '../../config/logger';
 import {
   claimRequirementReview,
-  parkRequirementReviewForIntervention,
   saveRequirementReview,
   startRequirementReviewHeartbeat,
 } from './requirement-review-claim';
@@ -85,13 +84,20 @@ export async function attemptRequirementReplan(
   if (admission.kind === 'in_progress') {
     return { committed: false, reason: admission.reason };
   }
-  if (admission.kind === 'held') {
-    return { committed: false, reason: `requires_human:${admission.reason}` };
-  }
   // No DB transaction or lifecycle lock is held during potentially slow AI evaluation.
   let stopHeartbeat: (() => void) | undefined;
   let result: ReplanReviewResult;
-  if (admission.kind === 'cached') {
+  if (admission.kind === 'held') {
+    // A claim whose evaluation was lost (stale heartbeat) — the review cannot
+    // be repeated for this snapshot, so it is inconclusive by construction.
+    result = {
+      verdict: { kind: 'unknown', reason: admission.reason },
+      snapshotDigest,
+      durationMs: 0,
+      tokensUsed: null,
+      modelName: null,
+    };
+  } else if (admission.kind === 'cached') {
     result = admission.result;
   } else {
     stopHeartbeat = startRequirementReviewHeartbeat(db, admission.claimId, admission.claimToken);
@@ -121,10 +127,19 @@ export async function attemptRequirementReplan(
       },
       'Requirement review held; inspect the reason before retrying unchanged evidence',
     );
-    // Do not overwrite a concurrent user/theme stop. Only the still-running,
-    // unchanged lifecycle reviewed above may be parked for intervention.
-    await parkRequirementReviewForIntervention(db, taskId, source.updatedAt);
-    return { committed: false, reason: `requires_human:${result.verdict.reason}` };
+    // NOTE: An undecidable review is NOT a mismatch. Parking the task as
+    // blocked here (2026-09-13, task 901) made every later verify save
+    // `not_reviewable` (blocked tasks are excluded from readSource), so the
+    // verifier could never recover — a self-deadlock that repeated until the
+    // blocked-retry cap escalated. This reviewer exists to catch a plan that
+    // contradicts the requirements; when it cannot establish one, the ordinary
+    // verify validators, honesty gate, adversarial diff review and CI remain
+    // the arbiters. Carry the explanation in the receipt so the audit trail
+    // keeps it, and continue as "no mismatch established".
+    result = {
+      ...result,
+      verdict: { kind: 'no_mismatch', reason: `review_inconclusive: ${result.verdict.reason}` },
+    };
   }
   if (result.verdict.kind === 'no_mismatch') {
     const fresh = await readSource();

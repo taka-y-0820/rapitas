@@ -225,18 +225,25 @@ test('server entry point reviews the stored source and commits the verdict', asy
   expect(result.committed).toBe(true);
 });
 
-test('unknown review keeps task and artifacts unchanged and issues no completion receipt', async () => {
+test('unknown review keeps task and artifacts unchanged and is carried as an inconclusive receipt', async () => {
+  // NOTE (2026-09-13, task 901): an undecidable verdict used to park the task
+  // as blocked and withhold the receipt, which deadlocked every later verify
+  // save (`not_reviewable`). It now flows on as "no mismatch established" —
+  // the ordinary verify gates remain the arbiters — with the reviewer's
+  // explanation preserved on the receipt and the claim.
   const artifacts = await db.$queryRawUnsafe('SELECT * FROM WorkflowFile ORDER BY id');
   const result = await attemptRequirementReplan(db as unknown as PostgresClient, 1, async () => ({
     ...review,
     verdict: { kind: 'unknown', reason: 'UI and cost comparison evidence is missing' },
   }));
-  expect(result).toEqual({
-    committed: false,
-    reason: 'requires_human:UI and cost comparison evidence is missing',
+  expect(result.committed).toBe(false);
+  expect(result.reason).toBe('no_mismatch');
+  expect(result.completionReceipt?.review.verdict).toEqual({
+    kind: 'no_mismatch',
+    reason: 'review_inconclusive: UI and cost comparison evidence is missing',
   });
   expect(await db.task.findUnique({ where: { id: 1 }, select: { status: true } })).toEqual({
-    status: 'blocked',
+    status: 'in-progress',
   });
   expect(await db.$queryRawUnsafe('SELECT * FROM WorkflowFile ORDER BY id')).toEqual(artifacts);
   expect(await db.$queryRawUnsafe('SELECT * FROM WorkflowTransition')).toEqual([]);
