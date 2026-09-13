@@ -562,6 +562,24 @@ describe('selectNextTask with scopeOverlap (task 573 B)', () => {
     expect((result as { deferred?: number[] }).deferred).toBeUndefined();
   });
 
+  it('an in-progress candidate is never deferred (it already owns a worktree)', async () => {
+    // 2026-09-13: task 905 (in-progress, mid verify-repair) sat deferred every
+    // tick behind exhausted open PRs while a fresh todo task was started.
+    const prisma = makePrisma({
+      task: {
+        findMany: mock().mockResolvedValue([
+          { ...mkTask(100, 0), status: 'in-progress', workflowStatus: 'plan_approved' },
+          mkTask(101, 1000),
+        ]),
+      },
+    });
+    const result = await selectNextTask(prisma, 1, 'priority', [], 0, null, {
+      openPrFiles: ['services/x.ts'],
+      getPlanFiles: async () => ['services/x.ts'], // everything overlaps
+    });
+    expect(result).toEqual({ found: true, taskId: 100 });
+  });
+
   it('a plan-less (lightweight) candidate is never deferred', async () => {
     const prisma = makePrisma({
       task: { findMany: mock().mockResolvedValue([mkTask(100, 0)]) },

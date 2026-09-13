@@ -506,6 +506,16 @@ export async function selectNextTask(
   if (scopeOverlap && scopeOverlap.openPrFiles.length > 0) {
     const deferred: number[] = [];
     for (const candidate of eligible) {
+      // A task already in progress owns a worktree with partial work; the
+      // overlap deferral exists to keep NEW work off files an open auto-PR is
+      // about to land, not to strand in-flight tasks. Observed 2026-09-13:
+      // task 905 (plan_approved, mid verify-repair) was deferred every tick
+      // behind 14 exhausted PRs while a fresh todo task was started instead.
+      if (candidate.status === 'in-progress') {
+        return deferred.length > 0
+          ? { found: true, taskId: candidate.id, deferred }
+          : { found: true, taskId: candidate.id };
+      }
       const planFiles = await scopeOverlap.getPlanFiles(candidate.id).catch(() => []);
       if (planFiles.length === 0 || !hasScopeOverlap(planFiles, scopeOverlap.openPrFiles)) {
         return deferred.length > 0
