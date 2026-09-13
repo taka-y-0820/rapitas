@@ -42,13 +42,7 @@ export function ResumableExecutionsBanner() {
   // Detect task detail page (/tasks/[id] pattern)
   const isTaskDetailPage = /^\/tasks\/\d+/.test(pathname);
 
-  if (
-    isLoading ||
-    isDismissed ||
-    (executions.length === 0 && !connectionError) ||
-    isTaskDetailPage ||
-    isTaskDetailVisible
-  ) {
+  if (isLoading || isDismissed || isTaskDetailPage || isTaskDetailVisible) {
     return null;
   }
 
@@ -57,7 +51,7 @@ export function ResumableExecutionsBanner() {
     if (isIntentionalRestart || isServerRestarting) return null;
 
     return (
-      <div className="fixed bottom-20 right-6 z-[60] max-w-sm w-full animate-in slide-in-from-right-4 duration-300">
+      <div className="fixed bottom-6 right-6 z-[60] max-w-sm w-full animate-in slide-in-from-right-4 duration-300">
         <div className="border rounded-2xl shadow-xl overflow-hidden bg-red-50 dark:bg-red-950/95 border-red-200/80 dark:border-red-700/60">
           <div className="px-4 py-3.5">
             <div className="flex items-center gap-3">
@@ -85,6 +79,12 @@ export function ResumableExecutionsBanner() {
       </div>
     );
   }
+
+  // A stale `connectionError` while the backend IS connected (a single
+  // resumable-executions probe timed out or returned 503 during warm-up) used
+  // to fall through here and paint the "中断された作業" card with a count of 0.
+  // With nothing to show there is nothing to render, whatever the error state.
+  if (executions.length === 0) return null;
 
   const hasRunning = runningCount > 0;
 
@@ -120,7 +120,9 @@ export function ResumableExecutionsBanner() {
     : 'hover:bg-amber-200/60 dark:hover:bg-amber-800/40';
 
   return (
-    <div className="fixed bottom-20 right-6 z-[60] max-w-sm w-full animate-in slide-in-from-right-4 duration-300">
+    // bottom-6: the former bottom-20 reserved space for the floating AI icon,
+    // which no longer exists.
+    <div className="fixed bottom-6 right-6 z-[60] max-w-sm w-full animate-in slide-in-from-right-4 duration-300">
       <div className={`border rounded-2xl shadow-xl ${bannerBg}`}>
         {/* Collapsible header */}
         <div
