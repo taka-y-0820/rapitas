@@ -2,6 +2,14 @@ import type { NextConfig } from 'next';
 import path from 'path';
 
 const isTauriBuild = process.env.TAURI_BUILD === 'true';
+// `output: 'export'` is a BUILD-time concern (prepare-tauri-build.js copies the
+// `_placeholder` pages per id). Under `next dev` (NODE_ENV=development) it
+// makes Next 16 reject every dynamic-route request whose param is not in
+// generateStaticParams() — /tasks/905, /github/pull-requests/632,
+// /vocabulary/3 all 500'd with "missing param … required with output: export"
+// in the desktop dev harness (2026-09-13). Keep distDir on .next-tauri; only
+// the export mode is deferred to the real build.
+const isStaticExport = isTauriBuild && process.env.NODE_ENV !== 'development';
 const disableTurbopack = process.env.NEXT_TURBO === '0';
 const isCI = process.env.CI === 'true';
 const isRuntimePreview = process.env.RAPITAS_RUNTIME_PREVIEW === 'true';
@@ -53,8 +61,8 @@ const nextConfig: NextConfig = {
         },
       }),
 
-  // Tauri用の静的エクスポート設定
-  ...(isTauriBuild && {
+  // Tauri用の静的エクスポート設定（ビルド時のみ — 上記 isStaticExport 参照）
+  ...(isStaticExport && {
     output: 'export',
     // 静的エクスポート時はImage Optimizationを無効化
     images: {
