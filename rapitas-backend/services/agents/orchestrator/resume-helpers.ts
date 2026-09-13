@@ -93,7 +93,7 @@ export async function resolveAgentConfig(
   ctx: OrchestratorContext,
   agentConfigId: number,
   fallback: AgentConfigInput,
-  claudeSessionId: string | null,
+  resumeSessionId: string | null,
 ): Promise<AgentConfigInput> {
   const dbConfig = await ctx.prisma.aIAgentConfig.findUnique({
     where: { id: agentConfigId },
@@ -124,7 +124,7 @@ export async function resolveAgentConfig(
     timeout: fallback.timeout,
     dangerouslySkipPermissions: true,
     yoloMode: true,
-    resumeSessionId: claudeSessionId || undefined,
+    resumeSessionId: resumeSessionId || undefined,
     continueConversation: false,
   };
 }

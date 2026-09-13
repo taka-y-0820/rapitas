@@ -195,6 +195,38 @@ model WorkflowQueueItem {
   @@index([themeId, status])
 }
 
+/// Durable, fail-closed ownership and result record for requirement replan reviews.
+model RequirementReviewClaim {
+  id             Int      @id @default(autoincrement())
+  taskId         Int
+  task           Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  snapshotDigest String
+  requestKey      String
+  status          String
+  claimToken      String
+  ownerInstanceId String
+  heartbeatAt     DateTime
+  resultJson      String?
+  reason         String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([taskId, snapshotDigest])
+  @@index([taskId, status])
+}
+
+/// Idempotent authorization for a user-requested re-evaluation.
+model RequirementReviewRetryRequest {
+  id         Int      @id @default(autoincrement())
+  requestId  String   @unique
+  taskId     Int
+  task       Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  consumedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([taskId, createdAt])
+}
+
 /// Per-theme auto-execution state. One row per theme that has had auto-run
 /// toggled. Drives the single global AutoRunScheduler and is persisted so the
 /// mode (and the in-flight task) survives a server restart.

@@ -447,6 +447,29 @@ describe('resumeInterruptedExecution() — 正常系', () => {
     expect(createdConfig.resumeSessionId).toBe('claude-session-abc');
   });
 
+  test('Codex execution resumes with the stored Codex agent configuration', async () => {
+    const { ctx, prisma } = makeCtx(
+      makeExecutionRecord({ agentConfigId: 42, claudeSessionId: 'codex-thread-abc' }),
+    );
+    prisma.aIAgentConfig.findUnique.mockResolvedValueOnce({
+      id: 42,
+      agentType: 'codex',
+      name: 'Codex CLI',
+      endpoint: null,
+      apiKeyEncrypted: null,
+      modelId: 'gpt-5-codex',
+    });
+
+    const result = await resumeInterruptedExecution(ctx, 10);
+
+    expect(result.success).toBe(true);
+    const createdConfig = createAgentMock.mock.calls[0][0];
+    expect(createdConfig.type).toBe('codex');
+    expect(createdConfig.name).toBe('Codex CLI');
+    expect(createdConfig.modelId).toBe('gpt-5-codex');
+    expect(createdConfig.resumeSessionId).toBe('codex-thread-abc');
+  });
+
   test('LLM call count は CLI(num_turns) と ALS(sendAIMessage) の合算になる', async () => {
     const { incrementLlmCall } = await import('../../../utils/llm-call-context');
     createAgentMock.mockImplementationOnce((config: { type: string; name: string }) => ({

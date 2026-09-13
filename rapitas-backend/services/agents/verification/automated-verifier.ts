@@ -502,7 +502,7 @@ function scopedTscEnabled(): boolean {
  * "cannot find module" bug is re-reported by the full run too, so the worst case
  * is slower, never a wrong verdict.
  */
-const ENV_FAILURE_TS_CODES = new Set(['TS2307', 'TS2688', 'TS2591', 'TS2580']);
+const ENV_FAILURE_TS_CODES = new Set(['TS2307', 'TS2688', 'TS2591', 'TS2580', 'TS18003']);
 
 /** True when scoped tsc output carries an env-resolution failure (→ use full). */
 function looksLikeBrokenTypeEnv(output: string): boolean {
@@ -510,6 +510,15 @@ function looksLikeBrokenTypeEnv(output: string): boolean {
     if (ENV_FAILURE_TS_CODES.has(m[1]!)) return true;
   }
   return false;
+}
+
+/** A compiler/configuration failure is not an attributable source diagnostic. */
+function incompleteTypecheck(code: number, output: string): boolean {
+  const files = parseTscErrorFiles(output);
+  return (
+    code !== 0 &&
+    (code !== 2 || files.length === 0 || files.some((file) => !CODE_EXTENSIONS.has(extname(file))))
+  );
 }
 
 /**
@@ -547,8 +556,8 @@ async function runScopedTypecheck(
     writeFileSync(cfgPath, JSON.stringify(cfg));
     const res = await runCmd(`"${bin}" -p "${cfgPath}" --noEmit --pretty false`, projectRoot);
     const out = `${res.stdout}\n${res.stderr}`;
-    // Broken scope (dropped globals) → signal a full re-run.
-    return looksLikeBrokenTypeEnv(out) ? null : out;
+    // Invalid scope or abnormal compiler exit requires a full re-run.
+    return looksLikeBrokenTypeEnv(out) || incompleteTypecheck(res.code, out) ? null : out;
   } catch {
     return null; // any failure → fall back to full
   } finally {
@@ -561,7 +570,7 @@ async function runScopedTypecheck(
 }
 
 /** Typechecks a project; gates on tsc errors located in the changed files. */
-async function typecheckProject(
+export async function typecheckProject(
   projectRoot: string,
   workdir: string,
   relFiles: string[],
@@ -578,7 +587,11 @@ async function typecheckProject(
   // Fast path: typecheck only the changed files. Falls through to a FULL run when
   // scoping doesn't apply or looks unreliable — same verdict, just slower.
   const scopedOut = scopedTscEnabled()
-    ? await runScopedTypecheck(bin, projectRoot, relFiles)
+    ? await runScopedTypecheck(
+        bin,
+        projectRoot,
+        relFiles.map((file) => relative(projectRoot, join(workdir, file)).replace(/\\/g, '/')),
+      )
     : null;
   let combined: string;
   if (scopedOut !== null) {
@@ -586,6 +599,12 @@ async function typecheckProject(
   } else {
     const res = await runCmd(`"${bin}" --noEmit --pretty false`, projectRoot);
     combined = `${res.stdout}\n${res.stderr}`;
+    if (incompleteTypecheck(res.code, combined)) {
+      return unverifiableCheck(
+        'typecheck',
+        `tsc exited ${res.code}:\n${combined.slice(0, MAX_DETAIL_CHARS)}`,
+      );
+    }
   }
   const errorFiles = parseTscErrorFiles(combined);
   // Only count errors located in the files the agent changed (avoids gating on

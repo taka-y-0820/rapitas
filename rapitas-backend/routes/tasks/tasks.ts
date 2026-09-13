@@ -381,14 +381,14 @@ export const tasksRoutes = new Elysia({ prefix: '/tasks' })
   // 'todo' so the next selection picks it up. Without this the only recovery
   // path was manually editing the status — blocked tasks just accumulated.
   .post('/:id/retry', async (context) => {
-    const { params, set } = context;
+    const { params, set, headers } = context;
     const id = parseInt(params.id);
     if (isNaN(id)) {
       throw new ValidationError(INVALID_ID);
     }
-    const updated = await retryTask(id, (code) => {
-      set.status = code;
-    });
+    const retryRequestId = headers['idempotency-key']?.trim() || crypto.randomUUID();
+    set.headers['x-retry-request-id'] = retryRequestId;
+    const updated = await retryTask(id, (code) => void (set.status = code), retryRequestId);
     return updated ?? { error: TASK_NOT_FOUND };
   })
 

@@ -122,6 +122,23 @@ describe('parseQuestionOptionsBlock', () => {
     expect(parsed?.questions[0].recommended).toBe('');
     expect(parsed?.questions[0].recommendedReason).toBe('');
   });
+
+  it('parses a top-level explicit kind field when present', () => {
+    const parsed = parseQuestionOptionsBlock(
+      block({ kind: 'execution_continuation', ...ELIGIBLE_QUESTIONS }),
+    );
+    expect(parsed?.kind).toBe('execution_continuation');
+  });
+
+  it('leaves kind undefined when absent', () => {
+    const parsed = parseQuestionOptionsBlock(block(ELIGIBLE_QUESTIONS));
+    expect(parsed?.kind).toBeUndefined();
+  });
+
+  it('leaves kind undefined when the top-level kind is not a string', () => {
+    const parsed = parseQuestionOptionsBlock(block({ kind: 123, ...ELIGIBLE_QUESTIONS }));
+    expect(parsed?.kind).toBeUndefined();
+  });
 });
 
 describe('isQuestionBlockEligibleForAutoAnswer', () => {

@@ -168,6 +168,8 @@ async function runAuxNonLocalStream(options: AIRequestOptions): Promise<Readable
  * Unified AI chat API (non-streaming).
  */
 export async function sendAIMessage(options: AIRequestOptions): Promise<AIResponse> {
+  if (process.env.RAPITAS_TASK901_MAINTENANCE === 'api')
+    throw new Error('AI is held during API recovery');
   const auxMode = getAuxAiMode();
   if (auxMode === 'off') {
     throw new Error('補助AI機能は無効化されています (RAPITAS_AUX_AI=off)。');
@@ -326,6 +328,8 @@ export async function sendAIMessage(options: AIRequestOptions): Promise<AIRespon
  * Unified AI chat API (streaming).
  */
 export async function sendAIMessageStream(options: AIRequestOptions): Promise<ReadableStream> {
+  if (process.env.RAPITAS_TASK901_MAINTENANCE === 'api')
+    throw new Error('AI is held during API recovery');
   const auxMode = getAuxAiMode();
   if (auxMode === 'off') {
     throw new Error('補助AI機能は無効化されています (RAPITAS_AUX_AI=off)。');

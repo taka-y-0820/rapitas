@@ -148,9 +148,14 @@ describe('ensureIntakeReady', () => {
     const rt = recordTransition.mock.calls[0][0] as {
       cause: string;
       toStatus: string;
+      metadata: { kind?: string };
     };
     expect(rt.cause).toBe('intake_question');
     expect(rt.toStatus).toBe('awaiting_question');
+    // task 902: intake questions must always carry an explicit spec_change
+    // kind so the answer-question dispatcher never mistakes them for
+    // execution_continuation/completion_confirmation.
+    expect(rt.metadata.kind).toBe('spec_change');
     // 受入基準1: raising a question must notify — an unanswered question never
     // advances on its own (#578/#579 sat 4 days unseen without this).
     expect(notifyIntakeQuestionPending).toHaveBeenCalledTimes(1);

@@ -6,6 +6,7 @@
  */
 import { PrismaClient, Prisma } from '../../generated/prisma-postgres';
 import { createLogger } from '../../config/logger';
+import { isApiRecoveryMode } from '../system/api-recovery-mode';
 import { getInsensitiveMode } from '../../config/db-provider';
 import { UserBehaviorService } from '../../src/services/user-behavior-service';
 import {
@@ -165,7 +166,7 @@ export async function createParentTask(
     include: TASK_FULL_INCLUDE,
   });
 
-  if (createdTask) {
+  if (createdTask && !isApiRecoveryMode()) {
     await UserBehaviorService.recordTaskCreated(createdTask.id, createdTask);
 
     // NOTE: Auto-assign workflow mode based on complexity analysis + learning history
