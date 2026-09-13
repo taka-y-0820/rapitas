@@ -19,7 +19,14 @@ const RESTORE_MAX_ATTEMPTS = 10;
 
 export interface UseWorkflowHandlersParams {
   taskId: number;
+  /** Status reported by the workflow-files endpoint (refetched on SSE). */
   workflowStatus: WorkflowStatus | null | undefined;
+  /**
+   * Status on the polled task record. Second live source: the task loader
+   * polls every 5s during an active workflow, so a transition that emits no
+   * SSE event still reaches the badge without reopening the page.
+   */
+  taskWorkflowStatus?: WorkflowStatus | null;
   refetchWorkflowFiles: () => void;
   restoreExecutionState: () => Promise<{ status?: string } | null | undefined>;
   onTaskUpdated?: () => void;
@@ -43,6 +50,7 @@ export interface UseWorkflowHandlersResult {
 export function useWorkflowHandlers({
   taskId: _taskId,
   workflowStatus,
+  taskWorkflowStatus,
   refetchWorkflowFiles,
   restoreExecutionState,
   onTaskUpdated,
@@ -50,12 +58,17 @@ export function useWorkflowHandlers({
   const [currentWorkflowStatus, setCurrentWorkflowStatus] = useState<WorkflowStatus | null>(null);
   const [showPlanApprovalModal, setShowPlanApprovalModal] = useState(false);
 
-  // Sync external workflow status into local state when it changes
+  // Sync each external source into local state when THAT source changes.
+  // Two separate effects (not one keyed on both) so the most recently changed
+  // source wins: the files endpoint updates instantly on SSE, the task record
+  // catches up on its own poll, and neither can drag the badge back to a value
+  // the other already superseded.
   useEffect(() => {
-    if (workflowStatus && workflowStatus !== currentWorkflowStatus) {
-      setCurrentWorkflowStatus(workflowStatus);
-    }
-  }, [workflowStatus, currentWorkflowStatus]);
+    if (workflowStatus) setCurrentWorkflowStatus(workflowStatus);
+  }, [workflowStatus]);
+  useEffect(() => {
+    if (taskWorkflowStatus) setCurrentWorkflowStatus(taskWorkflowStatus);
+  }, [taskWorkflowStatus]);
 
   const handlePlanApprovalRequest = useCallback(() => {
     setShowPlanApprovalModal(true);

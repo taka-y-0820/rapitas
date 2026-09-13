@@ -10,6 +10,22 @@ vi.mock('@/utils/api', () => ({
   API_BASE_URL: 'http://test:3001',
 }));
 
+type SseHandler = (event: MessageEvent) => void;
+const sseHandlers = new Map<string, Set<SseHandler>>();
+vi.mock('@/lib/sse/shared-event-source', () => ({
+  sharedEventSource: {
+    subscribe: (type: string, handler: SseHandler) => {
+      if (!sseHandlers.has(type)) sseHandlers.set(type, new Set());
+      sseHandlers.get(type)!.add(handler);
+      return () => sseHandlers.get(type)?.delete(handler);
+    },
+  },
+}));
+const emitSse = (type: string, payload: unknown) =>
+  sseHandlers
+    .get(type)
+    ?.forEach((h) => h(new MessageEvent(type, { data: JSON.stringify(payload) })));
+
 const mockFilesResponse = {
   research: {
     type: 'research',
@@ -44,6 +60,38 @@ describe('useWorkflowFiles', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    sseHandlers.clear();
+  });
+
+  it('refetches on task-scoped SSE events so the status stays live', async () => {
+    const { result, unmount } = renderHook(() => useWorkflowFiles(1));
+    await waitFor(() => expect(result.current.workflowStatus).toBe('plan_created'));
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    // Another task's event must not trigger a fetch.
+    emitSse('phase_transition', { taskId: 2, newPhase: 'plan_approved' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ...mockFilesResponse, workflowStatus: 'in_progress' }),
+    } as Response);
+    emitSse('phase_transition', { taskId: 1, newPhase: 'in_progress' });
+    await waitFor(() => expect(result.current.workflowStatus).toBe('in_progress'));
+
+    emitSse('task_updated', { taskId: 1 });
+    emitSse('item_update', { taskId: 1 });
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(4));
+
+    // Malformed payloads are ignored rather than thrown.
+    sseHandlers
+      .get('task_updated')
+      ?.forEach((h) => h(new MessageEvent('task_updated', { data: '{not json' })));
+    expect(fetch).toHaveBeenCalledTimes(4);
+
+    unmount();
+    emitSse('phase_transition', { taskId: 1 });
+    expect(fetch).toHaveBeenCalledTimes(4);
   });
 
   it('should not fetch when taskId is null', () => {

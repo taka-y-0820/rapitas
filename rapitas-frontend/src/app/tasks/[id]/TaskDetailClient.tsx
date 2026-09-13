@@ -135,6 +135,7 @@ function TaskDetailClient({ taskId: propTaskId, onTaskUpdated }: TaskDetailClien
   } = useWorkflowHandlers({
     taskId,
     workflowStatus,
+    taskWorkflowStatus: task?.workflowStatus ?? null,
     refetchWorkflowFiles,
     restoreExecutionState,
     onTaskUpdated,
