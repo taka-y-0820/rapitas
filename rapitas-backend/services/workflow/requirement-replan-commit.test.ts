@@ -210,6 +210,17 @@ test('replan invalidates older phase output but not a later replacement phase', 
   expect(await requirementReplannedSince(client, 1, new Date(Date.now() + 60000))).toBe(false);
 });
 
+test('a human plan-revision request supersedes phases that began before it (task 901)', async () => {
+  const client = db as unknown as PostgresClient;
+  expect(await requirementReplannedSince(client, 1, now)).toBe(false);
+  await db.$executeRawUnsafe(
+    "INSERT INTO WorkflowTransition (taskId, fromStatus, toStatus, actor, cause, createdAt) VALUES (1, 'in_progress', 'research_done', 'user', 'plan_revision_requested', ?)",
+    new Date(now.getTime() + 1000),
+  );
+  expect(await requirementReplannedSince(client, 1, now)).toBe(true);
+  expect(await requirementReplannedSince(client, 1, new Date(now.getTime() + 2000))).toBe(false);
+});
+
 test('server entry point reviews the stored source and commits the verdict', async () => {
   const result = await attemptRequirementReplan(
     db as unknown as PostgresClient,
