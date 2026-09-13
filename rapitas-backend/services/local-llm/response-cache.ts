@@ -137,9 +137,11 @@ export function getCachedResponse(hash: string): { content: string; tokensUsed: 
       return null;
     }
 
-    // Check TTL expiration
-    const createdAt = new Date(row.created_at).getTime();
-    if (Date.now() - createdAt > row.ttl_ms) {
+    // SQLite datetime('now') is UTC without a zone suffix. Parsing it as
+    // local time shifts expiry on non-UTC hosts. The deadline is exclusive:
+    // an entry with a zero TTL must never be returned, even in the same tick.
+    const createdAt = Date.parse(`${row.created_at.replace(' ', 'T')}Z`);
+    if (row.ttl_ms <= 0 || !Number.isFinite(createdAt) || Date.now() - createdAt >= row.ttl_ms) {
       database.prepare('DELETE FROM llm_cache WHERE hash = ?').run(hash);
       missCount++;
       return null;
@@ -265,7 +267,7 @@ export function purgeExpiredEntries(): number {
       .prepare(
         `
       DELETE FROM llm_cache
-      WHERE (julianday('now') - julianday(created_at)) * 86400000 > ttl_ms
+      WHERE ttl_ms <= 0 OR (julianday('now') - julianday(created_at)) * 86400000 >= ttl_ms
     `,
       )
       .run();

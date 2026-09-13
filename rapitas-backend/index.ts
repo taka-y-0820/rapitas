@@ -1,4 +1,5 @@
 // Setup global error handlers
+import { isApiRecoveryMode, apiRecoveryRequestGuard } from './services/system/api-recovery-mode';
 import { setupGlobalErrorHandlers, errorHandler } from './middleware';
 setupGlobalErrorHandlers();
 
@@ -11,7 +12,7 @@ import { createLogger } from './config/logger';
 const log = createLogger('server');
 
 import { ensureDesktopSqliteDatabase } from './config/desktop-sqlite';
-await ensureDesktopSqliteDatabase();
+if (!isApiRecoveryMode()) await ensureDesktopSqliteDatabase();
 
 // Validate environment variables at startup
 import { validateEnvironment } from './config/env-validation';
@@ -51,6 +52,7 @@ import {
 } from './services/scheduling/auto-restart-merged-code/ui-activity-tracker';
 
 const app = new Elysia();
+app.onRequest(apiRecoveryRequestGuard);
 
 // CSRF backstop: reject cross-site state-changing requests even in the default
 // tokenless loopback deployment (a browser tab on any site can POST to
@@ -167,7 +169,16 @@ registerAllRoutes(app);
 // SAME data `/agents/system-status` already computes (via the shared
 // getAgentSystemSnapshot()) plus process uptime, so operators/CI have one
 // fast, read-only endpoint instead of needing to know the `/agents` prefix.
-app.get('/health', handleTopLevelHealthCheck);
+app.get('/health', async () => {
+  if (!isApiRecoveryMode()) return handleTopLevelHealthCheck();
+  await prisma.$queryRaw`SELECT 1`;
+  return {
+    status: 'healthy',
+    mode: 'api-recovery',
+    backgroundInitialization: false,
+    uptimeSeconds: process.uptime(),
+  };
+});
 
 // Warm-up tasks (schedulers, memory system, agent worker manager, recovery)
 // are imported here but deliberately NOT invoked until AFTER app.listen() —
@@ -213,6 +224,8 @@ app.listen({
   // zombie socket and tell the user to reboot instead of masking it as a hang.
 });
 log.info(`Rapitas backend running on http://${BIND_HOST}:${PORT}`);
+if (isApiRecoveryMode())
+  log.info({ port: app.server?.port, pid: process.pid }, 'api-recovery-listening');
 
 // Set server stop callback for proper port release during graceful shutdown.
 // NOTE: stop(true) force-closes ALL active connections, not just the listener.
@@ -294,7 +307,7 @@ const runStartupWarmup = async (): Promise<void> => {
 };
 
 // Fire-and-forget: never blocks the listener; each task self-reports timing.
-void runStartupWarmup();
+if (!isApiRecoveryMode()) void runStartupWarmup();
 
 // Signal handling from bun --watch (for dev:simple mode)
 // Close SSE connections immediately on SIGTERM/SIGINT to prevent CLOSE_WAIT accumulation
@@ -545,6 +558,7 @@ const startupRecovery = async () => {
   }
 };
 
-startupRecovery().catch((error) => {
-  log.error({ err: error }, 'Startup recovery failed');
-});
+if (!isApiRecoveryMode())
+  startupRecovery().catch((error) => {
+    log.error({ err: error }, 'Startup recovery failed');
+  });

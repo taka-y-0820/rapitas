@@ -1,0 +1,12 @@
+{
+  "measuredAt": "2026-09-10T12:01:20.162Z",
+  "docs": 7813,
+  "tickMs": 20,
+  "sync": {
+    "maxLagMs": 0
+  },
+  "cooperative": {
+    "maxLagMs": 16
+  },
+  "identical": true
+}

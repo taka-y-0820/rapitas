@@ -12,6 +12,7 @@ import { createLogger } from '../../config/logger';
 import { parseOwnerRepo, ownerRepoFromGitRemote } from './git-exec';
 import { verifyPrOwnership } from './pr-ownership';
 import { notify } from '../workflow/auto-merge-notify';
+import { updateTaskPublicationMetadata } from './task-publication-metadata';
 
 const log = createLogger('github-service:pr-link');
 type PrismaClientInstance = InstanceType<typeof PrismaClient>;
@@ -169,7 +170,9 @@ export async function linkAutoCreatedPr(
 
     // Fallback path for the by-task resolver, and the source of truth other
     // task views read.
-    await prisma.task.update({ where: { id: taskId }, data: { githubPrId: prNumber } });
+    if (!(await updateTaskPublicationMetadata(prisma, taskId, { githubPrId: prNumber }))) {
+      throw new Error('Task changed while linking its publication metadata');
+    }
 
     log.info({ taskId, prNumber, localPrId: pr.id }, '[linkAutoCreatedPr] PR linked to task');
     return pr.id;

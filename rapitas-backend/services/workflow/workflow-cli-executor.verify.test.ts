@@ -103,6 +103,9 @@ describe('executeCLIAgent — verify phase', () => {
     expect(result.status).toBe('completed');
     expect(spies.evaluateCompletionGate).not.toHaveBeenCalled();
     expect(spies.taskUpdate).not.toHaveBeenCalled();
+    expect(spies.executeTask.mock.calls[0][1]).toEqual(
+      expect.objectContaining({ investigationMode: false, investigationOutputType: 'verify' }),
+    );
   });
 
   test('hard validation failure blocks durably instead of completing', async () => {

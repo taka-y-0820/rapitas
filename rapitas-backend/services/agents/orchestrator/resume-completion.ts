@@ -63,6 +63,10 @@ export function handleResumeCompletion(
       }
     })
     .catch(async (error) => {
+      if ((error as Error)?.name === 'ExecutionCancelledError') {
+        log.info({ taskId: task.id, executionId }, '[resume] Cancelled; preserving stop state');
+        return;
+      }
       if (
         error instanceof ResumeLockConflictError ||
         (error as Error)?.name === 'ResumeLockConflictError'

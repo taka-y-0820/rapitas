@@ -8,7 +8,7 @@
     "pretest:ci": "node scripts/check-test-isolation.cjs",
     "dev": "bun run scripts/dev.ts",
     "dev:simple": "bun --watch index.ts",
-    "dev:stable": "bun index.ts",
+    "dev:stable": "bun server-entry.ts",
     "start": "bun run scripts/start.ts",
     "start:simple": "bun index.ts",
     "test": "bun test --isolate",

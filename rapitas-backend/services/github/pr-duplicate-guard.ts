@@ -16,6 +16,7 @@
  */
 import type { PrismaClient } from '../../generated/prisma-postgres';
 import { createLogger } from '../../config/logger';
+import { updateTaskPublicationMetadata } from './task-publication-metadata';
 
 type PrismaClientInstance = InstanceType<typeof PrismaClient>;
 const log = createLogger('github:pr-duplicate-guard');
@@ -72,17 +73,14 @@ export async function claimPrCreationLock(
 ): Promise<boolean> {
   const staleThreshold = new Date(Date.now() - PR_CREATION_LOCK_STALE_MS);
   try {
-    // NOTE: cast — prCreationLockedAt is pending Prisma client regen until the
-    // next backend restart (see CLAUDE.md: schema changes require a manual
-    // restart; dev.js re-runs `prisma db push`/`generate` on startup).
-    const result = await prisma.task.updateMany({
-      where: {
-        id: taskId,
+    return await updateTaskPublicationMetadata(
+      prisma,
+      taskId,
+      { prCreationLockedAt: new Date() },
+      {
         OR: [{ prCreationLockedAt: null }, { prCreationLockedAt: { lt: staleThreshold } }],
       },
-      data: { prCreationLockedAt: new Date() },
-    } as unknown as Parameters<typeof prisma.task.updateMany>[0]);
-    return result.count === 1;
+    );
   } catch (err) {
     log.warn({ err, taskId }, 'Failed to claim PR-creation lock — treating as not claimed');
     return false;
@@ -102,12 +100,12 @@ export async function releasePrCreationLock(
   prisma: PrismaClientInstance,
   taskId: number,
 ): Promise<void> {
-  await prisma.task
-    .update({
-      where: { id: taskId },
-      data: { prCreationLockedAt: null },
-    } as unknown as Parameters<typeof prisma.task.update>[0])
-    .catch((err: unknown) => {
-      log.warn({ err, taskId }, 'Failed to release PR-creation lock (will self-expire)');
-    });
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (await updateTaskPublicationMetadata(prisma, taskId, { prCreationLockedAt: null })) return;
+    }
+    log.warn({ taskId }, 'PR-creation lock release lost its task revision race (will self-expire)');
+  } catch (err) {
+    log.warn({ err, taskId }, 'Failed to release PR-creation lock (will self-expire)');
+  }
 }

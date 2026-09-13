@@ -13,6 +13,7 @@
  * stages are eligible (recall-config.ts).
  */
 import { prisma } from '../../../config/database';
+import { setImmediate as yieldToIO } from 'node:timers/promises';
 import { createLogger } from '../../../config/logger';
 import { normalizeForMatch } from '../text-similarity';
 import { getRecallConfig } from './recall-config';
@@ -111,22 +112,45 @@ function idfOf(docCount: number, df: number): number {
  * @returns The index. / 索引
  */
 export function buildLexicalIndex(rows: LexicalRow[]): LexicalIndex {
+  const steps = buildIndexSteps(rows);
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  return step.value;
+}
+
+/** Same index as the pure builder, with I/O turns between bounded batches. */
+export async function buildLexicalIndexAsync(rows: LexicalRow[]): Promise<LexicalIndex> {
+  const steps = buildIndexSteps(rows);
+  let step = steps.next();
+  while (!step.done) {
+    await yieldToIO();
+    step = steps.next();
+  }
+  return step.value;
+}
+
+function* buildIndexSteps(rows: LexicalRow[]): Generator<void, LexicalIndex> {
   const df = new Map<number, number>();
-  const docs: LexicalDoc[] = rows.map((r) => {
+  const docs: LexicalDoc[] = [];
+  for (const r of rows) {
     const codes = toBigramCodes(`${r.title} ${r.content.slice(0, DOC_CONTENT_CHARS)}`);
     for (const g of codes) df.set(g, (df.get(g) ?? 0) + 1);
-    return {
+    docs.push({
       id: r.id,
       codes,
       forgettingStage: r.forgettingStage,
       validationStatus: r.validationStatus,
       themeId: r.themeId,
       category: r.category,
-    };
-  });
+    });
+    if (docs.length % 32 === 0) yield;
+  }
   const docCount = docs.length;
   const idf = new Map<number, number>();
-  for (const [g, n] of df) idf.set(g, idfOf(docCount, n));
+  for (const [g, n] of df) {
+    idf.set(g, idfOf(docCount, n));
+    if (idf.size % 2048 === 0) yield;
+  }
   return { docs, idf, unseenIdf: idfOf(docCount, 0), docCount, builtAt: Date.now() };
 }
 
@@ -195,7 +219,7 @@ export async function getLexicalIndex(): Promise<LexicalIndex> {
       },
       orderBy: { id: 'asc' },
     });
-    const built = buildLexicalIndex(rows);
+    const built = await buildLexicalIndexAsync(rows);
     cache = built;
     log.info(
       { docs: built.docCount, bigrams: built.idf.size, ms: Date.now() - started },
@@ -253,7 +277,9 @@ export async function lexicalSearch(
   const index = await getLexicalIndex();
   const stageSet = new Set<string>(stages);
   const hits: LexicalHit[] = [];
+  let scanned = 0;
   for (const doc of index.docs) {
+    if (++scanned % 64 === 0) await yieldToIO();
     if (!stageSet.has(doc.forgettingStage)) continue;
     if (themeId !== undefined && doc.themeId !== themeId) continue;
     if (category !== undefined && doc.category !== category) continue;

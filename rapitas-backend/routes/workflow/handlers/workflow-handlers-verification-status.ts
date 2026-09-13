@@ -35,6 +35,10 @@ function toResponse(record: VerificationJobRecord) {
       return {
         success: true,
         runId: record.runId,
+        operation: record.operation,
+        worktreePath: record.worktreePath,
+        revision: record.revision,
+        commands: record.commands,
         status: 'running',
         startedAt: record.startedAt,
       };
@@ -42,6 +46,10 @@ function toResponse(record: VerificationJobRecord) {
       return {
         success: true,
         runId: record.runId,
+        operation: record.operation,
+        worktreePath: record.worktreePath,
+        revision: record.revision,
+        commands: record.commands,
         status: 'completed',
         ok: record.ok,
         unverifiable: record.unverifiable,
@@ -55,6 +63,10 @@ function toResponse(record: VerificationJobRecord) {
       return {
         success: true,
         runId: record.runId,
+        operation: record.operation,
+        worktreePath: record.worktreePath,
+        revision: record.revision,
+        commands: record.commands,
         status: 'failed',
         error: record.error,
         finishedAt: record.finishedAt,
@@ -63,6 +75,10 @@ function toResponse(record: VerificationJobRecord) {
       return {
         success: true,
         runId: record.runId,
+        operation: record.operation,
+        worktreePath: record.worktreePath,
+        revision: record.revision,
+        commands: record.commands,
         status: 'interrupted',
         startedAt: record.startedAt,
         note: 'サーバープロセス再起動または長時間無応答のため中断と判定されました',
@@ -71,7 +87,15 @@ function toResponse(record: VerificationJobRecord) {
       // Exhaustive switch above covers every VerificationJobRecord['status'];
       // this branch only guards a future status value added without updating
       // this function.
-      return { success: true, runId: record.runId, status: record.status };
+      return {
+        success: true,
+        runId: record.runId,
+        operation: record.operation,
+        worktreePath: record.worktreePath,
+        revision: record.revision,
+        commands: record.commands,
+        status: record.status,
+      };
   }
 }
 

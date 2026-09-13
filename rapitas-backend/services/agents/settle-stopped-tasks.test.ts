@@ -207,3 +207,46 @@ test('a later stop attempt recovers durable targets after settlement failed', as
   expect(await settleStoppedTasks(client, pending)).toEqual([1]);
   expect(await readPendingThemeStopTargets(client, 10)).toEqual([]);
 });
+
+test.each([null, 'running', 'failed', 'completed'])(
+  'failed session recovery preserves newer %s execution',
+  async (newer) => {
+    await cancelledExecution();
+    await db.$executeRawUnsafe("ALTER TABLE AgentSession ADD COLUMN status TEXT DEFAULT 'failed'");
+    await db.$executeRawUnsafe('ALTER TABLE AgentSession ADD COLUMN updatedAt DATETIME');
+    if (newer)
+      await db.$executeRawUnsafe('INSERT INTO AgentExecution VALUES (2,1,?,?)', newer, now);
+    await settleStoppedSessions(db as unknown as PostgresClient, [1]);
+    const session = await db.agentSession.findUnique({
+      where: { id: 1 },
+      select: { status: true },
+    });
+    expect(session?.status).toBe(newer ? 'failed' : 'cancelled');
+  },
+);
+
+test('manual execution pending session settles only after its execution is cancelled', async () => {
+  await cancelledExecution();
+  await db.$executeRawUnsafe("ALTER TABLE AgentSession ADD COLUMN status TEXT DEFAULT 'pending'");
+  await db.$executeRawUnsafe('ALTER TABLE AgentSession ADD COLUMN updatedAt DATETIME');
+  await db.$executeRawUnsafe("UPDATE AgentExecution SET status = 'running' WHERE id = 1");
+  await settleStoppedSessions(db as unknown as PostgresClient, [1]);
+  expect(await db.agentSession.findUnique({ where: { id: 1 }, select: { status: true } })).toEqual({
+    status: 'pending',
+  });
+  await db.$executeRawUnsafe("UPDATE AgentExecution SET status = 'cancelled' WHERE id = 1");
+  await settleStoppedSessions(db as unknown as PostgresClient, [1]);
+  expect(await db.agentSession.findUnique({ where: { id: 1 }, select: { status: true } })).toEqual({
+    status: 'cancelled',
+  });
+});
+
+test('stop intent batch remains atomic when a later audit row fails', async () => {
+  await cancelledExecution();
+  await db.$executeRawUnsafe("INSERT INTO AgentExecution VALUES (2,1,'running',?)", now);
+  await db.$executeRawUnsafe(
+    "CREATE TRIGGER reject_second_intent BEFORE INSERT ON WorkflowTransition WHEN NEW.executionId = 2 BEGIN SELECT RAISE(ABORT, 'second audit rejected'); END",
+  );
+  await expect(recordThemeStopIntent(db as unknown as PostgresClient, 1, [1, 2])).rejects.toThrow();
+  expect(await db.workflowTransition.count()).toBe(0);
+});

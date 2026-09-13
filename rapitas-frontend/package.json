@@ -8,6 +8,7 @@
     "dev": "node scripts/dev-with-cache-check.js",
     "dev:clean": "cross-env FORCE_CLEAN=true node scripts/dev-with-cache-check.js",
     "dev:no-check": "next dev",
+    "dev:runtime": "cross-env RAPITAS_RUNTIME_PREVIEW=true TAURI_BUILD=false next dev --hostname 127.0.0.1",
     "prebuild": "node scripts/generate-messages.mjs && node scripts/generate-agents-panels.mjs",
     "build": "next build",
     "build:tauri": "node scripts/prepare-tauri-build.js backup && cross-env TAURI_BUILD=true next build && node scripts/prepare-tauri-build.js restore",

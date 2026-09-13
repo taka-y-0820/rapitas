@@ -45,8 +45,18 @@ async function finalizeAgentSession(
   cancelled = false,
 ): Promise<void> {
   try {
-    await prisma.agentSession.update({
-      where: { id: sessionId },
+    await prisma.agentSession.updateMany({
+      where: {
+        id: sessionId,
+        status: { in: ['active', 'running'] },
+        ...(cancelled
+          ? {}
+          : {
+              agentExecutions: {
+                none: { status: { in: ['canceling', 'cancelling', 'cancelled', 'canceled'] } },
+              },
+            }),
+      },
       data: {
         status: cancelled ? 'cancelled' : success ? 'completed' : 'failed',
         lastActivityAt: new Date(),
@@ -175,6 +185,8 @@ export async function executeCLIAgent(
         // Role-aware wall-clock cap: implementer gets 2x the base (task 546).
         timeout: getAgentTimeoutMs(transition.role),
         autoCompleteTask: false,
+        // Verifiers need shell access for checks and workflow artifact saves.
+        // Their no-code result policy is selected by the output type below.
         investigationMode: isInvestigationPhase,
         // Phase-specific output type. Drives codex's positional headline
         // (`# 調査レポート` vs `# 実装計画` vs `# レビュー指摘`) so each

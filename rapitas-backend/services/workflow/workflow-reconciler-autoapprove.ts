@@ -39,7 +39,8 @@ export async function healAutoApproveStalls(nowMs: number): Promise<number> {
   const candidates = await prisma.task.findMany({
     where: {
       workflowStatus: 'plan_created',
-      status: { notIn: ['blocked', 'completed'] },
+      // A stopped task returns to todo. Recovery cannot grant a new run.
+      status: 'in-progress',
       updatedAt: { lte: staleBefore },
     },
     select: { id: true },

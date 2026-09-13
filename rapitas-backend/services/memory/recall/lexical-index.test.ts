@@ -39,6 +39,8 @@ mock.module('../../../config/logger', () => ({
 const {
   toBigramCodes,
   buildLexicalIndex,
+  buildLexicalIndexAsync,
+  getLexicalIndex,
   scoreDocument,
   lexicalSearch,
   invalidateLexicalIndex,
@@ -64,6 +66,42 @@ beforeEach(() => {
   findManyCalls = 0;
   invalidateLexicalIndex();
   resetRecallConfigCache();
+});
+
+test('cooperative building preserves all documents and IDF while allowing I/O', async () => {
+  rows = Array.from({ length: 512 }, (_, id) =>
+    row({ id, title: `task ${id}`, content: '検索対象文書'.repeat(80) }),
+  );
+  const expected = buildLexicalIndex(rows);
+  let ioRan = false;
+  setImmediate(() => {
+    ioRan = true;
+  });
+  const actual = await buildLexicalIndexAsync(rows);
+  expect(ioRan).toBe(true);
+  expect(actual.docs).toEqual(expected.docs);
+  expect(actual.idf).toEqual(expected.idf);
+  expect(actual.unseenIdf).toBe(expected.unseenIdf);
+});
+
+test('concurrent callers share one complete index across cooperative yields', async () => {
+  rows = Array.from({ length: 256 }, (_, id) => row({ id, title: `task ${id}` }));
+  const [a, b] = await Promise.all([getLexicalIndex(), getLexicalIndex()]);
+  expect(a).toBe(b);
+  expect(a.docCount).toBe(256);
+  expect(findManyCalls).toBe(1);
+});
+
+test('cached corpus search allows I/O without changing deterministic hit order', async () => {
+  rows = Array.from({ length: 256 }, (_, id) => row({ id, title: 'matching task' }));
+  await getLexicalIndex();
+  let ioRan = false;
+  setImmediate(() => {
+    ioRan = true;
+  });
+  const hits = await lexicalSearch('matching task', { minScore: 0, limit: 3 });
+  expect(ioRan).toBe(true);
+  expect(hits.map((hit) => hit.id)).toEqual([0, 1, 2]);
 });
 
 describe('toBigramCodes', () => {

@@ -95,7 +95,11 @@ describe('beginVerificationRun', () => {
     expect(typeof result.runId).toBe('string');
     expect(result.runId.length).toBeGreaterThan(0);
     expect(recordJobStartMock).toHaveBeenCalledTimes(1);
-    expect(recordJobStartMock).toHaveBeenCalledWith(1, result.runId, expect.any(String));
+    expect(recordJobStartMock).toHaveBeenCalledWith(1, result.runId, expect.any(String), {
+      operation: 'POST /workflow/tasks/1/run-verification',
+      worktreePath: 'C:/wt/task-1',
+      revision: 'head-1',
+    });
     // The gate itself must NOT run in the fast path.
     expect(runAutomatedVerificationMock).not.toHaveBeenCalled();
   });

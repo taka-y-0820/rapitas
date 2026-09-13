@@ -6,6 +6,9 @@
     "readyTimeoutMs": "起動待機タイムアウト (秒)",
     "checkPaths": "検証するパス",
     "addPath": "パスを追加",
-    "removePath": "このパスを削除"
+    "removePath": "このパスを削除",
+    "readySelector": "画面の準備完了を示す要素",
+    "readySelectorHelp": "すべての確認パスで、操作可能になってから表示される要素のセレクターを指定します。未設定の場合、画面の準備完了は未検証になります。",
+    "readinessTimeoutMs": "画面の準備を待つ時間（秒）"
   }
 }

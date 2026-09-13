@@ -21,8 +21,6 @@ type UseBackendHealthOptions = {
   onReconnectAction?: () => void;
   /** Callback called on disconnection */
   onDisconnectAction?: () => void;
-  /** 連続ヘルスチェック失敗がこの回数に達したら、SSEのshutdownイベントを受信していなくても意図的な再起動とみなす。デフォルト: 3 */
-  restartFallbackThreshold?: number;
   /** 連続失敗がこの回数に達するまで disconnected 表示にしない（単発の遅延スパイクでモーダルが点滅するのを防ぐ）。デフォルト: 2 */
   disconnectThreshold?: number;
 };
@@ -32,9 +30,7 @@ type UseBackendHealthOptions = {
  * Calls onReconnect callback when disconnect→recovery is detected.
  * When shutdown event is received via SSE, treats it as intentional restart
  * and sets isIntentionalRestart flag to true.
- * Also falls back to the same flag when health checks fail
- * restartFallbackThreshold times in a row, covering restarts whose SSE
- * shutdown event never arrives (e.g. the app was backgrounded).
+ * Failed probes indicate connectivity loss only; they do not prove a restart.
  */
 export function useBackendHealth(options: UseBackendHealthOptions = {}) {
   const {
@@ -42,13 +38,13 @@ export function useBackendHealth(options: UseBackendHealthOptions = {}) {
     retryIntervalMs = 2000,
     onReconnectAction,
     onDisconnectAction,
-    restartFallbackThreshold = 3,
     disconnectThreshold = 2,
   } = options;
 
   const [status, setStatus] = useState<BackendHealthStatus>('checking');
   const [isIntentionalRestart, setIsIntentionalRestart] = useState(false);
   const wasDisconnectedRef = useRef(false);
+  const checkingRef = useRef(false);
   const consecutiveFailureCountRef = useRef(0);
   const onReconnectRef = useRef(onReconnectAction);
   const onDisconnectRef = useRef(onDisconnectAction);
@@ -83,12 +79,15 @@ export function useBackendHealth(options: UseBackendHealthOptions = {}) {
     // getAppHidden() covers minimize, which occlusion-disabled WebView2 doesn't
     // report via document.hidden.
     if ((typeof document !== 'undefined' && document.hidden) || getAppHidden()) return;
+    if (checkingRef.current) return;
+    checkingRef.current = true;
+    const controller = new AbortController();
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
-      const controller = new AbortController();
       // 8s (was 3s): the backend's event loop can lag ~1s under heavy sync
       // DB aggregation; a 3s cutoff turned ordinary load spikes into
       // "disconnected" flaps (2026-09-02 modal-loop incident).
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      timeoutId = setTimeout(() => controller.abort(), 8000);
 
       const res = await fetch(`${API_BASE_URL}/events/status`, {
         signal: controller.signal,
@@ -118,12 +117,6 @@ export function useBackendHealth(options: UseBackendHealthOptions = {}) {
           }
           setStatus('disconnected');
         }
-        if (consecutiveFailureCountRef.current >= restartFallbackThreshold) {
-          logger.warn(
-            `Health check failed ${consecutiveFailureCountRef.current} times in a row — treating as restart in progress`,
-          );
-          setIsIntentionalRestart(true);
-        }
       }
     } catch (error) {
       // Determine if error is a timeout error
@@ -144,14 +137,11 @@ export function useBackendHealth(options: UseBackendHealthOptions = {}) {
         }
         setStatus('disconnected');
       }
-      if (consecutiveFailureCountRef.current >= restartFallbackThreshold) {
-        logger.warn(
-          `Health check failed ${consecutiveFailureCountRef.current} times in a row — treating as restart in progress`,
-        );
-        setIsIntentionalRestart(true);
-      }
+    } finally {
+      clearTimeout(timeoutId);
+      checkingRef.current = false;
     }
-  }, [restartFallbackThreshold]);
+  }, [disconnectThreshold]);
 
   // Single interval that adjusts based on status
   useEffect(() => {

@@ -9,17 +9,29 @@ export async function settleStoppedSessions(
   if (!executionIds.length) return;
   const rows = await prisma.agentExecution.findMany({
     where: { id: { in: executionIds }, status: { in: ['cancelled', 'canceled'] } },
-    select: { sessionId: true },
+    select: { id: true, sessionId: true },
   });
-  const sessionIds = [...new Set(rows.map((row) => row.sessionId).filter((id) => id != null))];
-  if (!sessionIds.length) return;
-  await prisma.agentSession.updateMany({
-    where: {
-      id: { in: sessionIds },
-      status: { in: ['active', 'running'] },
-      // A newer active execution still owns its session.
-      agentExecutions: { none: { status: { in: [...ACTIVE_EXECUTION_STATUSES] } } },
-    },
-    data: { status: 'cancelled' },
-  });
+  const latestBySession = new Map<number, number>();
+  for (const row of rows) {
+    if (row.sessionId != null)
+      latestBySession.set(row.sessionId, Math.max(latestBySession.get(row.sessionId) ?? 0, row.id));
+  }
+  for (const [sessionId, executionId] of latestBySession) {
+    await prisma.agentSession.updateMany({
+      where: {
+        id: { in: [sessionId] },
+        status: { in: ['pending', 'active', 'running', 'failed'] },
+        // Recover a stop whose first DB writes failed, without rewriting a newer outcome.
+        agentExecutions: {
+          none: {
+            OR: [
+              { status: { in: [...ACTIVE_EXECUTION_STATUSES] } },
+              { id: { gt: executionId }, status: { notIn: ['cancelled', 'canceled'] } },
+            ],
+          },
+        },
+      },
+      data: { status: 'cancelled' },
+    });
+  }
 }

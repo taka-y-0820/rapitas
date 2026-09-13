@@ -39,3 +39,12 @@ rapitas-frontend/bun.lock
 rapitas-desktop/bun.lock
 
 rapitas-desktop/.data/
+
+# Full command output from scripts/run-checked.cjs (task 916) — console only
+# shows a tail, the complete log lives here for later inspection.
+.verification-logs/
+
+.supervisor/
+
+# Codex CLI local config / supervisor prompt
+.codex/

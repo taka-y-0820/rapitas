@@ -38,6 +38,36 @@ beforeEach(() => {
 });
 
 describe('handleRunVerificationStatus', () => {
+  it('preserves actual command exit codes independently of the gate verdict', async () => {
+    const commands = [
+      {
+        command: 'bun test',
+        cwd: '/worktree/backend',
+        exitCode: 23,
+        signal: null,
+        status: 'exited' as const,
+      },
+    ];
+    getJobByRunIdMock.mockImplementation(async () => ({
+      runId: 'evidence',
+      taskId: 7,
+      status: 'completed',
+      startedAt: '2026-09-08T00:00:00.000Z',
+      ok: true,
+      operation: 'POST /workflow/tasks/7/run-verification',
+      worktreePath: '/worktree',
+      revision: 'abc123',
+      commands,
+    }));
+    const res = await handleRunVerificationStatus(statusCtx('7', 'evidence'));
+    expect(res).toMatchObject({
+      ok: true,
+      worktreePath: '/worktree',
+      revision: 'abc123',
+      commands,
+    });
+    expect(res).not.toHaveProperty('exitCode');
+  });
   it('running: startedAt を含めて返す', async () => {
     getJobByRunIdMock.mockImplementation(async () => ({
       runId: 'r1',

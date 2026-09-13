@@ -125,6 +125,17 @@ jobs:
           RAPITAS_DB_PROVIDER: sqlite
         run: bun run db:generate:sqlite
 
+      # Real browser processes must not compete with the parallel unit-test pool.
+      - name: Install matching browser for readiness checks
+        working-directory: rapitas-backend
+        run: node node_modules/playwright-core/cli.js install --with-deps chromium-headless-shell
+
+      - name: Verify application readiness in a real browser
+        working-directory: rapitas-backend
+        env:
+          RAPITAS_TEST_BROWSER_CHANNEL: chromium-headless-shell
+        run: bun test --isolate services/agents/verification/runtime-smoke/runtime-readiness.test.ts
+
       - name: Run full test suite (parallel, advisory)
         working-directory: rapitas-backend
         env:
@@ -456,8 +467,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          bash scripts/install-ci-system-deps.sh \
             libgtk-3-dev \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \

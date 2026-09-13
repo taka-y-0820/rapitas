@@ -12,6 +12,7 @@ import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { prisma } from '../../../../config/database';
 import { createLogger } from '../../../../config/logger';
+import { getTaskExecutionCancellationVersion } from '../../../../services/agents/task-execution-lock';
 import {
   isIsolatedWorktree,
   validateResearchReport,
@@ -51,6 +52,8 @@ export async function harvestResearchReport(
   params: HarvestResearchReportParams,
 ): Promise<string | null> {
   const { result, taskIdNum, sessionId, executionDir } = params;
+  const version = getTaskExecutionCancellationVersion(taskIdNum);
+  const current = () => getTaskExecutionCancellationVersion(taskIdNum) === version;
 
   // Harvest the agent's final message from STDOUT only. We deliberately do
   // NOT use codex's --output-last-message flag because it would require
@@ -106,15 +109,18 @@ export async function harvestResearchReport(
     if (isIsolatedWorktree(executionDir)) {
       try {
         await execAsync('git reset --hard HEAD', { cwd: executionDir, timeout: 30000 });
+        if (!current()) return null;
         await execAsync('git clean -fd', { cwd: executionDir, timeout: 30000 });
       } catch {
         // intentionally ignore - best-effort cleanup
       }
     }
+    if (!current()) return null;
     await writeBlockedTask(prisma, taskIdNum).catch(() => {});
+    if (!current()) return null;
     await prisma.agentSession
       .update({
-        where: { id: sessionId },
+        where: { id: sessionId, status: { notIn: ['cancelled', 'canceled', 'canceling'] } },
         data: {
           status: 'failed',
           completedAt: new Date(),

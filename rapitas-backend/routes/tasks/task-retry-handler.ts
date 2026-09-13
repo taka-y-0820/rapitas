@@ -9,6 +9,7 @@ import { prisma } from '../../config/database';
 import { ValidationError } from '../../middleware/error-handler';
 import { resolveImplementEntryStatus } from '../../services/workflow/verify-self-repair';
 import { recordTransition } from '../../services/workflow/transition-recorder';
+import { recordRequirementReviewRetryRequest } from '../../services/workflow/requirement-review-claim';
 
 /** Statuses a retry is allowed to act on. */
 const RETRYABLE_STATUSES = new Set(['blocked', 'failed']);
@@ -45,7 +46,11 @@ async function resolveRollbackTarget(
  * @returns The updated task, or an error body when absent. / 更新後タスク、無ければエラー
  * @throws {ValidationError} When the task is not blocked/failed. / blocked/failed以外の場合
  */
-export async function retryTask(id: number, setStatus: (code: number) => void): Promise<unknown> {
+export async function retryTask(
+  id: number,
+  setStatus: (code: number) => void,
+  retryRequestId?: string,
+): Promise<unknown> {
   const task = await prisma.task.findUnique({
     where: { id },
     select: { status: true, workflowStatus: true },
@@ -56,6 +61,15 @@ export async function retryTask(id: number, setStatus: (code: number) => void): 
   }
   if (!RETRYABLE_STATUSES.has(task.status)) {
     throw new ValidationError('blocked / failed のタスクのみ再実行できます');
+  }
+
+  if (retryRequestId) {
+    const recorded = await recordRequirementReviewRetryRequest(prisma, id, retryRequestId);
+    if (recorded === 'duplicate') {
+      // The original request already owns any lifecycle mutation/evaluation.
+      // Return current state without recording another transition.
+      return prisma.task.findUnique({ where: { id } });
+    }
   }
 
   const rolledBackTo = await resolveRollbackTarget(id, task.workflowStatus);

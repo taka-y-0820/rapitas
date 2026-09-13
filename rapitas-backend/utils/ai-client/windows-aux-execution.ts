@@ -47,7 +47,6 @@ export function createWindowsAuxExecutionManager(
       let confirmation: Promise<void> | undefined;
       let completion: Promise<void> | undefined;
       const finish = (stop: boolean): Promise<void> => {
-        liveTokens.delete(token);
         if (stop) log.info({ executionToken: token }, 'Auxiliary CLI stop requested');
         // The exact launcher handle also covers cancellation before job assignment.
         // Never resolve a discovered PID to send this signal.
@@ -76,7 +75,11 @@ export function createWindowsAuxExecutionManager(
             { executionToken: token, stopped: stop },
             'Auxiliary CLI ownership scope verified empty; hold released',
           );
-        })();
+        })().finally(() => {
+          // Recovery must not race this process's own final reconciliation.
+          // Failed cleanup becomes recoverable only after its owner settles.
+          liveTokens.delete(token);
+        });
         return completion;
       };
       return {

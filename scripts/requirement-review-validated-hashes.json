@@ -1,0 +1,21 @@
+{
+  "rapitas-backend/prisma/schema/core.prisma": "E1E0DD66BB2F9990095798E8F7AC9A8ABC48DE0B776D9F13A7292F1C53CA56C1",
+  "rapitas-backend/prisma/schema/workflow.prisma": "64295D5F06A8B51204AE023A1059838445C540BCCC5C04FF675202041D8D194D",
+  "rapitas-backend/prisma/schema.desktop/core.prisma": "E1E0DD66BB2F9990095798E8F7AC9A8ABC48DE0B776D9F13A7292F1C53CA56C1",
+  "rapitas-backend/prisma/schema.desktop/workflow.prisma": "E0A613AD460134019A1F8CDA67491713564BEE6D755D7EBB034CC4FC5DD372A7",
+  "rapitas-backend/prisma/schema-changes/20260911010000_add_requirement_review_claims.postgresql.sql": "4DA07BA41F38405F7B2A5FA8CC6F23944CF503EA0CCEAB488446B44D1AF03F23",
+  "rapitas-backend/prisma/schema-changes/20260911010000_add_requirement_review_claims.sqlite.sql": "5C6F8315577B5EC3B6FC607DEFBCD6849FE001B033EC88F2BA6720A24810E08D",
+  "rapitas-backend/routes/tasks/task-retry-handler.ts": "D0E557791FAE3AA5231CB01F365A186CAEB7C39081A6D958221F7F05095B99A7",
+  "rapitas-backend/routes/tasks/task-retry-handler.test.ts": "5F4DAA043A28F04ED7523845B39FF98B2EC3AAD52803285092968C29E9590142",
+  "rapitas-backend/routes/tasks/tasks.ts": "383A3D3B5D37601B0CC20E3EF63625753C6C3F6A725FDD9C0CB6FBD7D384D971",
+  "rapitas-backend/services/workflow/queue-skip-policy.ts": "C0E0335802EE57C0CF939E33CF808DA270A22BDD8F10F2ED4CF16E7F3C7F7117",
+  "rapitas-backend/services/workflow/queue-skip-policy.test.ts": "B15129A45A5817F73004965F8E960FD66ED0B15444FA6D4F04D215D9983A48B5",
+  "rapitas-backend/services/workflow/requirement-replan-commit.ts": "6FBC31D5AE68B75D1B4C308440329542EEB686DABA77A58D6E28311509C6D70F",
+  "rapitas-backend/services/workflow/requirement-replan-commit.test.ts": "13E4FC51A0C644D07919755DA51859B74B1458BC69E55DFB7338B3B76BC90142",
+  "rapitas-backend/services/workflow/requirement-replan-service.ts": "ABCE1C0F11F3A6C5A862C5E3C7442D473BE78EFF8CB532D8CE398FE0CE9B3282",
+  "rapitas-backend/services/workflow/requirement-review-claim.ts": "589F85CEE939D1F4364C00DC13A6B169A866667ABF0A1A7BF1D064055116BCB0",
+  "rapitas-backend/services/workflow/requirement-review-claim.test.ts": "B4DC4E22066A2C66711C3DA30071560375E193E43BDD665C33A3FB502AECA32C",
+  "rapitas-backend/scripts/backfill-requirement-review-claim.ts": "B731A688904B790E099A840A08585B233532E32E37678F5F8BF190FD45D71BE3",
+  "rapitas-backend/scripts/apply-requirement-review-schema-sqlite.ts": "15FAF472E1DF31B7075490A013A7A0B45F83AB6E5D34D2002E7383249585548F",
+  "rapitas-backend/scripts/sqlite-online-backup.ts": "9F5F3C9D6336AA69F93F1F3124C398773D4F4EE1B466E98E611A306DD60C58AA"
+}

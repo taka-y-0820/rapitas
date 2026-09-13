@@ -11,6 +11,7 @@ import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createLogger } from '../../../../config/logger';
 import { isIsolatedWorktree } from './research-output-utils';
+import { getTaskExecutionCancellationVersion } from '../../../../services/agents/task-execution-lock';
 
 // Async git so the post-execution revert never blocks the single-threaded event
 // loop. Synchronous execSync('git reset/clean', timeout 30s) here would freeze
@@ -35,6 +36,8 @@ export async function revertResearchDiffIfDirty(
   executionDir: string,
   taskIdNum: number,
 ): Promise<boolean> {
+  const version = getTaskExecutionCancellationVersion(taskIdNum);
+  const current = () => getTaskExecutionCancellationVersion(taskIdNum) === version;
   let revertedDiff = false;
   try {
     let isClean = true;
@@ -44,12 +47,14 @@ export async function revertResearchDiffIfDirty(
     } catch {
       isClean = false;
     }
+    if (!current()) return false;
     // Untracked files don't show up in diff --quiet, check separately.
     const { stdout: untracked } = await execAsync('git ls-files --others --exclude-standard', {
       cwd: executionDir,
       encoding: 'utf8',
       timeout: 10000,
     });
+    if (!current()) return false;
     if (untracked.trim().length > 0) {
       isClean = false;
     }
@@ -64,6 +69,7 @@ export async function revertResearchDiffIfDirty(
     } else if (!isClean) {
       revertedDiff = true;
       await execAsync('git reset --hard HEAD', { cwd: executionDir, timeout: 30000 });
+      if (!current()) return revertedDiff;
       await execAsync('git clean -fd', { cwd: executionDir, timeout: 30000 });
       log.warn(
         { taskId: taskIdNum, untrackedSize: untracked.length },

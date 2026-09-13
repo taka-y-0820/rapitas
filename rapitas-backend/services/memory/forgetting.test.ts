@@ -7,7 +7,7 @@
  * outcome-gated boost/penalize deltas. lastAccessedAt must NOT feed the
  * formula (that compounded decay for boosted entries).
  */
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, setSystemTime } from 'bun:test';
 
 type Entry = {
   id: number;
@@ -169,19 +169,26 @@ describe('runForgettingSweep — decay formula & stage transitions', () => {
   });
 
   test('boundary: decayScore exactly 0.5 stays active (>= 0.5 is active)', async () => {
-    entries = [
-      {
-        id: 5,
-        decayScore: 0.5,
-        confidence: 1,
-        lastAccessedAt: new Date(),
-        lastDecayAt: new Date(),
-        forgettingStage: 'active',
-        pinnedUntil: null,
-      },
-    ];
-    await runForgettingSweep();
-    expect(updateCalls[0].data.forgettingStage).toBe('active');
+    // This is the zero-elapsed boundary. Real milliseconds between setup and
+    // the sweep legitimately decay the value below 0.5 on a loaded CI runner.
+    setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    try {
+      entries = [
+        {
+          id: 5,
+          decayScore: 0.5,
+          confidence: 1,
+          lastAccessedAt: new Date(),
+          lastDecayAt: new Date(),
+          forgettingStage: 'active',
+          pinnedUntil: null,
+        },
+      ];
+      await runForgettingSweep();
+      expect(updateCalls[0].data.forgettingStage).toBe('active');
+    } finally {
+      setSystemTime();
+    }
   });
 
   test('pinned entries (pinnedUntil in the future) are excluded from processing', async () => {

@@ -10,27 +10,19 @@ import { withTaskLifecycleLock } from '../../../services/workflow/task-lifecycle
 import { prisma } from '../../../config';
 import { recordTransition } from '../../../services/workflow/transition-recorder';
 import type { TransitionActor } from '../../../services/workflow/transition-recorder';
-import { ValidationError, NotFoundError } from '../../../middleware/error-handler';
+import { ValidationError, NotFoundError, ConflictError } from '../../../middleware/error-handler';
 import { createLogger } from '../../../config';
 import type { WorkflowStatus } from '../../../services/workflow/workflow-types';
-import { resolveTaskWorkflowState } from '../../../services/task/task-resolver';
 import {
   archiveWorkflowFile,
   readWorkflowFile,
   writeWorkflowFile,
 } from '../../../services/workflow/workflow-file-utils';
-import {
-  triggerReExecutionAfterAnswer,
-  triggerRedispatchAfterResume,
-} from './workflow-handlers-resume-redispatch';
+import { triggerReExecutionAfterAnswer } from './workflow-handlers-resume-redispatch';
+import { applyQuestionAnswerByKind } from './workflow-handlers-resume-dispatch';
+import type { QuestionKind } from '../../../services/workflow/question-kind-resolver';
 
 const log = createLogger('routes:workflow:resume');
-
-interface ResumeContext {
-  params: { taskId: string };
-  body?: unknown;
-  set: { status?: number };
-}
 
 interface AnswerContext {
   params: { taskId: string };
@@ -46,7 +38,7 @@ const ANSWER_SOURCE_LABELS: Record<string, string> = {
 };
 
 /** One question's audit record: which option (if any) the user picked. */
-interface AnswerSelection {
+export interface AnswerSelection {
   questionId: string;
   selectedKey: string | null;
 }
@@ -106,7 +98,7 @@ export interface ApplyIntakeAnswerParams {
  * @returns The task id and the status it was reset to. / 反映後の状態
  * @throws {NotFoundError} タスクが見つからない場合
  */
-async function applyIntakeQuestionAnswerLocked(params: ApplyIntakeAnswerParams): Promise<{
+export async function applyIntakeQuestionAnswerLocked(params: ApplyIntakeAnswerParams): Promise<{
   taskId: number;
   ok: true;
   toStatus: WorkflowStatus;
@@ -233,6 +225,8 @@ export async function handleAnswerWorkflowQuestion({
   taskId: number;
   ok: true;
   toStatus: WorkflowStatus;
+  /** Kind resolved for this answer — surfaced for observability; the UI does not parse it. / 解決されたkind */
+  resolvedKind: QuestionKind;
 }> {
   const taskId = parseInt(params.taskId, 10);
   if (Number.isNaN(taskId)) {
@@ -286,158 +280,22 @@ export async function handleAnswerWorkflowQuestion({
   const selections = parseSelections((body as { selections?: unknown })?.selections);
 
   try {
-    return await applyIntakeQuestionAnswer({
+    const result = await applyQuestionAnswerByKind({
       taskId,
       answer,
       actor: 'user',
       sourceLabel: ANSWER_SOURCE_LABELS[answerSource],
       selections,
     });
+    return {
+      taskId: result.taskId,
+      ok: true,
+      toStatus: result.toStatus,
+      resolvedKind: result.kind,
+    };
   } catch (err) {
     if (err instanceof NotFoundError) set.status = 404;
-    throw err;
-  }
-}
-
-/** Input to {@link applyResumeFromQuestionAnswer}. */
-export interface ApplyResumeAnswerParams {
-  taskId: number;
-  /** Who is recorded as having resolved the pause (HTTP callers always pass 'user'). / 記録するactor */
-  actor: TransitionActor;
-  /** Extra fields merged into the recorded transition's metadata. / 追加メタデータ */
-  extraMetadata?: Record<string, unknown>;
-}
-
-/**
- * Core logic to resume an `awaiting_question` task back to the status it was
- * in before the question was raised.
- *
- * 復帰先 status は `WorkflowTransition` の最新 `to_status='awaiting_question'`
- * 行の `metadata.previousStatus` から取得する。metadata に値が無い古い遷移は
- * `in_progress` を fallback に使う。question.md は archive しない — 実装フェーズ発
- * の質問は plan.md が生きたままの状態で再開する必要があるため。
- *
- * Transport-agnostic on purpose: {@link handleResumeFromQuestion} (HTTP,
- * `actor:'user'`) and the stale-question auto-answer heal pass (in-process,
- * `actor:'system'`) both call this directly.
- *
- * @param params - Resume request. / 再開リクエスト
- * @returns 新しい workflowStatus と復帰先の根拠 / 復帰した状態オブジェクト
- * @throws {ValidationError} status が awaiting_question でない場合
- * @throws {NotFoundError} タスクが見つからない場合
- */
-async function applyResumeFromQuestionAnswerLocked(params: ApplyResumeAnswerParams): Promise<{
-  taskId: number;
-  fromStatus: WorkflowStatus;
-  toStatus: WorkflowStatus;
-  source: 'transition_metadata' | 'fallback';
-}> {
-  const { taskId, actor, extraMetadata } = params;
-
-  const task = await resolveTaskWorkflowState(taskId);
-  if (!task) {
-    throw new NotFoundError('Task not found');
-  }
-
-  if (task.workflowStatus !== 'awaiting_question') {
-    throw new ValidationError(
-      `Cannot resume: task ${taskId} is in status "${task.workflowStatus}", expected "awaiting_question"`,
-    );
-  }
-
-  // 直近の awaiting_question 遷移ログから previousStatus を読み出す
-  const lastWaitingTransition = await prisma.workflowTransition.findFirst({
-    where: { taskId, toStatus: 'awaiting_question' },
-    orderBy: { createdAt: 'desc' },
-    select: { metadata: true, fromStatus: true },
-  });
-
-  let resumeStatus: WorkflowStatus = 'in_progress';
-  let source: 'transition_metadata' | 'fallback' = 'fallback';
-  if (lastWaitingTransition) {
-    // Prisma's Json field is typed as string|number|boolean|object|array. Narrow via unknown.
-    const meta = lastWaitingTransition.metadata as unknown as Record<string, unknown> | null;
-    const prev = meta?.previousStatus;
-    if (typeof prev === 'string' && prev !== 'awaiting_question') {
-      resumeStatus = prev as WorkflowStatus;
-      source = 'transition_metadata';
-    } else if (
-      lastWaitingTransition.fromStatus &&
-      lastWaitingTransition.fromStatus !== 'awaiting_question'
-    ) {
-      // metadata 欠落でも fromStatus が残っていれば優先する
-      resumeStatus = lastWaitingTransition.fromStatus as WorkflowStatus;
-      source = 'transition_metadata';
-    }
-  }
-
-  log.info(
-    `[Workflow:Resume] Task ${taskId}: awaiting_question → ${resumeStatus} (source=${source}, actor=${actor})`,
-  );
-
-  await prisma.task.update({
-    where: { id: taskId },
-    data: { workflowStatus: resumeStatus, updatedAt: new Date() },
-  });
-
-  // Status-desync backstop (task #804; mirrors the executor epilogue's #706
-  // fix): this handler advances workflowStatus but left task.status alone,
-  // so a task whose status had reverted to 'todo' (stale-heartbeat lease
-  // sweep) stayed desynced until the next dispatch. Conditional so a
-  // concurrent 'blocked' set by another actor is never clobbered.
-  await prisma.task.updateMany({
-    where: { id: taskId, status: 'todo' },
-    data: { status: 'in-progress' },
-  });
-
-  await recordTransition({
-    taskId,
-    fromStatus: 'awaiting_question',
-    toStatus: resumeStatus,
-    actor,
-    cause: 'question_resolved',
-    metadata: { source, ...(extraMetadata ?? {}) },
-  });
-
-  // Errors are logged inside triggerRedispatchAfterResume and never thrown —
-  // a failed nudge must not fail this response (the resume itself is already
-  // durably recorded above).
-  await triggerRedispatchAfterResume(taskId);
-
-  return {
-    taskId,
-    fromStatus: 'awaiting_question',
-    toStatus: resumeStatus,
-    source,
-  };
-}
-
-/**
- * HTTP entry point for {@link applyResumeFromQuestionAnswer}: validates
- * taskId and maps thrown errors to the response status, then delegates.
- *
- * @param ctx - Elysia ハンドラコンテキスト
- * @returns 新しい workflowStatus と復帰先の根拠 / 復帰した状態オブジェクト
- * @throws {ValidationError} taskId が不正、または status が awaiting_question でない場合
- * @throws {NotFoundError} タスクが見つからない場合
- */
-export async function handleResumeFromQuestion({ params, set }: ResumeContext): Promise<{
-  taskId: number;
-  fromStatus: WorkflowStatus;
-  toStatus: WorkflowStatus;
-  source: 'transition_metadata' | 'fallback';
-}> {
-  const taskId = parseInt(params.taskId, 10);
-  if (Number.isNaN(taskId)) {
-    set.status = 400;
-    throw new ValidationError('Invalid taskId');
-  }
-
-  try {
-    return await applyResumeFromQuestionAnswer({ taskId, actor: 'user' });
-  } catch (err) {
-    if (err instanceof NotFoundError) set.status = 404;
-    else if (err instanceof ValidationError) set.status = 400;
+    else if (err instanceof ConflictError) set.status = 409;
     throw err;
   }
 }
@@ -448,8 +306,13 @@ export function applyIntakeQuestionAnswer(
   return withTaskLifecycleLock(params.taskId, () => applyIntakeQuestionAnswerLocked(params));
 }
 
-export function applyResumeFromQuestionAnswer(
-  params: Parameters<typeof applyResumeFromQuestionAnswerLocked>[0],
-) {
-  return withTaskLifecycleLock(params.taskId, () => applyResumeFromQuestionAnswerLocked(params));
-}
+// Resume (execution_continuation/completion_confirmation) applier + its HTTP
+// handler now live in workflow-handlers-resume-continuation.ts (task 902,
+// split to stay under the file-size ratchet). Re-exported here so existing
+// importers of this module keep working unchanged.
+export {
+  applyResumeFromQuestionAnswerLocked,
+  applyResumeFromQuestionAnswer,
+  handleResumeFromQuestion,
+  type ApplyResumeAnswerParams,
+} from './workflow-handlers-resume-continuation';

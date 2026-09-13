@@ -1,5 +1,6 @@
 import { beforeEach, expect, mock, test } from 'bun:test';
 let configured = true;
+let readySelector: string | undefined = '[data-app-ready="true"]';
 let healthy = true;
 let logs: string[] = [];
 let browserAvailable = true;
@@ -30,6 +31,7 @@ mock.module('./runtime-config', () => ({
             healthPath: '/',
             readyTimeoutMs: 100,
             checkPaths: ['/'],
+            readySelector,
           },
         }
       : null,
@@ -50,6 +52,7 @@ mock.module('./browser-smoke', () => ({
 const { runRuntimeSmokeCheck } = await import('./runtime-check');
 beforeEach(() => {
   configured = true;
+  readySelector = '[data-app-ready="true"]';
   healthy = true;
   logs = [];
   browserAvailable = true;
@@ -64,6 +67,15 @@ test('unconfigured projects remain not applicable', async () => {
 });
 test('completed browser verification succeeds and cleans up', async () => {
   expect(await runRuntimeSmokeCheck('/success')).toMatchObject({ ran: true, ok: true });
+  expect(stop).toHaveBeenCalledTimes(1);
+});
+test('HTTP and browser checks without an application readiness contract remain unverified', async () => {
+  readySelector = undefined;
+  expect(await runRuntimeSmokeCheck('/no-readiness')).toMatchObject({
+    ran: true,
+    ok: false,
+    unverifiable: true,
+  });
   expect(stop).toHaveBeenCalledTimes(1);
 });
 test('app startup failure remains a failed executed check', async () => {

@@ -5,7 +5,7 @@
  * event emission) and setupOutputHandler (streaming output → DB batching,
  * idea-marker extraction, callback/emit error isolation).
  */
-import { describe, test, expect, mock } from 'bun:test';
+import { describe, test, expect, mock, afterEach } from 'bun:test';
 
 // ── Module-level mocks (before dynamic import) ─────────────────────────────
 
@@ -97,7 +97,7 @@ function makeOutputCtx(overrides: Partial<OutputHandlerContext> = {}): OutputHan
   } as unknown as ActiveAgentInfo;
   return {
     prisma: {
-      agentExecution: { update: mock(async () => ({})) },
+      agentExecution: { updateMany: mock(async () => ({})) },
     } as unknown as OutputHandlerContext['prisma'],
     executionId: 1,
     sessionId: 10,
@@ -110,12 +110,22 @@ function makeOutputCtx(overrides: Partial<OutputHandlerContext> = {}): OutputHan
   };
 }
 
+const cleanupManagers: LogChunkManager[] = [];
+afterEach(async () => {
+  await Promise.all(cleanupManagers.splice(0).map((manager) => manager.cleanup()));
+});
 function makeLogManager(): LogChunkManager {
-  return {
+  const handlers: Array<() => Promise<void>> = [];
+  const manager = {
     addChunk: mock(() => {}),
-    cleanup: mock(async () => {}),
+    registerCleanup: (handler: () => Promise<void>) => handlers.push(handler),
+    cleanup: async () => {
+      await Promise.all(handlers.map((handler) => handler()));
+    },
     flushLogChunks: mock(async () => {}),
   } as unknown as LogChunkManager;
+  cleanupManagers.push(manager);
+  return manager;
 }
 
 // ── setupQuestionDetectedHandler ──────────────────────────────────────────
@@ -223,7 +233,9 @@ describe('setupQuestionDetectedHandler', () => {
       throw new Error('db down');
     });
     const ctx = makeQuestionCtx({
-      prisma: { agentExecution: { update } } as unknown as QuestionHandlerContext['prisma'],
+      prisma: {
+        agentExecution: { updateMany: update },
+      } as unknown as QuestionHandlerContext['prisma'],
     });
     const { agent, getQuestionHandler } = makeFakeAgent();
     setupQuestionDetectedHandler(agent, ctx);
@@ -268,7 +280,9 @@ describe('setupOutputHandler', () => {
   test('non-empty error output is saved to the DB immediately', async () => {
     const update = mock(async () => ({}));
     const ctx = makeOutputCtx({
-      prisma: { agentExecution: { update } } as unknown as OutputHandlerContext['prisma'],
+      prisma: {
+        agentExecution: { updateMany: update },
+      } as unknown as OutputHandlerContext['prisma'],
     });
     const logManager = makeLogManager();
     const { agent, getOutputHandler } = makeFakeAgent();
@@ -284,7 +298,9 @@ describe('setupOutputHandler', () => {
   test('whitespace-only error output does not trigger the immediate DB write', async () => {
     const update = mock(async () => ({}));
     const ctx = makeOutputCtx({
-      prisma: { agentExecution: { update } } as unknown as OutputHandlerContext['prisma'],
+      prisma: {
+        agentExecution: { updateMany: update },
+      } as unknown as OutputHandlerContext['prisma'],
     });
     const logManager = makeLogManager();
     const { agent, getOutputHandler } = makeFakeAgent();
@@ -351,10 +367,12 @@ describe('setupOutputHandler', () => {
     expect(extractIdeaMarkers).not.toHaveBeenCalled();
   });
 
-  test('periodically persists the accumulated output once the batch interval elapses', async () => {
+  test('persists each burst after the batch interval even without another chunk', async () => {
     const update = mock(async () => ({}));
     const ctx = makeOutputCtx({
-      prisma: { agentExecution: { update } } as unknown as OutputHandlerContext['prisma'],
+      prisma: {
+        agentExecution: { updateMany: update },
+      } as unknown as OutputHandlerContext['prisma'],
     });
     const logManager = makeLogManager();
     const { agent, getOutputHandler } = makeFakeAgent();
@@ -364,11 +382,16 @@ describe('setupOutputHandler', () => {
     expect(update).not.toHaveBeenCalled();
 
     await new Promise((resolve) => setTimeout(resolve, 250));
-    await getOutputHandler()('second chunk', false);
-
     expect(update).toHaveBeenCalledTimes(1);
-    const call = update.mock.calls[0][0] as { data: { output: string } };
-    expect(call.data.output).toBe('first chunksecond chunk');
+    expect((update.mock.calls[0][0] as { data: { output: string } }).data.output).toBe(
+      'first chunk',
+    );
+    await getOutputHandler()('second chunk', false);
+    await logManager.cleanup();
+    expect(update).toHaveBeenCalledTimes(2);
+    expect((update.mock.calls[1][0] as { data: { output: string } }).data.output).toBe(
+      'first chunksecond chunk',
+    );
   });
 
   test('a synchronous throw inside the pipeline is caught by the outer guard', async () => {
@@ -383,5 +406,21 @@ describe('setupOutputHandler', () => {
     setupOutputHandler(agent, ctx, logManager);
 
     await expect(getOutputHandler()('hello', false)).resolves.toBeUndefined();
+  });
+});
+
+test('persists the final output burst even when no later output arrives', async () => {
+  const update = mock(async () => ({}));
+  const ctx = makeOutputCtx({
+    prisma: { agentExecution: { updateMany: update } } as unknown as OutputHandlerContext['prisma'],
+  });
+  const { agent, getOutputHandler } = makeFakeAgent();
+  setupOutputHandler(agent, ctx, makeLogManager());
+  await getOutputHandler()('Starting execution\n', false);
+  await getOutputHandler()('Process PID: 12345\n', false);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  expect(update).toHaveBeenCalledWith({
+    where: { id: ctx.executionId, status: { in: ['running', 'waiting_for_input'] } },
+    data: { output: 'Starting execution\nProcess PID: 12345\n' },
   });
 });

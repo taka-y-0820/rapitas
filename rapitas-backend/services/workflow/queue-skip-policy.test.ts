@@ -13,6 +13,8 @@ describe('isNonRunnableTaskSkip', () => {
       'Max retries (3) exceeded — last error: タスクはブロック中のため自動実行をスキップしました',
       'ステータス "awaiting_question" では次のフェーズを実行できません',
       'このタスクはワークフロー無効モードのため自動実行(フェーズ進行)の対象外です。手動実行してください。',
+      'Requirement replan review held: requires_human:invalid_json',
+      'Requirement replan review held: review_in_progress',
     ];
     for (const s of skips) expect(isNonRunnableTaskSkip(s)).toBe(true);
   });

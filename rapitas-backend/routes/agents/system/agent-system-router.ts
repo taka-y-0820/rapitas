@@ -51,6 +51,7 @@ export async function getAgentSystemSnapshot(): Promise<{
   status: string;
   isShuttingDown: boolean;
   activeExecutions: number;
+  activeExecutionsDegraded: boolean;
   runningExecutions: number;
   interruptedExecutions: number;
   interruptedExecutionsHistoryCount: number;
@@ -59,26 +60,15 @@ export async function getAgentSystemSnapshot(): Promise<{
   activePreviewCount: number;
   serverTime: string;
 }> {
-  // NOTE: Sync getActiveExecutionCount() returns a cached value (0 right after startup).
-  // Use the async version when available to get the accurate count from the worker.
-  // The worker subprocess isn't ready for the first few seconds after every
-  // restart — sendIPCRequest throws 'Worker not ready' during that window, which
-  // is an expected, transient condition (this snapshot is polled by the frontend
-  // on a timer, so it always lands in that window right after a restart), not a
-  // real failure. Fall back to the cached sync count instead of letting it
-  // surface as an ERROR-level "Unhandled error" on every single restart.
-  const workerMgr = orchestrator as unknown as {
-    getActiveExecutionCountAsync?: () => Promise<number>;
-  };
-  let activeExecutions: number;
+  // One deduplicated snapshot of both execution owners. Reuse it below so
+  // visibility and interrupted filtering cannot observe different IPC reads.
+  let activeExecutionIds: number[] | null = null;
   try {
-    activeExecutions = workerMgr.getActiveExecutionCountAsync
-      ? await workerMgr.getActiveExecutionCountAsync()
-      : orchestrator.getActiveExecutionCount?.() || 0;
+    activeExecutionIds = await getCurrentActiveExecutionIds();
   } catch (err) {
-    log.debug({ err }, '[agent-system] Active count unavailable (worker likely still starting)');
-    activeExecutions = orchestrator.getActiveExecutionCount?.() || 0;
+    log.debug({ err }, '[agent-system] Live execution ownership unavailable');
   }
+  const activeExecutionsDegraded = activeExecutionIds === null;
   const isShuttingDown = orchestrator.isInShutdown();
 
   // Count running/pending executions, but EXCLUDE orphaned rows whose task is
@@ -92,6 +82,8 @@ export async function getAgentSystemSnapshot(): Promise<{
       session: { config: { task: { status: { in: ['todo', 'in-progress'] } } } },
     },
   });
+
+  const activeExecutions = activeExecutionIds?.length ?? runningExecutions;
 
   // Raw count of every `interrupted` row regardless of whether its task can
   // still be resumed — kept as its own field (never removed/renamed) so
@@ -125,7 +117,7 @@ export async function getAgentSystemSnapshot(): Promise<{
         },
       },
     });
-    const activeExecutionIds = await getCurrentActiveExecutionIds();
+    if (activeExecutionIds === null) throw new Error('Live execution ownership unavailable');
     const liveTaskIds = await getLiveTaskIdsForActiveExecutions(activeExecutionIds);
     interruptedExecutions = interruptedRows.filter((row) =>
       isResumableInterrupted({ status: 'interrupted' }, row.session.config?.task, liveTaskIds),
@@ -147,6 +139,7 @@ export async function getAgentSystemSnapshot(): Promise<{
   // because the raw-count fallback happens to be 0 (task 913 counter-example).
   let status = 'healthy';
   if (isShuttingDown) status = 'shutting_down';
+  else if (activeExecutionsDegraded) status = 'active_executions_unknown';
   else if (activeExecutions > 0) status = 'busy';
   else if (interruptedExecutionsDegraded) status = 'interrupted_executions_unknown';
   else if (interruptedExecutions > 0) status = 'interrupted_executions';
@@ -155,6 +148,7 @@ export async function getAgentSystemSnapshot(): Promise<{
     status,
     isShuttingDown,
     activeExecutions,
+    activeExecutionsDegraded,
     runningExecutions,
     interruptedExecutions,
     interruptedExecutionsHistoryCount,

@@ -13,6 +13,7 @@
  * the shell wrapper is enough to cover tsc and the bun workers it starts.
  */
 import type { ChildProcess, SpawnOptions } from 'child_process';
+import { observeCommand } from './command-evidence';
 import { LOW_PRIORITY, lowerProcessPriority, spawnLowPriority } from '../process-priority';
 
 /** node:os priority for verification children (Windows BELOW_NORMAL_PRIORITY_CLASS). */
@@ -47,7 +48,9 @@ export function lowerVerificationPriority(
  * @returns The child process. / 子プロセス
  */
 export function spawnQuiet(command: string, options: SpawnOptions): ChildProcess {
-  return spawnLowPriority(command, [], options, 'RAPITAS_VERIFY_QUIET');
+  const child = spawnLowPriority(command, [], options, 'RAPITAS_VERIFY_QUIET');
+  observeCommand(command, options, child);
+  return child;
 }
 
 /**
