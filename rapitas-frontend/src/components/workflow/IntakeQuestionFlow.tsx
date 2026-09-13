@@ -61,7 +61,7 @@ export function IntakeQuestionFlow({
   return (
     <div className="space-y-3">
       {intro && (
-        <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+        <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-800/60 dark:text-zinc-200">
           <MarkdownView content={intro} />
         </div>
       )}
@@ -91,7 +91,7 @@ export function IntakeQuestionFlow({
               i < idx
                 ? 'bg-green-400 dark:bg-green-500'
                 : i === idx
-                  ? 'bg-amber-500'
+                  ? 'bg-indigo-500'
                   : 'bg-zinc-200 dark:bg-zinc-700'
             }`}
           />
@@ -99,6 +99,9 @@ export function IntakeQuestionFlow({
       </div>
 
       <WorkflowQuestionPanel
+        // Remount per question so selection state never leaks between two
+        // questions that happen to share the same text.
+        key={idx}
         // taskId is unused by the panel for intake answers (the parent handles POST).
         question={{ taskId: 0, text: current.text, options: current.options }}
         submitting={submitting && isLast}

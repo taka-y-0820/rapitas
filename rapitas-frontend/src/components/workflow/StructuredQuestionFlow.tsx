@@ -120,7 +120,7 @@ export function StructuredQuestionFlow({
       {body && (
         <div
           data-testid="structured-question-body"
-          className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-900/20 dark:text-amber-200"
+          className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-800/60 dark:text-zinc-200"
         >
           <MarkdownView content={body} />
         </div>
@@ -151,14 +151,18 @@ export function StructuredQuestionFlow({
               i < idx
                 ? 'bg-green-400 dark:bg-green-500'
                 : i === idx
-                  ? 'bg-amber-500'
+                  ? 'bg-indigo-500'
                   : 'bg-zinc-200 dark:bg-zinc-700'
             }`}
           />
         ))}
       </div>
 
+      {/* key={idx}: the panel resets its selection on question TEXT change
+          only, so two consecutive questions with identical summaries kept the
+          previous choice. Remounting per index makes the reset unconditional. */}
       <WorkflowQuestionPanel
+        key={idx}
         question={{
           taskId: 0,
           text: current.summary,

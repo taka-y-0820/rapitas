@@ -168,3 +168,29 @@ describe('WorkflowViewer — handleAnswerIntakeQuestion applies the resolved toS
     vi.unstubAllGlobals();
   });
 });
+
+describe('WorkflowViewer — answered question no longer renders the answer form', () => {
+  beforeEach(() => {
+    mockRefetch.mockClear();
+    mockApplyResolvedQuestionStatus.mockClear();
+    mockSetActiveTab.mockClear();
+  });
+
+  it('renders the form while paused on the question', () => {
+    armHook('awaiting_question', QUESTION_MD);
+    render(<WorkflowViewer taskId={1} workflowStatus="awaiting_question" />);
+    expect(screen.getByText('questionPanel.title')).toBeInTheDocument();
+    expect(mockSetActiveTab).toHaveBeenCalledWith('question');
+  });
+
+  it('hides the form once the workflow resumed even though question.md still exists', () => {
+    // execution_continuation / completion_confirmation answers append to
+    // question.md and resume without archiving the file.
+    armHook('in_progress', QUESTION_MD + '\n\n## 回答\n続けてください');
+    render(<WorkflowViewer taskId={1} workflowStatus="in_progress" />);
+    expect(screen.queryByText('questionPanel.title')).toBeNull();
+    expect(screen.queryByText('questionPanel.submitAndResume')).toBeNull();
+    // The tab is not auto-selected for a historical question.
+    expect(mockSetActiveTab).not.toHaveBeenCalledWith('question');
+  });
+});
