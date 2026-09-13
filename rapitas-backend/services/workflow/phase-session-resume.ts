@@ -150,7 +150,12 @@ export async function resolvePhaseResumeSessionId(q: PhaseResumeQuery): Promise<
           { taskId: q.taskId, role: q.role, sessionId, failedExecutionId: failedResume.id },
           '[phase-resume] Prior resume of this session failed — cold-starting',
         );
-        continue;
+        // `return`, not `continue`: the older transcripts for this role are
+        // the SAME conversation lineage and at least as large, so falling
+        // through to them re-sends the too-long prompt (task 901, 2026-09-13:
+        // three consecutive "Prompt is too long" resumes on successive
+        // sessions before this guard fired for each).
+        return null;
       }
       log.info(
         { taskId: q.taskId, role: q.role, sessionId, previousExecutionId: candidate.id },

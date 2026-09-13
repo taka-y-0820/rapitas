@@ -168,6 +168,34 @@ export async function runPhaseEpilogue(params: {
   if (transition.outputFile) {
     let fileContent = await readWorkflowFile(taskId, transition.outputFile);
 
+    // A FAILED run may only be rescued by an artifact IT wrote. Task 901
+    // (2026-09-13): the economy-tier verifier died on "Prompt is too long"
+    // with 182 chars of output, the previous verify.md (⚠️ against an older
+    // plan) was picked up here as this phase's output, "treated as success",
+    // re-validated, and bounced the task into another self-repair round —
+    // a loop with no new verification in it.
+    if (!result.success && fileContent) {
+      const artifact = await prisma.workflowFile
+        .findFirst({
+          where: { taskId, fileType: transition.outputFile },
+          select: { updatedAt: true },
+        })
+        .catch(() => null);
+      if (artifact && artifact.updatedAt.getTime() < phaseStartedAt.getTime()) {
+        log.warn(
+          {
+            taskId,
+            role: transition.role,
+            outputFile: transition.outputFile,
+            artifactUpdatedAt: artifact.updatedAt,
+            phaseStartedAt,
+          },
+          '[WorkflowCLIExecutor] Agent failed and the existing artifact predates this phase — not reusing it',
+        );
+        fileContent = null;
+      }
+    }
+
     // Fallback: extract Markdown from raw output when agent did not save via API
     if (!fileContent && result.output && result.output.trim().length > 100) {
       // NOTE: A critic rejection archives the artifact, which makes
