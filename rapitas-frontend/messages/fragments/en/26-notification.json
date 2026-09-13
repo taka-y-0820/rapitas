@@ -3,6 +3,14 @@
     "open": "Open",
     "close": "Close",
     "markMemoDone": "Mark done",
+    "questionToast": {
+      "hint": "Pick an option to answer and resume the workflow",
+      "recommended": "Recommended",
+      "answerInApp": "Answer in app",
+      "moreQuestions": "{count} questions are waiting. Answer them in the app.",
+      "answered": "Answer sent. Resuming the workflow.",
+      "failed": "Could not send the answer. Please answer from the app."
+    },
     "justNow": "Just now",
     "minutesAgo": "{count} minutes ago",
     "hoursAgo": "{count} hours ago",

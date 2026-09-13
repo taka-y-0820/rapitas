@@ -22,19 +22,31 @@ pub struct PendingToast {
     pub ready: std::sync::atomic::AtomicBool,
 }
 
-/// Position the toast at the bottom-right of the primary monitor.
+/// Tallest the toast may grow when a question's options are shown inline.
+const TOAST_MAX_HEIGHT: f64 = 420.0;
+
+/// Position the toast at the bottom-right of the primary monitor at the
+/// default height.
 fn position_toast(win: &tauri::WebviewWindow) {
+    position_toast_with_height(win, TOAST_HEIGHT);
+}
+
+/// Position the toast at the bottom-right of the primary monitor, sized to
+/// `height` (clamped to [TOAST_HEIGHT, TOAST_MAX_HEIGHT]) — the question toast
+/// grows to fit its option buttons.
+fn position_toast_with_height(win: &tauri::WebviewWindow, height: f64) {
+    let height = height.clamp(TOAST_HEIGHT, TOAST_MAX_HEIGHT);
     // Re-assert the size on every show: external actors (Windows snap, the
     // split-view arranger before it learned to skip this window) can resize
     // the long-lived toast window, and a corrupted size otherwise persists
     // for the rest of the session.
-    let _ = win.set_size(tauri::LogicalSize::new(TOAST_WIDTH, TOAST_HEIGHT));
+    let _ = win.set_size(tauri::LogicalSize::new(TOAST_WIDTH, height));
     if let Ok(Some(monitor)) = win.primary_monitor() {
         let scale = monitor.scale_factor();
         let size = monitor.size().to_logical::<f64>(scale);
         let _ = win.set_position(tauri::LogicalPosition::new(
             size.width - TOAST_WIDTH - TOAST_MARGIN,
-            size.height - TOAST_HEIGHT - TOAST_TASKBAR_ALLOWANCE - TOAST_MARGIN,
+            size.height - height - TOAST_TASKBAR_ALLOWANCE - TOAST_MARGIN,
         ));
     }
 }
@@ -120,9 +132,19 @@ pub async fn show_toast_window(
     body: String,
     link: Option<String>,
     memo_id: Option<i64>,
+    task_id: Option<i64>,
+    kind: Option<String>,
 ) -> Result<(), String> {
-    let payload =
-        serde_json::json!({ "title": title, "body": body, "link": link, "memoId": memo_id });
+    // `taskId` + `kind: "question"` let the toast page fetch the pending
+    // question's options and answer it in place, without opening the app.
+    let payload = serde_json::json!({
+        "title": title,
+        "body": body,
+        "link": link,
+        "memoId": memo_id,
+        "taskId": task_id,
+        "kind": kind,
+    });
     let ready = app
         .try_state::<PendingToast>()
         .map(|s| s.ready.load(std::sync::atomic::Ordering::SeqCst))
@@ -187,6 +209,16 @@ pub fn toast_ready(app: tauri::AppHandle) -> Option<serde_json::Value> {
         }
     }
     payload
+}
+
+/// Tauri command: the toast page measured its content and wants the window
+/// to grow/shrink to fit (question toasts list their options inline). The
+/// window stays anchored to the bottom-right corner.
+#[tauri::command]
+pub fn toast_resize(app: tauri::AppHandle, height: f64) {
+    if let Some(win) = app.get_webview_window("notification-toast") {
+        position_toast_with_height(&win, height);
+    }
 }
 
 /// Tauri command: dismiss the toast (auto-hide timer or the × button).

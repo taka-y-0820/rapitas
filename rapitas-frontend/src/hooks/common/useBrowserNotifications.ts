@@ -22,6 +22,13 @@ const logger = createLogger('useBrowserNotifications');
 const REMINDER_TYPES = new Set(['memo_reminder', 'habit_reminder', 'schedule_reminder']);
 
 /**
+ * An agent question blocks the workflow until answered, so it alerts like a
+ * reminder and the desktop toast lets the user pick an option in place
+ * (kind: 'question' → the toast page fetches the pending question.md).
+ */
+const QUESTION_TYPES = new Set(['auto_run_awaiting_answer']);
+
+/**
  * Ship a native-notification failure to the backend error buffer — the desktop
  * webview's console is invisible, so this is the only diagnosable trail.
  */
@@ -64,6 +71,25 @@ export function extractMemoId(
   try {
     const obj = typeof metadata === 'string' ? (JSON.parse(metadata) as unknown) : metadata;
     const id = (obj as { memoId?: unknown } | null | undefined)?.memoId;
+    return typeof id === 'number' && Number.isFinite(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract the task id from a notification's metadata (auto-run notifications
+ * carry `{"taskId": n}`), tolerating both the raw DB string and a parsed object.
+ *
+ * @param metadata - Notification metadata / 通知メタデータ
+ * @returns The task id, or null / タスクID(無ければnull)
+ */
+export function extractTaskId(
+  metadata: string | Record<string, unknown> | null | undefined,
+): number | null {
+  try {
+    const obj = typeof metadata === 'string' ? (JSON.parse(metadata) as unknown) : metadata;
+    const id = (obj as { taskId?: unknown } | null | undefined)?.taskId;
     return typeof id === 'number' && Number.isFinite(id) ? id : null;
   } catch {
     return null;
@@ -126,7 +152,8 @@ export function useBrowserNotifications(options: UseBrowserNotificationsOptions 
       // Reminders alert even while focused (the user asked for OS-level
       // visibility); everything else stays quiet unless the window is in the
       // background, to avoid double-alerting on top of the in-app UI.
-      if (!REMINDER_TYPES.has(notification.type) && document.hasFocus()) return;
+      const isQuestion = QUESTION_TYPES.has(notification.type);
+      if (!REMINDER_TYPES.has(notification.type) && !isQuestion && document.hasFocus()) return;
 
       const { title, message } = resolveNotificationText(t, notification);
 
@@ -143,6 +170,8 @@ export function useBrowserNotifications(options: UseBrowserNotificationsOptions 
               body: message,
               link: notification.link ?? null,
               memoId: extractMemoId(notification.metadata),
+              taskId: isQuestion ? extractTaskId(notification.metadata) : null,
+              kind: isQuestion ? 'question' : null,
             });
           } catch (e) {
             logger.errorThrottled('Toast window failed:', e);

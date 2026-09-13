@@ -488,3 +488,35 @@ describe('TaskCard', () => {
     });
   });
 });
+
+describe('質問待ち (awaiting_question) の表示', () => {
+  beforeEach(() => {
+    mockExecutingStatus = null;
+  });
+
+  it('question.md で停止中のタスクは実行行が無くてもアンバー表示になる', () => {
+    const { container } = render(
+      <TaskCard
+        {...mockProps}
+        task={{ ...mockTask, status: 'in-progress', workflowStatus: 'awaiting_question' }}
+      />,
+    );
+    const card = container.querySelector('[data-task-card]') as HTMLElement;
+    expect(card.className).toContain('ai-glow-amber');
+    expect(card.className).toContain('border-l-amber-500');
+    // The status pill announces the waiting state (aria-label) even without a
+    // live execution row.
+    expect(screen.getAllByLabelText('waitingForInput').length).toBeGreaterThan(0);
+  });
+
+  it('通常の in-progress タスクはアンバーにならない', () => {
+    const { container } = render(
+      <TaskCard
+        {...mockProps}
+        task={{ ...mockTask, status: 'in-progress', workflowStatus: 'in_progress' }}
+      />,
+    );
+    const card = container.querySelector('[data-task-card]') as HTMLElement;
+    expect(card.className).not.toContain('ai-glow-amber');
+  });
+});

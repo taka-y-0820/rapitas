@@ -3,6 +3,14 @@
     "open": "開く",
     "close": "閉じる",
     "markMemoDone": "完了にする",
+    "questionToast": {
+      "hint": "選択肢を押すと回答してワークフローを再開します",
+      "recommended": "推奨",
+      "answerInApp": "アプリで回答",
+      "moreQuestions": "質問が{count}件あります。アプリで回答してください。",
+      "answered": "回答を送信しました。ワークフローを再開します。",
+      "failed": "回答を送信できませんでした。アプリから回答してください。"
+    },
     "justNow": "たった今",
     "minutesAgo": "{count}分前",
     "hoursAgo": "{count}時間前",

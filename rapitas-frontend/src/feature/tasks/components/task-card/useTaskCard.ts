@@ -176,8 +176,22 @@ export function useTaskCard(
     }
   };
 
-  const executionClasses = getExecutionClasses();
-  const isWaitingForInput = executionStatus === 'waiting_for_input';
+  // A workflow paused on question.md (`awaiting_question`) has NO live
+  // execution row — the agent exited after writing the question — so the
+  // execution-store status alone never turned the card amber for the current
+  // file-based question flow (only the legacy in-CLI AskUserQuestion did).
+  // Treat both as "waiting for the user" so the card reads amber either way.
+  const isAwaitingQuestion =
+    task.workflowStatus === 'awaiting_question' && task.status !== 'done' && !executionStatus;
+  const executionClasses: ExecutionClasses | null = isAwaitingQuestion
+    ? {
+        borderColor: 'amber',
+        badgeClass: 'bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300',
+        dotClass: 'bg-amber-500',
+        label: t('waitingForInput'),
+      }
+    : getExecutionClasses();
+  const isWaitingForInput = executionStatus === 'waiting_for_input' || isAwaitingQuestion;
 
   const waitingAmberConfig: WaitingAmberConfig = {
     color: 'text-amber-700 dark:text-amber-300',

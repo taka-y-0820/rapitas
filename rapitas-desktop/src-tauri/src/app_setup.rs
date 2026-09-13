@@ -216,6 +216,7 @@ pub fn run() {
             crate::toast::show_toast_window,
             crate::toast::toast_ready,
             crate::toast::toast_dismiss,
+            crate::toast::toast_resize,
             crate::toast::toast_navigate,
             crate::browser::open_split_view,
             crate::browser::open_url_in_browser,

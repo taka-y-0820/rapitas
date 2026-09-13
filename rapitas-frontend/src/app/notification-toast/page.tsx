@@ -11,8 +11,9 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { AlarmClock, Check, X } from 'lucide-react';
+import { AlarmClock, Check, HelpCircle, X } from 'lucide-react';
 import { API_BASE_URL } from '@/utils/api';
+import { ToastQuestionOptions } from './_components/ToastQuestionOptions';
 
 interface ToastPayload {
   title: string;
@@ -20,7 +21,14 @@ interface ToastPayload {
   link: string | null;
   /** Set for memo reminders — enables the mark-done action. */
   memoId?: number | null;
+  /** Set for agent questions — the toast answers them inline. */
+  taskId?: number | null;
+  /** 'question' marks an agent question (see useBrowserNotifications). */
+  kind?: string | null;
 }
+
+const isQuestionPayload = (p: ToastPayload | null): p is ToastPayload & { taskId: number } =>
+  !!p && p.kind === 'question' && typeof p.taskId === 'number';
 
 const AUTO_HIDE_MS = 8000;
 
@@ -72,9 +80,29 @@ export default function NotificationToastPage() {
   const [payload, setPayload] = useState<ToastPayload | null>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const armAutoHide = useCallback(() => {
+  const payloadRef = useRef<ToastPayload | null>(null);
+  payloadRef.current = payload;
+
+  // `next` is the payload just received (state has not committed yet when the
+  // listener arms the timer); mouse-leave re-arms from the ref.
+  const armAutoHide = useCallback((next?: ToastPayload | null) => {
     clearTimeout(hideTimerRef.current);
+    // A question blocks the workflow until answered — it stays until the user
+    // acts (option, ×, Esc) instead of sliding away after 8 seconds.
+    if (isQuestionPayload(next ?? payloadRef.current)) return;
     hideTimerRef.current = setTimeout(() => void hideToastWindow(), AUTO_HIDE_MS);
+  }, []);
+
+  // Grow/shrink the window to the rendered content (question options need
+  // more than the default 116px). Measured after paint; no-op outside Tauri.
+  const syncHeight = useCallback(() => {
+    if (!inTauri()) return;
+    requestAnimationFrame(() => {
+      const height = Math.ceil(document.documentElement.scrollHeight);
+      void import('@tauri-apps/api/core').then(({ invoke }) =>
+        invoke('toast_resize', { height }).catch(() => {}),
+      );
+    });
   }, []);
 
   // Initial payload is PULLED via toast_ready once mounted (the window is
@@ -86,9 +114,10 @@ export default function NotificationToastPage() {
     let unlisten: (() => void) | undefined;
     import('@tauri-apps/api/event').then(({ listen }) => {
       listen<ToastPayload>('rapitas:toast', (e) => {
-        setPayload({ ...e.payload, link: e.payload.link || null });
+        const next = { ...e.payload, link: e.payload.link || null };
+        setPayload(next);
         playChime();
-        armAutoHide();
+        armAutoHide(next);
       }).then((fn) => {
         unlisten = fn;
       });
@@ -97,9 +126,10 @@ export default function NotificationToastPage() {
       invoke<ToastPayload | null>('toast_ready')
         .then((initial) => {
           if (initial) {
-            setPayload({ ...initial, link: initial.link || null });
+            const next = { ...initial, link: initial.link || null };
+            setPayload(next);
             playChime();
-            armAutoHide();
+            armAutoHide(next);
           }
         })
         .catch(() => {});
@@ -153,45 +183,73 @@ export default function NotificationToastPage() {
     void hideToastWindow();
   };
 
+  const isQuestion = isQuestionPayload(payload);
+
+  // Re-measure whenever a new payload lands (question ↔ reminder heights differ).
+  useEffect(() => {
+    syncHeight();
+  }, [payload, syncHeight]);
+
   return (
     // The whole surface is the click target; the timer pauses while hovered.
     <div
       onMouseEnter={() => clearTimeout(hideTimerRef.current)}
-      onMouseLeave={armAutoHide}
-      className="fixed inset-0 flex select-none items-stretch border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-indigo-dark-900"
+      onMouseLeave={() => armAutoHide()}
+      className="fixed inset-0 flex select-none flex-col border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-indigo-dark-900"
     >
-      <button onClick={open} className="flex min-w-0 flex-1 items-start gap-3 px-4 py-3 text-left">
-        <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-400">
-          <AlarmClock className="h-4 w-4" aria-hidden="true" />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-            {payload?.title ?? ''}
-          </span>
-          <span className="mt-0.5 block text-xs leading-snug text-zinc-600 line-clamp-3 dark:text-zinc-300">
-            {payload?.body ?? ''}
-          </span>
-        </span>
-      </button>
-      <div className="flex flex-col items-end justify-between py-1.5 pr-1.5">
+      <div className="flex items-stretch">
         <button
-          onClick={() => void hideToastWindow()}
-          aria-label={t('close')}
-          title={t('close')}
-          className="p-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+          onClick={open}
+          className="flex min-w-0 flex-1 items-start gap-3 px-4 py-3 text-left"
         >
-          <X className="h-4 w-4" />
+          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-400">
+            {isQuestion ? (
+              <HelpCircle className="h-4 w-4" aria-hidden="true" />
+            ) : (
+              <AlarmClock className="h-4 w-4" aria-hidden="true" />
+            )}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+              {payload?.title ?? ''}
+            </span>
+            <span className="mt-0.5 block text-xs leading-snug text-zinc-600 line-clamp-3 dark:text-zinc-300">
+              {payload?.body ?? ''}
+            </span>
+          </span>
         </button>
-        {payload?.memoId != null && (
+        <div className="flex flex-col items-end justify-between py-1.5 pr-1.5">
           <button
-            onClick={() => void markDone()}
-            className="flex items-center gap-1 rounded-md bg-green-50 px-2 py-1 text-xs font-medium text-green-700 hover:bg-green-100 dark:bg-green-950/40 dark:text-green-400 dark:hover:bg-green-950/60"
+            onClick={() => void hideToastWindow()}
+            aria-label={t('close')}
+            title={t('close')}
+            className="p-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
           >
-            <Check className="h-3.5 w-3.5" aria-hidden="true" />
-            {t('markMemoDone')}
+            <X className="h-4 w-4" />
           </button>
-        )}
+          {payload?.memoId != null && (
+            <button
+              onClick={() => void markDone()}
+              className="flex items-center gap-1 rounded-md bg-green-50 px-2 py-1 text-xs font-medium text-green-700 hover:bg-green-100 dark:bg-green-950/40 dark:text-green-400 dark:hover:bg-green-950/60"
+            >
+              <Check className="h-3.5 w-3.5" aria-hidden="true" />
+              {t('markMemoDone')}
+            </button>
+          )}
+        </div>
       </div>
+      {isQuestion && (
+        <ToastQuestionOptions
+          key={payload.taskId}
+          taskId={payload.taskId}
+          onAnswered={() => {
+            // Leave the confirmation visible briefly, then slide away.
+            clearTimeout(hideTimerRef.current);
+            hideTimerRef.current = setTimeout(() => void hideToastWindow(), 2500);
+          }}
+          onLayoutChange={syncHeight}
+        />
+      )}
     </div>
   );
 }
