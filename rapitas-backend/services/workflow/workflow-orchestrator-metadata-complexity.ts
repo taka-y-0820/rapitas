@@ -7,15 +7,6 @@
  */
 
 /**
- * Score and persist a task's complexity so SmartRouter routes by real
- * complexity instead of its 50 default. The score is a heuristic over task
- * METADATA (title / description keywords, structured-spec counts, estimated
- * hours, priority, labels) — it does NOT scan the actual repository code.
- *
- * @param taskId - Task to score. / 対象タスクID
- * @param task - Already-loaded task row (scalar fields). / 取得済みタスク行
- */
-/**
  * Compute the METADATA-heuristic complexity (title / description /
  * structured-spec counts) IN MEMORY — never persisted. task.complexityScore is
  * reserved for the research agent's code-grounded assessment; this transient
