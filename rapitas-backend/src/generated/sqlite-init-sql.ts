@@ -532,6 +532,68 @@ CREATE TABLE "TaskPrompt" (
 );
 
 -- CreateTable
+CREATE TABLE "EvalCorpusTask" (
+    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "sourceTaskId" INTEGER NOT NULL,
+    "category" TEXT NOT NULL,
+    "split" TEXT NOT NULL,
+    "classificationConfidence" REAL NOT NULL DEFAULT 0,
+    "classificationMethod" TEXT NOT NULL,
+    "baseCommitSha" TEXT NOT NULL,
+    "fixCommitSha" TEXT NOT NULL,
+    "protectedTestFiles" TEXT NOT NULL DEFAULT '[]',
+    "problemStatement" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL
+);
+
+-- CreateTable
+CREATE TABLE "EvalRun" (
+    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "runBatchId" TEXT NOT NULL,
+    "corpusTaskId" INTEGER NOT NULL,
+    "scenario" TEXT NOT NULL,
+    "attemptNumber" INTEGER NOT NULL DEFAULT 1,
+    "outcome" TEXT NOT NULL,
+    "outcomeReason" TEXT,
+    "failToPass" BOOLEAN,
+    "passToPass" BOOLEAN,
+    "humanInterventionCount" INTEGER NOT NULL DEFAULT 0,
+    "repairAttempts" INTEGER NOT NULL DEFAULT 0,
+    "faultInjectedAt" DATETIME,
+    "stopToCompletionMs" INTEGER,
+    "costUsd" REAL,
+    "durationMs" INTEGER,
+    "ciResult" TEXT,
+    "mergeAttempted" BOOLEAN NOT NULL DEFAULT false,
+    "mergedRegressionDetected" BOOLEAN NOT NULL DEFAULT false,
+    "metadata" TEXT NOT NULL DEFAULT '{}',
+    "startedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "completedAt" DATETIME,
+    CONSTRAINT "EvalRun_corpusTaskId_fkey" FOREIGN KEY ("corpusTaskId") REFERENCES "EvalCorpusTask" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+-- CreateTable
+CREATE TABLE "EvalMetricSnapshot" (
+    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "runBatchId" TEXT NOT NULL,
+    "category" TEXT,
+    "scenario" TEXT,
+    "sampleSize" INTEGER NOT NULL,
+    "firstAttemptAcceptRate" REAL,
+    "finalAcceptRate" REAL,
+    "falseCompletionRate" REAL,
+    "humanInterventionRate" REAL,
+    "avgRepairAttempts" REAL,
+    "stopToCompletionP95Ms" INTEGER,
+    "costUsdPerSuccess" REAL,
+    "durationMsPerSuccess" REAL,
+    "postMergeRegressionRate" REAL,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- CreateTable
 CREATE TABLE "Experiment" (
     "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     "taskId" INTEGER,
@@ -1674,6 +1736,30 @@ CREATE UNIQUE INDEX "TaskLabel_taskId_labelId_key" ON "TaskLabel"("taskId", "lab
 
 -- CreateIndex
 CREATE INDEX "TaskPrompt_taskId_idx" ON "TaskPrompt"("taskId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "EvalCorpusTask_sourceTaskId_key" ON "EvalCorpusTask"("sourceTaskId");
+
+-- CreateIndex
+CREATE INDEX "EvalCorpusTask_category_split_idx" ON "EvalCorpusTask"("category", "split");
+
+-- CreateIndex
+CREATE INDEX "EvalCorpusTask_split_idx" ON "EvalCorpusTask"("split");
+
+-- CreateIndex
+CREATE INDEX "EvalRun_runBatchId_idx" ON "EvalRun"("runBatchId");
+
+-- CreateIndex
+CREATE INDEX "EvalRun_corpusTaskId_scenario_idx" ON "EvalRun"("corpusTaskId", "scenario");
+
+-- CreateIndex
+CREATE INDEX "EvalRun_scenario_outcome_idx" ON "EvalRun"("scenario", "outcome");
+
+-- CreateIndex
+CREATE INDEX "EvalMetricSnapshot_runBatchId_idx" ON "EvalMetricSnapshot"("runBatchId");
+
+-- CreateIndex
+CREATE INDEX "EvalMetricSnapshot_runBatchId_scenario_idx" ON "EvalMetricSnapshot"("runBatchId", "scenario");
 
 -- CreateIndex
 CREATE INDEX "Experiment_taskId_idx" ON "Experiment"("taskId");

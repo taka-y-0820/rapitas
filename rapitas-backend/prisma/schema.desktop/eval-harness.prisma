@@ -1,0 +1,122 @@
+// ============================================================================
+// eval-harness.prisma — Rapitas private evaluation set & fault-injection E2E
+//
+// Source of truth for the eval-harness sub-domain (ADR-0006 folder layout).
+// These models live in a SEPARATE physical database from the app database:
+// every writer goes through services/eval-harness/eval-prisma-client.ts, which
+// refuses to connect unless RAPITAS_EVAL_DATABASE_URL points at a `*_eval`
+// database. The models are declared here (not in a standalone schema folder)
+// only so they share the existing generator/codegen pipeline.
+//
+// NOTE: Deliberately NO relations to Task/GitHubPullRequest. The corpus is a
+// frozen snapshot taken from the app DB at seed time; a foreign key would both
+// be impossible across databases and would let `POST /tasks/cleanup-completed`
+// mutate a fixed evaluation set.
+// ============================================================================
+
+/// One frozen problem instance in the private evaluation corpus, snapshotted
+/// from a completed app-DB task. Never mutated by an eval run.
+model EvalCorpusTask {
+  id                       Int      @id @default(autoincrement())
+  /// Task.id in the APP database this instance was snapshotted from. Not a FK.
+  sourceTaskId             Int      @unique
+  /// bug_fix | feature | investigation_only | multi_service | failure_recovery
+  category                 String
+  /// train | eval — fixed 2:1 split, assigned deterministically (no RNG).
+  split                    String
+  /// 0..1 heuristic confidence from corpus-classifier.
+  classificationConfidence Float    @default(0)
+  /// Which rule fired (e.g. `title_prefix_bug`), for auditing the heuristic.
+  classificationMethod     String
+  /// Commit the agent starts from (parent of the fix commit).
+  baseCommitSha            String
+  /// Commit that actually resolved the task in the real history.
+  fixCommitSha             String
+  /// JSON array of test paths the implementing agent must NOT modify.
+  protectedTestFiles       String   @default("[]")
+  /// Prompt handed to the agent — the original title/description only, never
+  /// the solution.
+  problemStatement         String
+  title                    String
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  runs                     EvalRun[]
+
+  @@index([category, split])
+  @@index([split])
+}
+
+/// One execution of one corpus task under one scenario. The atomic unit every
+/// metric is aggregated from.
+model EvalRun {
+  id                       Int             @id @default(autoincrement())
+  /// Groups every run of a single `eval-private-set.ts` invocation.
+  runBatchId               String
+  corpusTaskId             Int
+  corpusTask               EvalCorpusTask  @relation(fields: [corpusTaskId], references: [id], onDelete: Cascade)
+  /// baseline | cli_exit_after_stop | stop_during_verification | db_write_failure
+  /// | duplicate_callback | response_lost_after_pr | ci_failure | process_restart
+  scenario                 String
+  /// 1-based retry counter within a (batch, corpusTask, scenario) triple.
+  attemptNumber            Int             @default(1)
+  /// pass | fail | false_complete | error
+  outcome                  String
+  /// Why the outcome was assigned (e.g. `acceptance_test_modified`).
+  outcomeReason            String?
+  /// Acceptance tests went red→green. NULL for non-baseline scenarios.
+  failToPass               Boolean?
+  /// Previously-green tests stayed green. NULL for non-baseline scenarios.
+  passToPass               Boolean?
+  humanInterventionCount   Int             @default(0)
+  repairAttempts           Int             @default(0)
+  /// When the fault was injected. NULL for baseline.
+  faultInjectedAt          DateTime?
+  /// faultInjectedAt → completedAt, in ms. Feeds the stop-completion p95.
+  stopToCompletionMs       Int?
+  costUsd                  Float?
+  durationMs               Int?
+  /// success | failure | null (no CI observed)
+  ciResult                 String?
+  mergeAttempted           Boolean         @default(false)
+  /// Pass-to-pass suite went red only AFTER merging into the default branch.
+  mergedRegressionDetected Boolean         @default(false)
+  /// Free-form JSON with scenario-specific detail (exit codes, signals).
+  metadata                 String          @default("{}")
+  startedAt                DateTime        @default(now())
+  completedAt              DateTime?
+
+  @@index([runBatchId])
+  @@index([corpusTaskId, scenario])
+  @@index([scenario, outcome])
+}
+
+/// Aggregated metric snapshot for one batch, optionally sliced by category or
+/// scenario. NULL means "denominator was zero", never 0.
+model EvalMetricSnapshot {
+  id                     Int      @id @default(autoincrement())
+  runBatchId             String
+  /// NULL = across all categories.
+  category               String?
+  /// NULL = across all scenarios.
+  scenario               String?
+  /// Runs the aggregate was computed from.
+  sampleSize             Int
+  firstAttemptAcceptRate Float?
+  finalAcceptRate        Float?
+  falseCompletionRate    Float?
+  humanInterventionRate  Float?
+  avgRepairAttempts      Float?
+  stopToCompletionP95Ms  Int?
+  costUsdPerSuccess      Float?
+  durationMsPerSuccess   Float?
+  postMergeRegressionRate Float?
+  createdAt              DateTime @default(now())
+
+  // NOTE: No @@unique on (runBatchId, category, scenario) — two of the three
+  // columns are nullable, and Postgres treats NULLs as distinct, so the
+  // constraint would silently fail to dedupe exactly the all-slices row it
+  // would be meant to protect. Snapshots are append-only instead.
+  @@index([runBatchId])
+  @@index([runBatchId, scenario])
+}

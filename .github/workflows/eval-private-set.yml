@@ -1,0 +1,106 @@
+# Private Eval Set — fault-injection E2E batch
+#
+# Scores whole task executions (fail-to-pass / pass-to-pass) and the
+# orchestrator's behaviour under seven injected faults, against the private
+# corpus seeded from real completed tasks.
+#
+# Deliberately NOT a pull-request gate. A full batch is corpus_size x 8
+# scenarios of real child processes and real git operations; wiring it into
+# test-lint.yml would add many minutes to every PR. It runs weekly and on
+# demand, and its failures are read as a trend, not as a merge blocker.
+#
+# Isolation: a throwaway postgres service named rapitas_eval (the `_eval`
+# suffix is enforced by services/eval-harness/db-guard.ts), throwaway bare git
+# repositories under the runner's temp dir, and stub child processes instead of
+# a real coding CLI. No GitHub API calls, no model calls, no cost.
+
+name: Private Eval Set
+
+on:
+  workflow_dispatch:
+    inputs:
+      sampleSize:
+        description: 'Corpus tasks to run (0 = the whole eval split)'
+        required: false
+        default: '5'
+  schedule:
+    # Mondays 18:00 UTC — off-peak, and a week apart so the trend is readable.
+    - cron: '0 18 * * 1'
+
+jobs:
+  private-eval-set:
+    name: Private Eval Set
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: rapitas
+          POSTGRES_PASSWORD: rapitas
+          # NOTE: the name MUST end in _eval; db-guard.ts refuses to connect
+          # otherwise, which is what stops a mistyped URL reaching a real DB.
+          POSTGRES_DB: rapitas_eval
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://rapitas:rapitas@localhost:5432/rapitas_eval
+      RAPITAS_EVAL_DATABASE_URL: postgresql://rapitas:rapitas@localhost:5432/rapitas_eval
+      # Reserved hook for suppressing knowledge-base recall of corpus tasks.
+      # Currently inert — see docs/eval-private-set.md, "Known limitations".
+      RAPITAS_EVAL_MODE: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: corpus seeding resolves each task's fix and base
+          # commit from the log, so a shallow clone would exclude everything.
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install backend dependencies
+        working-directory: rapitas-backend
+        run: bun install
+
+      - name: Setup eval database schema
+        working-directory: rapitas-backend
+        run: |
+          bunx prisma db push --skip-generate
+          bun run db:generate
+
+      - name: Unit tests for the harness
+        working-directory: rapitas-backend
+        run: |
+          bun test services/eval-harness/db-guard.test.ts
+          bun test services/eval-harness/corpus-classifier.test.ts
+          bun test services/eval-harness/acceptance-test-guard.test.ts
+          bun test services/eval-harness/metrics-calculator.test.ts
+          bun test services/eval-harness/fake-pr-backend.test.ts
+
+      - name: Fault-injection integration test
+        working-directory: rapitas-backend
+        run: bun test services/eval-harness/eval-runner.integration.test.ts
+
+      - name: Seed the private corpus
+        working-directory: rapitas-backend
+        # NOTE: continue-on-error — a CI checkout of the public history may not
+        # contain enough resolvable tasks to reach the 30-row floor the seeder
+        # enforces. The batch step below still fails loudly if the corpus is
+        # empty, so a genuinely broken seed is not hidden.
+        continue-on-error: true
+        run: bun run scripts/eval-corpus-seed.ts --reset
+
+      - name: Run the eval batch
+        working-directory: rapitas-backend
+        run: bun run scripts/eval-private-set.ts --sampleSize ${{ inputs.sampleSize || '5' }}
