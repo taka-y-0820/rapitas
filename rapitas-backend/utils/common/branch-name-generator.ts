@@ -40,7 +40,8 @@ export function hasTaskIdMarker(branchName: string, taskId: number): boolean {
 }
 
 /**
- * Generate a suitable branch name using AI based on task content.
+ * Generate a safe branch name deterministically. AI translation remains
+ * available only through the explicit `RAPITAS_AI_BRANCH_NAMES=1` opt-in.
  *
  * @param taskTitle - Task title used in the AI prompt. / AIプロンプト用タイトル
  * @param taskDescription - Optional task description for prompt context. / プロンプト補足用の説明
@@ -52,6 +53,15 @@ export async function generateBranchName(
   taskDescription?: string,
   taskId?: number,
 ): Promise<string> {
+  // Branch names are a constrained formatting problem, not a semantic coding
+  // task. The deterministic path enforces the same safety/length/task-id
+  // invariants without spending an agent/LLM call for every workflow. Keep an
+  // explicit opt-in only for installations that value translated slugs more
+  // than the token and latency saving.
+  if (process.env.RAPITAS_AI_BRANCH_NAMES !== '1') {
+    return generateFallbackBranchName(taskTitle, taskId);
+  }
+
   try {
     const systemPrompt = `You are a Git branch name generator. Output ONLY a branch name, nothing else.
 
@@ -265,6 +275,11 @@ export function generateFallbackBranchName(taskTitle: string, taskId?: number): 
     'リファクタ',
   ];
 
+  // Keep the historical entries above for compatibility, but use correctly
+  // encoded Japanese keywords for current task titles.
+  bugKeywords.push('修正', 'バグ', 'エラー', '不具合', '障害');
+  choreKeywords.push('更新', '削除', '整理', 'リファクタ');
+
   const titleLower = taskTitle.toLowerCase();
   if (bugKeywords.some((keyword) => titleLower.includes(keyword))) {
     prefix = 'bugfix/';
@@ -273,7 +288,10 @@ export function generateFallbackBranchName(taskTitle: string, taskId?: number): 
   }
 
   // NOTE: Ensure at least 2 words after prefix — single-word slugs are rejected by isValidBranchName().
-  let slug = sanitizedTitle || 'task';
+  const containsNonAscii = /[^\x00-\x7F]/.test(taskTitle);
+  let slug = containsNonAscii
+    ? buildJapaneseSlug(taskTitle)
+    : sanitizedTitle || buildJapaneseSlug(taskTitle);
   if (!slug.includes('-')) {
     const verbMap: Record<string, string> = {
       'feature/': 'implement',
@@ -288,4 +306,50 @@ export function generateFallbackBranchName(taskTitle: string, taskId?: number): 
     return buildTaskBranchName(branchName, taskId);
   }
   return branchName;
+}
+
+/** Convert common Japanese engineering intent into deterministic English tokens. */
+function buildJapaneseSlug(title: string): string {
+  const actionRules: Array<[string[], string]> = [
+    [['修正', '不具合', 'バグ', 'エラー', '障害', '競合解消'], 'fix'],
+    [['改善', '最適化'], 'improve'],
+    [['分割', '切り出し'], 'split'],
+    [['追加', '導入', '作成'], 'add'],
+    [['削除', '廃止'], 'remove'],
+    [['更新', '移行'], 'update'],
+    [['整理', 'リファクタ'], 'refactor'],
+    [['検証', '確認', 'テスト'], 'verify'],
+  ];
+  const targetRules: Array<[string[], string]> = [
+    [['ワークフロー', 'workflow'], 'workflow'],
+    [['ブランチ'], 'branch'],
+    [['モデル'], 'model'],
+    [['トークン'], 'tokens'],
+    [['コスト', '費用'], 'cost'],
+    [['認証', 'ログイン'], 'authentication'],
+    [['画面', '表示', 'UI'], 'ui'],
+    [['データベース', 'DB'], 'database'],
+    [['API'], 'api'],
+    [['通知'], 'notification'],
+    [['設定'], 'config'],
+    [['実行', 'executor'], 'execution'],
+    [['検証', 'テスト'], 'tests'],
+    [['ログ'], 'logging'],
+    [['集計', 'メトリクス', '統計'], 'metrics'],
+    [['サブタスク'], 'subtasks'],
+    [['タスク'], 'task'],
+    [['エージェント'], 'agent'],
+    [['ファイル'], 'files'],
+    [['プロセス'], 'process'],
+    [['スケジューラ', 'スケジュール'], 'scheduler'],
+  ];
+
+  const action = actionRules.find(([words]) => words.some((word) => title.includes(word)))?.[1];
+  const targets = targetRules
+    .filter(([words]) => words.some((word) => title.includes(word)))
+    .map(([, token]) => token)
+    .filter((token, index, all) => all.indexOf(token) === index)
+    .slice(0, 3);
+
+  return [action ?? 'update', ...(targets.length > 0 ? targets : ['task'])].join('-');
 }

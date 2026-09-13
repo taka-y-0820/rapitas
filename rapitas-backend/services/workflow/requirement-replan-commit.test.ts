@@ -63,6 +63,8 @@ beforeEach(async () => {
     'CREATE TABLE AgentExecution (id INTEGER PRIMARY KEY, sessionId INTEGER, status TEXT, startedAt DATETIME)',
     'CREATE TABLE ThemeAutoRun (id INTEGER PRIMARY KEY, themeId INTEGER UNIQUE, status TEXT)',
     'CREATE TABLE WorkflowTransition (id INTEGER PRIMARY KEY AUTOINCREMENT, taskId INTEGER, fromStatus TEXT, toStatus TEXT, actor TEXT, cause TEXT, phase TEXT, executionId INTEGER, sessionId INTEGER, metadata TEXT DEFAULT "{}", invariantViolation BOOLEAN DEFAULT 0, invariantMessage TEXT, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP)',
+    'CREATE TABLE RequirementReviewClaim (id INTEGER PRIMARY KEY AUTOINCREMENT, taskId INTEGER, snapshotDigest TEXT, requestKey TEXT, status TEXT, claimToken TEXT, ownerInstanceId TEXT, heartbeatAt DATETIME, resultJson TEXT, reason TEXT, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME, UNIQUE(taskId,snapshotDigest))',
+    'CREATE TABLE RequirementReviewRetryRequest (id INTEGER PRIMARY KEY AUTOINCREMENT, requestId TEXT UNIQUE, taskId INTEGER, consumedAt DATETIME, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP)',
   ])
     await db.$executeRawUnsafe(sql);
   await db.$executeRawUnsafe(
@@ -224,16 +226,44 @@ test('server entry point reviews the stored source and commits the verdict', asy
 });
 
 test('unknown review keeps task and artifacts unchanged and issues no completion receipt', async () => {
-  const before = await db.$queryRawUnsafe('SELECT * FROM Task WHERE id=1');
   const artifacts = await db.$queryRawUnsafe('SELECT * FROM WorkflowFile ORDER BY id');
   const result = await attemptRequirementReplan(db as unknown as PostgresClient, 1, async () => ({
     ...review,
     verdict: { kind: 'unknown', reason: 'UI and cost comparison evidence is missing' },
   }));
-  expect(result).toEqual({ committed: false, reason: 'unknown' });
-  expect(await db.$queryRawUnsafe('SELECT * FROM Task WHERE id=1')).toEqual(before);
+  expect(result).toEqual({
+    committed: false,
+    reason: 'requires_human:UI and cost comparison evidence is missing',
+  });
+  expect(await db.task.findUnique({ where: { id: 1 }, select: { status: true } })).toEqual({
+    status: 'blocked',
+  });
   expect(await db.$queryRawUnsafe('SELECT * FROM WorkflowFile ORDER BY id')).toEqual(artifacts);
   expect(await db.$queryRawUnsafe('SELECT * FROM WorkflowTransition')).toEqual([]);
+});
+
+test('a concurrent healthy evaluation is not mistaken for a crash and does not stop the task', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const first = attemptRequirementReplan(db as unknown as PostgresClient, 1, async () => {
+    entered();
+    await gate;
+    return { ...review, verdict: { kind: 'no_mismatch' as const, reason: 'matches' } };
+  });
+  await started;
+  const duplicate = await attemptRequirementReplan(db as unknown as PostgresClient, 1);
+  expect(duplicate).toEqual({ committed: false, reason: 'review_in_progress' });
+  expect(await db.task.findUnique({ where: { id: 1 }, select: { status: true } })).toEqual({
+    status: 'in-progress',
+  });
+  release();
+  await first;
 });
 
 test('requirement edited during independent review is never replaced by an old verdict', async () => {

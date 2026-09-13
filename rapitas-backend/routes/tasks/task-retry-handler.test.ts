@@ -36,6 +36,11 @@ mock.module('../../services/workflow/transition-recorder', () => ({
   recordTransition: mockRecordTransition,
 }));
 
+const mockRecordReviewRetry = mock(() => Promise.resolve<'created' | 'duplicate'>('created'));
+mock.module('../../services/workflow/requirement-review-claim', () => ({
+  recordRequirementReviewRetryRequest: mockRecordReviewRetry,
+}));
+
 const { retryTask } = await import('./task-retry-handler');
 
 function resetMocks() {
@@ -45,6 +50,8 @@ function resetMocks() {
   mockNotificationUpdateMany.mockClear();
   mockResolveImplementEntryStatus.mockClear();
   mockRecordTransition.mockClear();
+  mockRecordReviewRetry.mockClear();
+  mockRecordReviewRetry.mockResolvedValue('created');
 }
 
 describe('retryTask', () => {
@@ -128,6 +135,19 @@ describe('retryTask', () => {
 
     expect(result).toBeNull();
     expect(setStatus).toHaveBeenCalledWith(404);
+    expect(mockRecordTransition).not.toHaveBeenCalled();
+  });
+
+  test('records an explicit retry request before mutating the task', async () => {
+    await retryTask(1, () => {}, 'request-123');
+    expect(mockRecordReviewRetry).toHaveBeenCalledWith(expect.anything(), 1, 'request-123');
+    expect(mockTaskUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  test('a duplicate explicit retry request does not repeat lifecycle mutations', async () => {
+    mockRecordReviewRetry.mockResolvedValueOnce('duplicate');
+    await retryTask(1, () => {}, 'request-123');
+    expect(mockTaskUpdate).not.toHaveBeenCalled();
     expect(mockRecordTransition).not.toHaveBeenCalled();
   });
 });

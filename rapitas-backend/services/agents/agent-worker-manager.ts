@@ -10,6 +10,7 @@
  */
 
 import { createLogger } from '../../config/logger';
+import { isApiRecoveryMode } from '../system/api-recovery-mode';
 import type { AgentTask, AgentExecutionResult } from './base-agent';
 import type { ExecutionOptions, ExecutionState } from './orchestrator/types';
 import type { QuestionKey } from './question-detection';
@@ -72,6 +73,7 @@ export class AgentWorkerManager {
    * Called during server startup in index.ts.
    */
   public async initialize(): Promise<void> {
+    if (isApiRecoveryMode()) throw new Error('Agent workers are held during API recovery');
     await initializeWorker(
       this.state,
       (baseDir) => this.cleanupStaleWorktrees(baseDir),

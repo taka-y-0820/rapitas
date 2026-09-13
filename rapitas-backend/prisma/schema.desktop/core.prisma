@@ -182,6 +182,8 @@ model Task {
   workflowFileVersions WorkflowFileVersion[]
   // Append-only audit trail of workflow status transitions.
   workflowTransitions  WorkflowTransition[]
+  requirementReviewClaims RequirementReviewClaim[]
+  requirementReviewRetryRequests RequirementReviewRetryRequest[]
 }
 
 model Comment {

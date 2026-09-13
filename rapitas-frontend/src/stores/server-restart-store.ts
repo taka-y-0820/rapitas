@@ -2,8 +2,8 @@
  * server-restart-store
  *
  * Global "the backend is intentionally restarting" flag. Set when a restart is
- * initiated (header button) or detected (SSE `shutdown` event, or N
- * consecutive health-check failures, both via useBackendHealth), cleared on
+ * initiated (header button) or detected (SSE `shutdown` event via
+ * useBackendHealth), cleared on
  * reconnect. Consulted by the logger to silence the expected flood of network
  * errors and by connection-error UI to stay hidden during the restart window.
  */

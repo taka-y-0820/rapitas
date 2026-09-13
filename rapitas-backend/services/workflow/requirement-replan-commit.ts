@@ -125,7 +125,11 @@ async function commitReviewedDecision(
   },
 ): Promise<{ committed: boolean; reason: string; updatedAt?: Date }> {
   const verdict = review.verdict;
-  if (verdict.kind === 'unknown') return { committed: false, reason: verdict.kind };
+  // Preserve the server review's diagnostic reason. Returning the generic
+  // verdict kind made every fail-closed outcome look identical to callers,
+  // so an unchanged task could be retried without exposing whether the input
+  // was too large, the reviewer was unavailable, or evidence was missing.
+  if (verdict.kind === 'unknown') return { committed: false, reason: verdict.reason };
   if (verdict.kind === 'mismatch' && review.snapshotDigest !== verdict.evidence.snapshotDigest) {
     return { committed: false, reason: 'review_digest_mismatch' };
   }

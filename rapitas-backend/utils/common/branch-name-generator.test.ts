@@ -6,7 +6,7 @@
  * generateBranchName の AI 呼び出し成功・失敗（フォールバック）経路を
  * ../ai-client のモックで検証する。
  */
-import { describe, test, expect, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, test, expect, mock } from 'bun:test';
 
 const noopLogger = {
   info: () => {},
@@ -227,7 +227,7 @@ describe('generateFallbackBranchName', () => {
 
   test('falls back to "task" when the title has no usable characters', () => {
     const name = generateFallbackBranchName('!!!');
-    expect(name).toBe('feature/implement-task');
+    expect(name).toBe('feature/update-task');
   });
 
   test('always produces a name that passes isValidBranchName', () => {
@@ -274,14 +274,30 @@ describe('generateFallbackBranchName with taskId', () => {
     expect(generateFallbackBranchName('Update dependencies', 12)).toMatch(/^chore\/t12-/);
   });
 
-  test('makes Japanese-only titles unique via the marker instead of collapsing to a shared name', () => {
+  test('makes unknown non-ASCII titles unique without using implement-task', () => {
     const a = generateFallbackBranchName('日本語のみのタスク', 100);
     const b = generateFallbackBranchName('別の日本語タスク', 200);
-    expect(a).toBe('feature/t100-implement-task');
-    expect(b).toBe('feature/t200-implement-task');
+    expect(a).toBe('feature/t100-update-task');
+    expect(b).toBe('feature/t200-update-task');
+    expect(a).not.toContain('implement-task');
+    expect(b).not.toContain('implement-task');
     expect(a).not.toBe(b);
     expect(isValidBranchName(a)).toBe(true);
     expect(isValidBranchName(b)).toBe(true);
+  });
+
+  test('generates meaningful deterministic slugs for Japanese-only titles', () => {
+    const auth = generateFallbackBranchName('認証画面の不具合を修正', 100);
+    const workflow = generateFallbackBranchName('ワークフロー実行を改善', 200);
+    const tokens = generateFallbackBranchName('モデル選択とトークンを最適化', 300);
+
+    expect(auth).toBe('bugfix/t100-fix-authentication-ui');
+    expect(workflow).toBe('feature/t200-improve-workflow-execution');
+    expect(tokens).toBe('feature/t300-improve-model-tokens');
+    for (const name of [auth, workflow, tokens]) {
+      expect(name).not.toContain('implement-task');
+      expect(isValidBranchName(name)).toBe(true);
+    }
   });
 
   test('never truncates the marker on long titles (50-char limit falls on the slug)', () => {
@@ -305,11 +321,30 @@ describe('generateFallbackBranchName with taskId', () => {
   });
 
   test('omitting taskId preserves the legacy output exactly', () => {
-    expect(generateFallbackBranchName('!!!')).toBe('feature/implement-task');
+    expect(generateFallbackBranchName('!!!')).toBe('feature/update-task');
   });
 });
 
 describe('generateBranchName', () => {
+  beforeEach(() => {
+    process.env.RAPITAS_AI_BRANCH_NAMES = '1';
+  });
+
+  afterEach(() => {
+    delete process.env.RAPITAS_AI_BRANCH_NAMES;
+  });
+
+  test('uses the deterministic generator by default without an AI call', async () => {
+    delete process.env.RAPITAS_AI_BRANCH_NAMES;
+    mockSendAIMessage.mockClear();
+
+    const name = await generateBranchName('Fix login button error', undefined, 539);
+
+    expect(name).toBe('bugfix/t539-fix-login-button-error');
+    expect(mockSendAIMessage).not.toHaveBeenCalled();
+    expect(isValidBranchName(name)).toBe(true);
+  });
+
   test('returns the AI-generated branch name when the response is valid', async () => {
     mockSendAIMessage.mockImplementationOnce(() =>
       Promise.resolve({ content: 'feature/add-user-authentication', tokensUsed: 10 }),
