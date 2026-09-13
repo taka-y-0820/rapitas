@@ -262,6 +262,7 @@
     "development": "Development",
     "agent": "Agent",
     "agentManagement": "Agent Management",
+    "executionDashboard": "Execution Dashboard",
     "metrics": "Agent Usage",
     "approvals": "Approvals",
     "promptManagement": "Prompt Management",
@@ -1371,6 +1372,13 @@
       "selfRefillWindowDisabled": "Disabled (no self-refill)",
       "savingSuffix": " (saving…)"
     },
+    "executionDashboardSettingsCard": {
+      "title": "Execution Dashboard",
+      "description": "Stall-detection settings for the workflow execution visualization dashboard (/agents/execution-dashboard).",
+      "thresholdLabel": "Stall threshold",
+      "thresholdDescription": "When a task shows no progress for this many minutes since it started (or was queued), the dashboard flags it as stalled.",
+      "thresholdUnit": "min"
+    },
     "ciTimingDashboard": {
       "fetchFailed": "Failed to fetch data",
       "title": "CI Test Timing Dashboard",
@@ -2228,6 +2236,36 @@
       "empty": "No suggestions are waiting for review. Periods without misses are normal — no detection is expected.",
       "loadFailed": "Failed to load data",
       "reviewFailed": "Failed to submit the review"
+    },
+    "executionDashboard": {
+      "title": "Execution Dashboard",
+      "subtitle": "See where every active task stands at a glance",
+      "flowChartTitle": "Pipeline overview",
+      "stage": {
+        "queued": "Queued",
+        "running": "Running",
+        "repairing": "Repairing",
+        "awaitingJudgement": "Awaiting judgement",
+        "completed": "Completed",
+        "failed": "Failed",
+        "cancelled": "Cancelled"
+      },
+      "frequentFailureWarning": "Failing frequently",
+      "frequentFailureBadge": "Failing frequently ({count}x)",
+      "stalledBadge": "Stalled",
+      "emptyState": "No active tasks",
+      "elapsedMinutes": "{minutes}m elapsed",
+      "exportCsvButton": "Export execution log (CSV)",
+      "exportJsonButton": "Export execution log (JSON)",
+      "loading": "Loading…",
+      "loadFailed": "Failed to load data",
+      "truncatedNotice": "Showing {shown} of {total} tasks — the rest are hidden",
+      "drilldownTitle": "Task execution detail",
+      "drilldownLoading": "Loading…",
+      "drilldownLoadFailed": "Failed to load data",
+      "drilldownState": "State",
+      "drilldownRepairCount": "Repair count",
+      "drilldownElapsed": "Elapsed"
     }
   },
   "github": {
@@ -5697,15 +5735,7 @@
       "peakLabel": "Peak:",
       "lowLabel": "Low:",
       "hourSuffix": "{hour}:00",
-      "dayLabels": [
-        "Sun",
-        "Mon",
-        "Tue",
-        "Wed",
-        "Thu",
-        "Fri",
-        "Sat"
-      ],
+      "dayLabels": ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
       "cellTitle": "{day} {hour}:00: {count} completed (click for details)",
       "legendLow": "Low",
       "legendHigh": "High",

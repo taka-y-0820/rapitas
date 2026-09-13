@@ -7,6 +7,7 @@ import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { useDeveloperModeSettings } from './hooks/useDeveloperModeSettings';
 import { TaskCreationSettingsCard } from './components/TaskCreationSettingsCard';
 import { AutoRunSettingsCard } from './components/AutoRunSettingsCard';
+import { ExecutionDashboardSettingsCard } from './components/ExecutionDashboardSettingsCard';
 import { AutoResumeSettingsCard } from './components/AutoResumeSettingsCard';
 import { WorkflowConfigCard } from './components/WorkflowConfigCard';
 import { AutoMergeSettingsCard } from './components/AutoMergeSettingsCard';
@@ -66,6 +67,12 @@ export default function DeveloperModeSettingsPage() {
         />
 
         <AutoRunSettingsCard
+          settings={settings}
+          isSaving={isSaving}
+          onUpdateSettings={updateSettings}
+        />
+
+        <ExecutionDashboardSettingsCard
           settings={settings}
           isSaving={isSaving}
           onUpdateSettings={updateSettings}

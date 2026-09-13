@@ -48,6 +48,7 @@ import {
   Sunrise,
   Library,
   Search,
+  Workflow,
   WalletCards,
   ChartNoAxesCombined,
   ChartScatter,
@@ -188,6 +189,11 @@ export default function Header() {
             // NOTE: UserCog, not Settings — the gear glyph is owned by 設定
             // (ICON_POLICY: one glyph, one meaning app-wide).
             { href: '/agents', label: t('agentManagement'), icon: UserCog },
+            {
+              href: '/agents/execution-dashboard',
+              label: t('executionDashboard'),
+              icon: Workflow,
+            },
             { href: '/agents/metrics', label: t('metrics'), icon: BarChart3 },
             // NOTE: Sunrise = 自律活動デイリーレポート (ICON_POLICY §3) — the
             // same glyph is reused on the /agents/daily-report page (same

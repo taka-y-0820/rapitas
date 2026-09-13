@@ -76,6 +76,11 @@ model UserSettings {
   // verifier's failure is fed back to the implementer to fix and re-verify, up
   // to this many times. 0 disables auto-repair. See verify-self-repair.ts.
   verifyRepairLimit           Int       @default(2)
+  // Minutes of no-progress before a task is flagged stalled on the execution
+  // dashboard (default 5). UI-display threshold only; does NOT affect the
+  // existing automatic-intervention thresholds in queue-stall-policy.ts. See
+  // execution-dashboard-service.ts / task 870.
+  executionStallThresholdMinutes Int    @default(5)
   // Idle-stop timer (task 784): once a theme's auto-run runs dry (queue and
   // active executions empty) and NO new task is filed for this many minutes,
   // auto-run is stopped (ThemeAutoRun.enabled=false) with a notification.

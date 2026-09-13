@@ -32,6 +32,13 @@ const log = createLogger('routes:settings');
 
 /** Max idleStopMinutes accepted on write (24h) — task 784. */
 const MAX_IDLE_STOP_MINUTES = 1440;
+/**
+ * executionStallThresholdMinutes clamp range (task 870): 1 avoids a
+ * "0 = always stalled" no-op setting, 120 keeps the dashboard's purpose
+ * (early detection) meaningful.
+ */
+const MIN_EXECUTION_STALL_THRESHOLD_MINUTES = 1;
+const MAX_EXECUTION_STALL_THRESHOLD_MINUTES = 120;
 /** Local "HH:MM" format required for selfRefillWindowStart — task 784. */
 const SELF_REFILL_WINDOW_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -55,6 +62,7 @@ export async function applyPendingClientColumns(
   const {
     restartOnAutoRunDry,
     verifyRepairLimit,
+    executionStallThresholdMinutes,
     workflowDisabledGlobally,
     idleStopMinutes,
     selfRefillWindowStart,
@@ -84,6 +92,23 @@ export async function applyPendingClientColumns(
       })
       .catch((err) => log.warn({ err }, 'verifyRepairLimit persist failed'));
     settingsRef.verifyRepairLimit = clamped;
+  }
+
+  if (executionStallThresholdMinutes !== undefined) {
+    // Clamp to 1..120 minutes — see MIN/MAX_EXECUTION_STALL_THRESHOLD_MINUTES above.
+    const clamped = Math.max(
+      MIN_EXECUTION_STALL_THRESHOLD_MINUTES,
+      Math.min(MAX_EXECUTION_STALL_THRESHOLD_MINUTES, Math.floor(executionStallThresholdMinutes)),
+    );
+    await prisma.userSettings
+      .update({
+        where: { id: settingsId },
+        data: { executionStallThresholdMinutes: clamped } as unknown as Parameters<
+          typeof prisma.userSettings.update
+        >[0]['data'],
+      })
+      .catch((err) => log.warn({ err }, 'executionStallThresholdMinutes persist failed'));
+    settingsRef.executionStallThresholdMinutes = clamped;
   }
 
   if (workflowDisabledGlobally !== undefined) {

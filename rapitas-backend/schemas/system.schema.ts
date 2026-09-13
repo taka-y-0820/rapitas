@@ -19,6 +19,9 @@ export const systemSchemas = {
     autoCreateFromBacklogLimit: t.Optional(t.Number()),
     restartOnAutoRunDry: t.Optional(t.Boolean()),
     verifyRepairLimit: t.Optional(t.Number()),
+    // Execution dashboard stall threshold (task 870): minutes, default 5;
+    // clamped 1..120 in settings-extra-fields.ts.
+    executionStallThresholdMinutes: t.Optional(t.Number()),
     // Idle-stop timer (task 784): minutes, 0 = off; clamped in settings-extra-fields.ts.
     idleStopMinutes: t.Optional(t.Number()),
     // Nightly self-refill window start: '' (off) or local "HH:MM"; format

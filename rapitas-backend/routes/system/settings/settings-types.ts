@@ -28,6 +28,8 @@ export interface UserSettingsUpdateBody {
   restartOnAutoRunDry?: boolean;
   /** Max verify->implement self-repair cycles before a task is blocked (0 = off). */
   verifyRepairLimit?: number;
+  /** Minutes of no-progress before a task is flagged stalled on the execution dashboard (default 5). */
+  executionStallThresholdMinutes?: number;
   /** Minutes of no new filing after auto-run runs dry before it is stopped (0 = off). */
   idleStopMinutes?: number;
   /** Local "HH:MM" the nightly backlog self-refill window opens ('' = self-refill off). */

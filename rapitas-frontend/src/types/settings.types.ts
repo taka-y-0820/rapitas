@@ -31,6 +31,8 @@ export type UserSettings = {
   restartOnAutoRunDry?: boolean;
   /** Max verify->implement self-repair cycles before a task is blocked (0 = off). */
   verifyRepairLimit?: number;
+  /** Minutes of no-progress before a task is flagged stalled on the execution dashboard (default 5). */
+  executionStallThresholdMinutes?: number;
   /** 枯渇後に新規起票が無いままこの分数が経過すると auto-run を停止する（0 = 無効）。 */
   idleStopMinutes?: number;
   /** バックログ自己補充を許可する夜間ウィンドウの開始時刻 "HH:MM"（'' = 自己補充無効）。 */

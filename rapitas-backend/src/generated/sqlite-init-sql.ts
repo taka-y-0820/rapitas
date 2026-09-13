@@ -1260,6 +1260,7 @@ CREATE TABLE "UserSettings" (
     "autoCreateFromBacklogLimit" INTEGER NOT NULL DEFAULT 0,
     "restartOnAutoRunDry" BOOLEAN NOT NULL DEFAULT false,
     "verifyRepairLimit" INTEGER NOT NULL DEFAULT 2,
+    "executionStallThresholdMinutes" INTEGER NOT NULL DEFAULT 5,
     "idleStopMinutes" INTEGER NOT NULL DEFAULT 60,
     "selfRefillWindowStart" TEXT NOT NULL DEFAULT '03:00',
     "autoCommitDefault" BOOLEAN NOT NULL DEFAULT false,
