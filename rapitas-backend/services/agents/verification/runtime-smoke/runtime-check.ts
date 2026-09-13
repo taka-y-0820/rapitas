@@ -10,7 +10,8 @@
  */
 import { createLogger } from '../../../../config/logger';
 import type { VerificationCheck } from '../automated-verifier';
-import { resolveRuntimeConfig } from './runtime-config';
+import { resolveRuntimeConfig, resolveThemeWorkingDirectory } from './runtime-config';
+import { detectRuntimeHarnessDrift } from './runtime-start-preflight';
 import { runBrowserSmoke, type SmokeRunResult } from './browser-smoke';
 import { acquireRuntimeServer, releaseRuntimeServer } from './worktree-server-registry';
 
@@ -144,6 +145,24 @@ export async function runRuntimeSmokeCheck(
     };
   }
   const cfg = loaded.config;
+
+  // Harness drift (not an environment failure): the branch predates the
+  // runtime script the theme's main checkout ships. The implementer cannot
+  // add it and the pre-PR base sync will; holding completion here only
+  // deadlocks the task (tasks 901/905, 2026-09-13). Report "skip" — the
+  // static gates still stand and the synced branch is re-verified before PR.
+  const drift = await detectRuntimeHarnessDrift(
+    cfg.start,
+    workdir,
+    await resolveThemeWorkingDirectory(taskId),
+  );
+  if (drift) {
+    log.warn(
+      { workdir, label, taskId },
+      '[runtime-smoke] harness drift — runtime check not applicable',
+    );
+    return { name: 'runtime', ran: false, ok: true, errorCount: 0, details: drift };
+  }
 
   // Short-circuit: this worktree recently failed to launch for ENVIRONMENT
   // reasons — relaunching within the TTL just burns the full ready-timeout to

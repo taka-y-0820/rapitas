@@ -35,6 +35,8 @@ mock.module('./runtime-config', () => ({
           },
         }
       : null,
+  // Not under test here: no theme dir → the harness-drift check stays silent.
+  resolveThemeWorkingDirectory: async () => null,
   substitutePort: (s: string) => s,
 }));
 mock.module('./browser-smoke', () => ({

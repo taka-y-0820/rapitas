@@ -181,6 +181,28 @@ export async function resolveRuntimeConfig(opts: {
   return loadRuntimeConfig(opts.workdir);
 }
 
+/**
+ * The task's theme working directory (its main checkout), used to tell a
+ * worktree that merely predates the runtime harness apart from a genuinely
+ * broken runtime configuration.
+ *
+ * @param taskId - Task whose theme to look up. / 対象タスクID
+ * @returns The theme's workingDirectory, or null when unknown / 主チェックアウト
+ */
+export async function resolveThemeWorkingDirectory(
+  taskId: number | null | undefined,
+): Promise<string | null> {
+  if (taskId == null) return null;
+  const task = await prisma.task
+    .findUnique({
+      where: { id: taskId },
+      select: { theme: { select: { workingDirectory: true } } },
+    })
+    .catch(() => null);
+  const dir = task?.theme?.workingDirectory;
+  return typeof dir === 'string' && dir.trim() ? dir : null;
+}
+
 export type TaskThemeRuntimeConfig =
   | { themeId: number; runtimeConfigJson: string | null }
   | { themeId: null };
